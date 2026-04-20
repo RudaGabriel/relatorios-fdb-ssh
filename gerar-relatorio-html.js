@@ -33,12 +33,15 @@
         process.exit(1);
     }
 
-    // === LÊ PROIBIDOS DO CONFIG ===
+    // === LÊ CONFIG (proibidos + appName) ===
     const pathConfig = require("node:path").join(__dirname, "config.json");
     let cfgProibidos = [];
+    let cfgAppName   = "";
     try {
-        const c = JSON.parse(fs.readFileSync(pathConfig, "utf8"));
-        if (Array.isArray(c.proibidos)) cfgProibidos = c.proibidos;
+        const rawCfg = fs.readFileSync(pathConfig, "utf8").replace(/^\uFEFF/, "");
+        const c = JSON.parse(rawCfg);
+        if (Array.isArray(c.proibidos))            cfgProibidos = c.proibidos;
+        if (c.appName && String(c.appName).trim()) cfgAppName   = String(c.appName).trim();
     } catch(e) {}
 
     // === LÓGICA DE IDENTIFICAÇÃO DE REDE DO FIREBIRD ===
@@ -677,7 +680,7 @@
 			};
 			const dadosJSON = JSON.stringify(dados).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 			tick("JSON montado — gerando HTML...");
-			const html = String.raw`<!doctype html><html lang="pt-br"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(dataBR)}</title>
+			const html = String.raw`<!doctype html><html lang="pt-br"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName || "Relatório")} ― ${escHtml(dataBR)}</title>
 <script>
       (function(){
         try {
@@ -841,7 +844,7 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 .mhead { display: flex; padding: 24px; background: var(--mhead-bg); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
 .mtitle { font-size: 22px; font-weight: 700; color: var(--text-main); letter-spacing: -0.02em; }
 .msub { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-.mbody { display: flex; flex-direction: column; gap: 5px; padding: 24px; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.mbody { display: flex; flex-direction: column; gap: 5px; padding: 12px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .mbody .kv { flex-shrink: 0; }
 .mbody .kvItens { flex: 1 1 auto; overflow: auto; min-height: 80px; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: flex-start; background: var(--bg-app); border: 1px solid var(--border); padding: 16px 20px; border-radius: var(--radius-md); transition: var(--transition-fast); }

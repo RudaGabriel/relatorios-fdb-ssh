@@ -8,6 +8,7 @@ chcp 65001 >nul 2>&1
 ::  node-firebird.bat
 ::  - Verifica / instala Node.js automaticamente
 ::  - Instala o modulo node-firebird via npm
+::  - Pula instalacao se modulo ja estiver presente
 ::  - Tratamento robusto de erros e atualizacao de PATH
 :: =========================================================
 
@@ -33,10 +34,28 @@ echo  [OK] NPM: %NPM_VER%
 echo.
 
 :: =========================================================
+:: VERIFICA SE JA ESTA INSTALADO
+:: =========================================================
+node -e "require('node-firebird')" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo  [OK] Modulo node-firebird ja esta instalado.
+    echo.
+    pause
+    exit /b 0
+)
+
+:: =========================================================
 :: INSTALAR MODULO node-firebird
 :: =========================================================
 echo  [INFO] Instalando modulo node-firebird...
+echo.
 
+:: Tenta com cache local primeiro (mais rapido, sem internet)
+call npm install node-firebird --prefer-offline >nul 2>&1
+if %errorlevel% equ 0 goto :validar_modulo
+
+:: Fallback: instalacao completa com saida visivel para diagnostico
+echo  [INFO] Cache local indisponivel. Baixando da internet...
 call npm install node-firebird
 if %errorlevel% neq 0 (
     echo.
@@ -46,22 +65,34 @@ if %errorlevel% neq 0 (
     echo   - Proxy corporativo nao configurado
     echo   - Permissao de escrita negada em node_modules
     echo.
-    echo  Solucao manual:
-    echo   npm install node-firebird
+    echo  Solucoes:
+    echo   1. Execute este arquivo como Administrador
+    echo   2. Execute manualmente: npm install node-firebird
+    echo   3. Configure o proxy: npm config set proxy http://seu-proxy:porta
+    echo.
+    pause
+    exit /b 1
+)
+
+:validar_modulo
+node -e "require('node-firebird')" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo  [ERRO] node-firebird instalado mas nao reconhecido nesta sessao.
+    echo  Feche este terminal, abra um novo e tente novamente.
     echo.
     pause
     exit /b 1
 )
 
 echo.
-echo  [OK] node-firebird instalado com sucesso.
+echo  [OK] node-firebird instalado e validado com sucesso.
 echo.
 pause
 exit /b 0
 
 :: -------------------------------------------------------
 :: SUB-ROTINA: VERIFICAR E INSTALAR NODE.JS
-:: Reutiliza logica padronizada dos demais scripts .bat
 :: -------------------------------------------------------
 :verificar_node
 where node >nul 2>&1
@@ -77,7 +108,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -NonInteractive ^
 if %errorlevel% neq 0 (
     echo.
     echo  [ERRO] Instalacao do Node.js falhou.
-    echo  [INFO] Log de diagnostico: %TEMP%\node-install-log.txt
     echo  [INFO] Alternativa manual: https://nodejs.org/en/download
     echo.
     pause

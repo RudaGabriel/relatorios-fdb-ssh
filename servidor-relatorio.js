@@ -12,6 +12,9 @@
  * - /api/db-status: status da conexao
  * - pollInterval lido do config.json (padrao 1000 ms, sem minimo obrigatorio)
  * - extrairStatusDoHtml le <script id="dados"> para valores corretos
+ * - /selecionar-fdb: picker manual do SMALL.FDB quando nao encontrado automaticamente
+ * - /api/abrir-picker-fdb: abre dialogo nativo Windows para selecionar .fdb
+ * - /api/salvar-fdb: salva caminho FDB no config.json e reinicia conexao
  */
 
 // ===== Logger Global seguro — flush debounced 300ms =====
@@ -37,22 +40,18 @@ function logToFile(...args) {
         const d = new Date();
         const ts = "[" + d.toISOString().replace("T"," ").slice(0,19) + "]";
         _logBuffer.push(ts + " " + msg);
-        // Mantém somente as últimas MAX_LOG_LINES — ciclo circular
         if (_logBuffer.length > MAX_LOG_LINES) _logBuffer = _logBuffer.slice(-MAX_LOG_LINES);
-        // Flush debounced para não bloquear a thread em cada log
         clearTimeout(_logFlushTimer);
         _logFlushTimer = setTimeout(_flushLog, 300);
     } catch(e) {}
 }
 
-// Guardar originais para evitar loop
 const origLog = console.log, origError = console.error, origWarn = console.warn, origInfo = console.info;
 console.log = function(...args) { logToFile(...args); origLog.apply(console, args); };
 console.error = function(...args) { logToFile('ERROR:', ...args); origError.apply(console, args); };
 console.warn = function(...args) { logToFile('WARN:', ...args); origWarn.apply(console, args); };
 console.info = function(...args) { logToFile(...args); origInfo.apply(console, args); };
 
-// Captura erros globais — flush imediato pois pode ser fatal
 process.on("uncaughtException", function (err) {
     logToFile("[UNCAUGHT EXCEPTION]", err && (err.stack || err));
     origError("[UNCAUGHT EXCEPTION]", err && (err.stack || err));
@@ -63,7 +62,6 @@ process.on("unhandledRejection", function (reason) {
     origError("[UNHANDLED REJECTION]", reason && (reason.stack || reason));
     clearTimeout(_logFlushTimer); _flushLog();
 });
-// Flush ao encerrar normalmente
 process.on("exit", function() { clearTimeout(_logFlushTimer); _flushLog(); });
 
 var http     = require("http");
@@ -112,18 +110,16 @@ var FAVICON= path.join(__dirname,"favicon.png");
 var CONFIG = path.join(__dirname,"config.json");
 var TMP    = path.join(os.tmpdir(),"relatorio_srv.html");
 var NO_BROWSER = args.includes("--no-browser");
-var TMP_DIR    = os.tmpdir(); // base para arquivos temporários por período
+var TMP_DIR    = os.tmpdir();
 
 // ---------------------------------------------------------------------------
 // Config persistente
 // ---------------------------------------------------------------------------
 var loadConfig=function(){
     try{
-        // Remove BOM (0xEF 0xBB 0xBF) que o PowerShell com -Encoding UTF8 insere
-        // e que causa JSON.parse falhar, retornando {} e sobrescrevendo o config
         var raw=fs.readFileSync(CONFIG,"utf8")
-            .replace(/^\uFEFF/,"")           // Remove BOM
-            .replace(/:\s*0+(\d+)/g,": $1"); // 0800→800 (zero-leading invalido em JSON)
+            .replace(/^\uFEFF/,"")
+            .replace(/:\s*0+(\d+)/g,": $1");
         return JSON.parse(raw);
     }catch(e){return {};}
 };
@@ -149,8 +145,6 @@ var saveConfig=function(obj){
     }catch(e){logToFile("WARN saveConfig: "+e.message);}
 };
 
-// updateConfigKey — atualiza APENAS uma chave no config sem tocar nas demais.
-// Previne o bug onde loadConfig() falha retornando {} e apaga proibidos + outras chaves.
 var updateConfigKey=function(key,value){
     try{
         var rawAtual="";
@@ -173,18 +167,15 @@ var appCfg        = loadConfig();
 var APP_NAME      = (appCfg.appName&&appCfg.appName.trim()) ? appCfg.appName.trim() : "Relatorios";
 var POLL_INTERVAL = (appCfg.pollInterval && parseInt(appCfg.pollInterval,10)>0) ? parseInt(appCfg.pollInterval,10) : 1000;
 
-// maxLogLines configurável — afeta o logger global imediatamente após a leitura
 if (appCfg.maxLogLines && parseInt(appCfg.maxLogLines,10) >= 100) {
     MAX_LOG_LINES = parseInt(appCfg.maxLogLines,10);
 }
-// Trunca buffer existente ao novo limite
 if (_logBuffer.length > MAX_LOG_LINES) _logBuffer = _logBuffer.slice(-MAX_LOG_LINES);
 
 if (appCfg.porta&&appCfg.porta>0) PORT = parseInt(appCfg.porta,10);
 
 // ---------------------------------------------------------------------------
 // Auto-deteccao do caminho FDB
-// Prioridade: 1) arquivo local existe → 127.0.0.1  2) caminho de rede (fbHost)
 // ---------------------------------------------------------------------------
 var _fdbCandidatos=function(){
     var pf86=process.env["ProgramFiles(x86)"]||"C:\\Program Files (x86)";
@@ -200,7 +191,6 @@ var _fdbCandidatos=function(){
     ];
 };
 
-// Retorna o primeiro caminho local onde o FDB EXISTE de fato (não apenas fallback)
 var detectFdbLocal=function(){
     var cands=_fdbCandidatos();
     for(var i=0;i<cands.length;i++){
@@ -211,10 +201,9 @@ var detectFdbLocal=function(){
             }
         }catch(e){}
     }
-    return null; // não existe localmente
+    return null;
 };
 
-// Retorna o caminho padrão (fallback para rede) mesmo sem o arquivo existir
 var detectFdbPath=function(){
     var local=detectFdbLocal();
     if(local)return local;
@@ -228,15 +217,12 @@ var parseFdb=function(fdb){
     return{host:"127.0.0.1",dbPath:fdb};
 };
 
-// detectLocalIP — retorna o primeiro IPv4 não-loopback da máquina (ex: 192.168.1.100).
-// Usado para bind e exibição no log quando maquinaIP não está no config.
 var detectLocalIP=function(){
     var ifaces=os.networkInterfaces();
     for(var n in ifaces){
         var list=ifaces[n];
         for(var i=0;i<list.length;i++){
             var a=list[i];
-            // Node 18+ retorna family como número (4) em vez de string ("IPv4")
             var isV4=(a.family==="IPv4"||a.family===4);
             if(isV4&&!a.internal&&a.address!=="127.0.0.1"){
                 return a.address;
@@ -249,10 +235,6 @@ var detectLocalIP=function(){
 var cfg      = loadConfig();
 var fdbArg   = pegar("--fdb");
 
-// ── Decisão local vs rede ────────────────────────────────────────────────────
-// 1) CLI --fdb: usa exatamente o que foi passado (host:caminho ou só caminho)
-// 2) FDB existe localmente: host = 127.0.0.1, sem depender de rede
-// 3) FDB não existe localmente: usa fbHost do config (servidor Firebird remoto)
 var FDB_PATH, FDB_HOST;
 if (fdbArg) {
     FDB_PATH = parseFdb(fdbArg).dbPath;
@@ -261,26 +243,28 @@ if (fdbArg) {
 } else {
     var _fdbLocal = detectFdbLocal();
     if (_fdbLocal) {
-        // Arquivo existe nesta máquina — Firebird local, sem depender da rede
         FDB_PATH = _fdbLocal;
         FDB_HOST = "127.0.0.1";
         logTs("FDB local detectado → conectando em 127.0.0.1");
     } else {
-        // Não existe localmente — usa host de rede configurado
-        FDB_PATH = detectFdbPath(); // retorna caminho padrão como fallback
+        FDB_PATH = detectFdbPath();
         FDB_HOST = (cfg.fbHost && String(cfg.fbHost).trim()) ? String(cfg.fbHost).trim() : "127.0.0.1";
         logTs("FDB não encontrado localmente → tentando host de rede: "+FDB_HOST);
     }
 }
 var FDB = FDB_HOST+":"+FDB_PATH;
 
-// maquinaIP: IP desta máquina para acesso externo.
-// Prioridade: config.json > auto-detecção de interface de rede.
-// Quando disponível (qualquer fonte), servidor escuta em 0.0.0.0.
 var _maquinaIPCfg = (cfg.maquinaIP && String(cfg.maquinaIP).trim()) ? String(cfg.maquinaIP).trim() : null;
 var _maquinaIP    = _maquinaIPCfg || detectLocalIP();
-// bind em 0.0.0.0 sempre que tiver IP de rede disponível — permite acesso de outras máquinas
 var BIND_ADDR     = _maquinaIP ? "0.0.0.0" : "127.0.0.1";
+
+// Auto-salva o IP detectado no config.json para que o tray (e outros processos)
+// possam ler o IP correto sem depender de deteccao propria.
+// Só grava se nao estava configurado manualmente — nunca sobrescreve valor do usuario.
+if (!_maquinaIPCfg && _maquinaIP) {
+    try { updateConfigKey("maquinaIP", _maquinaIP); } catch(e) {}
+    logTs("maquinaIP auto-detectado e salvo no config: " + _maquinaIP);
+}
 
 // ---------------------------------------------------------------------------
 // Estado global
@@ -288,6 +272,12 @@ var BIND_ADDR     = _maquinaIP ? "0.0.0.0" : "127.0.0.1";
 var cache       = Object.create(null);
 var statusAtual = {qt:-1,total:-1,ts:0};
 var dbStatus    = {ok:false,ip:FDB_HOST,erro:null,scanCompleto:false,scanning:false};
+
+// ---------------------------------------------------------------------------
+// [NOVO] Flag de aguardo de seleção manual do FDB
+// Ativado quando todas as tentativas automáticas falham.
+// ---------------------------------------------------------------------------
+var _aguardandoFdbManual = false;
 
 // ---------------------------------------------------------------------------
 // SSE — clientes conectados
@@ -301,7 +291,6 @@ var broadcastSSE = function(data) {
     sseClients.forEach(function(c){
         try {
             c.res.write(msg);
-            // Força flush do socket para garantir entrega imediata
             try { if (c.res.socket) { c.res.socket.uncork && c.res.socket.uncork(); } } catch(_f) {}
             vivos.push(c);
         } catch(e) {}
@@ -312,15 +301,13 @@ var broadcastSSE = function(data) {
 };
 
 // ---------------------------------------------------------------------------
-// Aguarda FDB ficar acessível — vital no boot quando rede ainda está mapeando
-// Ordem: 1) local (127.0.0.1) se arquivo existe  2) host configurado  3) scan de rede
+// Aguarda FDB ficar acessível
 // ---------------------------------------------------------------------------
 var aguardarFDB = function(onPronto) {
-    var MAX_RETRY = 120;  // 120 × 15s = 30 minutos max
+    var MAX_RETRY = 120;
     var RETRY_MS  = 15000;
     var n = 0;
 
-    // Etapa final: tenta o host atual em loop, depois scan de rede
     var tentarHostAtual = function() {
         n++;
         logTs("Verificando banco [" + n + "/" + MAX_RETRY + "] em " + FDB_HOST + "...");
@@ -342,12 +329,9 @@ var aguardarFDB = function(onPronto) {
         });
     };
 
-    // Passo 1: se o arquivo existe localmente e ainda não estamos em 127.0.0.1,
-    // tenta local antes de qualquer coisa — evita depender da rede desnecessariamente.
     var _tryLocal = function(onLocalDone) {
         var _local = detectFdbLocal();
         if (!_local || FDB_HOST === "127.0.0.1") {
-            // Já estamos em local ou não há arquivo local — pula
             onLocalDone(false);
             return;
         }
@@ -368,11 +352,9 @@ var aguardarFDB = function(onPronto) {
         });
     };
 
-    // Fluxo principal
     _tryLocal(function(localOk) {
         if (localOk) { onPronto(true); return; }
 
-        // Passo 2: tenta o host configurado imediatamente
         testarFdb(FDB_HOST, FDB_PATH, function(okImediato, erroImediato) {
             if (okImediato) {
                 logTs("Banco OK imediatamente em " + FDB_HOST + ".");
@@ -380,7 +362,6 @@ var aguardarFDB = function(onPronto) {
                 updateConfigKey("fbHost", FDB_HOST);
                 onPronto(true);
             } else {
-                // Passo 3: scan de rede antes de entrar em loop de retry
                 logTs("Banco não respondeu em " + FDB_HOST + " (" + (erroImediato||"timeout") + "). Tentando scan de rede...");
                 descobrirIPFirebird(function(scanOk) {
                     if (scanOk) {
@@ -494,12 +475,11 @@ var descobrirIPFirebird=function(onPronto){
 };
 
 // ---------------------------------------------------------------------------
-// Extrai qt/total — usa <script id="dados"> do gerar-relatorio-html.js
+// Extrai qt/total
 // ---------------------------------------------------------------------------
 var extrairStatusDoHtml = function(html) {
     var qt = 0, tot = 0;
 
-    // Fonte primaria: bloco JSON embutido
     var mDados = html.match(/<script[^>]+id=["']dados["'][^>]*>([\s\S]*?)<\/script>/i);
     if (mDados) {
         try {
@@ -519,7 +499,6 @@ var extrairStatusDoHtml = function(html) {
         } catch(e) {}
     }
 
-    // Fallback: array "vendas" inline no HTML
     var mVendas = html.match(/"vendas"\s*:\s*(\[[\s\S]{0,400000}?\])\s*[,}]/);
     if (mVendas) {
         try {
@@ -548,9 +527,6 @@ var gerarEmBackground=function(inicio,fim,chave){
     var label=(inicio===fim)?isoParaBR(inicio):(isoParaBR(inicio)+" a "+isoParaBR(fim));
     logTs("Gerando "+label+"...");
 
-    // Arquivo temporário exclusivo por chave — evita race condition quando dois
-    // períodos são gerados simultaneamente (ex: hoje + período histórico).
-    // A chave "2026-04-17|2026-04-17" vira "relatorio_srv_2026-04-17_2026-04-17.html"
     var _tmpSafe = String(chave).replace(/[^a-zA-Z0-9_\-]/g,"_").slice(0,80);
     var _tmpFile = path.join(TMP_DIR, "relatorio_srv_" + _tmpSafe + ".html");
 
@@ -576,16 +552,13 @@ var gerarEmBackground=function(inicio,fim,chave){
         var html;
         try{html=fs.readFileSync(_tmpFile,"utf8");}
         catch(e){cache[chave]={html:null,gerando:false,erro:"Erro lendo HTML: "+e.message};return;}
-        // Remove o arquivo temporário imediatamente após a leitura — libera disco
         try{fs.unlinkSync(_tmpFile);}catch(_){}
-
 
         var st   = extrairStatusDoHtml(html);
         var qt   = st.qt, tot = st.tot;
         var ehHje= (inicio===fim && inicio===hoje());
         var pollMs = POLL_INTERVAL;
 
-        // Notifica abas via SSE se dados do dia mudaram
         var _statusChanged = false;
         if (ehHje && statusAtual.qt >= 0) {
             if (qt !== statusAtual.qt || Math.abs(tot - statusAtual.total) > 0.5) {
@@ -595,13 +568,9 @@ var gerarEmBackground=function(inicio,fim,chave){
             }
         }
 
-        // Auto-refresh no HTML: SSE (primario) + polling /api/status (fallback)
-        // IMPORTANTE: usar "</" + "script>" e NAO "<\\/script>" — a barra invertida impede o parser
-        // HTML de reconhecer o fechamento, causando SyntaxError no motor JS e impedindo toda execucao.
-        var SC = "</" + "script>";  // token seguro para fechar <script> dentro de JS strings
+        var SC = "</" + "script>";
         var arScript =
             "<script>(function(){" +
-            // Captura erros JS e envia ao servidor para facilitar depuracao
             "window.onerror=function(msg,src,line,col,err){" +
             "try{fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'}," +
             "body:JSON.stringify({msg:String(msg),src:String(src||''),line:line,col:col,stack:err&&err.stack?String(err.stack):''})});}catch(_){}" +
@@ -610,12 +579,10 @@ var gerarEmBackground=function(inicio,fim,chave){
             "try{var r=ev&&ev.reason;fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'}," +
             "body:JSON.stringify({msg:'UnhandledRejection: '+String(r&&r.message||r),stack:r&&r.stack?String(r.stack):''})});}catch(_){}" +
             "};" +
-            // Aplica tema salvo (localStorage ou cookie)
             "try{" +
             "var t=localStorage.getItem('fdb_theme')||(document.cookie.match(/fdb_theme=([^;]+)/)||[])[1]||'ultra-dark';" +
             "document.documentElement.setAttribute('data-theme',t);" +
             "}catch(e){};" +
-            // SSE + polling para relatorio de hoje
             (ehHje ? (
             "var _q="+qt+",_t="+(Math.round(tot*100)/100)+";" +
             "var _es=null,_connTry=0;" +
@@ -648,8 +615,6 @@ var gerarEmBackground=function(inicio,fim,chave){
             ) : "") +
             "})();"+SC;
 
-        // Injeta SERVER_MODE antes de </head> — script ISOLADO, não toca nos scripts existentes do relatório
-        // Isso evita o bug "Unexpected token '<'" causado por replace("<script>") pegar o script errado
         var serverModeSnip =
             "<script>" +
             "window.__SERVER_MODE__=true;" +
@@ -657,22 +622,18 @@ var gerarEmBackground=function(inicio,fim,chave){
             "<\/script>";
 
         try {
-            // Ponto de injeção seguro: antes de </head>  (tag obrigatória no HTML5)
             var injTarget = html.indexOf("</head>");
             if (injTarget >= 0) {
                 html = html.slice(0, injTarget) + serverModeSnip + html.slice(injTarget);
             } else {
-                // Fallback raro: sem </head> explícito — injeta antes de <body>
                 var bTarget = html.indexOf("<body");
                 if (bTarget >= 0) {
                     html = html.slice(0, bTarget) + serverModeSnip + html.slice(bTarget);
                 } else {
-                    // Último recurso
                     html = serverModeSnip + html;
                 }
                 logTs("AVISO: </head> nao encontrado no HTML — SERVER_MODE injetado como fallback.");
             }
-            // Script SSE + polling no final do body
             html = html.replace("</body></html>", arScript + "</body></html>");
             if (html.indexOf(arScript) < 0) {
                 logTs("AVISO: </body></html> nao encontrado — arScript nao foi injetado.");
@@ -685,7 +646,6 @@ var gerarEmBackground=function(inicio,fim,chave){
         logTs("Pronto: "+label+" ("+Math.round(html.length/1024)+" KB, "+qt+" vendas, R$"+tot.toFixed(2)+") | _statusChanged="+_statusChanged+" | sseClients="+nClientesAoGerar);
         cache[chave]={html:html,gerando:false,erro:null,qt:qt,tot:tot};
         if(ehHje) statusAtual={qt:qt,total:tot,ts:Date.now()};
-        // Notifica SSE somente DEPOIS de cache atualizado para evitar reload antes do HTML estar pronto
         if(_statusChanged) {
             logTs("Notificando SSE... clientes ativos: "+sseClients.length);
             if (sseClients.length > 0) {
@@ -723,9 +683,7 @@ var pollStatus=function(){
 "AND COALESCE(n.modelo,65) IN (99,65) "+
 "AND COALESCE(n.cancelado,'N') NOT IN ('S','T') "+
 "AND n.total > 0 "+
-
 "UNION ALL "+
-
 "SELECT COUNT(*) AS QT, COALESCE(SUM(p.valor),0) AS TOT "+
 "FROM pagament p "+
 "WHERE p.data >= ? AND p.data < ? + 1 "+
@@ -748,7 +706,7 @@ var pollStatus=function(){
 };
 
 // ---------------------------------------------------------------------------
-// Regeneracao agendada (universal, usa pollInterval)
+// Regeneracao agendada
 // ---------------------------------------------------------------------------
 var agendarRegen = function() {
     setTimeout(function() {
@@ -768,9 +726,8 @@ var agendarRegen = function() {
 var htmlFavicon="<link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\">";
 
 var paginaLoading=function(titulo,sub,chavePoll,urlDest){
-    // IMPORTANTE: usar JSON.stringify para embutir a URL em JS — evita que & vire &amp; e quebre o redirecionamento
     var p="/pronto?k="+encodeURIComponent(chavePoll);
-    var dJs=JSON.stringify(urlDest); // ex: "/periodo?i=2026-04-01&f=2026-04-01"  (& não é escapado para &amp;)
+    var dJs=JSON.stringify(urlDest);
     var SC2="</"+"script>";
     return "<!doctype html><html lang=\"pt-br\"><head><meta charset=\"utf-8\">"+htmlFavicon+
         "<title>Gerando...</title>"+
@@ -797,7 +754,9 @@ var paginaErro=function(titulo,msg,href){
         "<title>Erro</title><style>body{background:#000;color:#ededed;font-family:monospace;padding:40px;max-width:700px;margin:0 auto}a{color:#0ea5e9}</style></head><body>"+
         "<h2 style=\"color:#f87171\">"+escH(titulo)+"</h2>"+
         "<pre style=\"color:#f87171;white-space:pre-wrap\">"+escH(msg)+"</pre>"+
-        "<p><a href=\""+escH(href)+"\">Tentar novamente</a></p></body></html>";
+        "<p><a href=\""+escH(href)+"\">Tentar novamente</a></p>"+
+        "<p><a href=\"/selecionar-fdb\">Selecionar banco manualmente (SMALL.FDB)</a></p>"+
+        "</body></html>";
 };
 
 var paginaFormPeriodo=function(dHoje){
@@ -819,6 +778,246 @@ var paginaFormPeriodo=function(dHoje){
         "window.location.href='/periodo?i='+encodeURIComponent(i)+'&f='+encodeURIComponent(f);}"+
         "['ini','fim'].forEach(function(id){document.getElementById(id).addEventListener('keydown',function(e){if(e.key==='Enter')gerar();});});"+
         "</script></body></html>";
+};
+
+// ---------------------------------------------------------------------------
+// [NOVO] paginaEscolherFdb — exibida quando FDB não é encontrado automaticamente.
+// Permite ao usuario informar o caminho do SMALL.FDB via:
+//   1) Dialogo nativo Windows (OpenFileDialog via PowerShell — botao Procurar)
+//   2) Campo de texto (colar o caminho manualmente)
+// ---------------------------------------------------------------------------
+var paginaEscolherFdb = function(erroAnterior) {
+    var SC4 = "</" + "script>";
+    var msgErro = erroAnterior
+        ? "<div id=\"err\" style=\"display:block;color:#f87171;font-size:13px;margin-bottom:16px;padding:10px 14px;background:rgba(248,113,113,.1);border-radius:8px\">"+escH(erroAnterior)+"</div>"
+        : "<div id=\"err\" style=\"display:none\"></div>";
+
+    return "<!doctype html><html lang=\"pt-br\"><head><meta charset=\"utf-8\">" + htmlFavicon +
+        "<title>Selecionar Banco de Dados</title>" +
+        "<script>(function(){try{var t=localStorage.getItem('fdb_theme')||(document.cookie.match(/fdb_theme=([^;]+)/)||[])[1]||'ultra-dark';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();" + SC4 +
+        "<style>" +
+        "*{box-sizing:border-box}" +
+        "body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:Inter,Arial,sans-serif;color:#ededed;padding:16px}" +
+        ".box{background:#0a0a0a;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:36px 40px;width:100%;max-width:520px}" +
+        ".ico{font-size:40px;margin-bottom:16px;display:block;text-align:center}" +
+        "h2{margin:0 0 6px;font-size:20px;font-weight:700;text-align:center}" +
+        ".sub{color:#71717a;font-size:13px;margin-bottom:24px;text-align:center;line-height:1.5}" +
+        "label{display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#a1a1aa;margin-bottom:7px}" +
+        ".row-inp{display:flex;gap:8px;margin-bottom:8px}" +
+        "input[type=text]{flex:1;background:#000;color:#ededed;border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:10px 14px;font-size:13px;font-family:monospace;outline:none;min-width:0}" +
+        "input[type=text]:focus{border-color:#0ea5e9}" +
+        ".btn{padding:10px 18px;background:#0ea5e9;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}" +
+        ".btn:hover{background:#0284c7}.btn:disabled{opacity:.5;cursor:not-allowed}" +
+        ".btn-sec{background:rgba(255,255,255,.08);color:#ededed}" +
+        ".btn-sec:hover{background:rgba(255,255,255,.14)}" +
+        ".btn-full{width:100%;padding:14px;font-size:15px;margin-top:4px}" +
+        ".hint{font-size:12px;color:#52525b;margin-bottom:20px;line-height:1.5}" +
+        ".sep{border:none;border-top:1px solid rgba(255,255,255,.07);margin:20px 0}" +
+        ".cands{margin:0;padding:0;list-style:none}" +
+        ".cands li{font-size:12px;font-family:monospace;color:#52525b;padding:3px 0;cursor:pointer;transition:color .15s}" +
+        ".cands li:hover{color:#0ea5e9}" +
+        "#spin{display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,.15);border-top-color:#0ea5e9;border-radius:50%;animation:s .7s linear infinite;margin:0 auto}" +
+        "@keyframes s{to{transform:rotate(360deg)}}" +
+        "</style></head><body>" +
+        "<div class=\"box\">" +
+        "<span class=\"ico\">🗄️</span>" +
+        "<h2>Banco de dados não encontrado</h2>" +
+        "<p class=\"sub\">O arquivo <strong>SMALL.FDB</strong> não foi localizado automaticamente.<br>Informe o caminho correto para continuar.</p>" +
+        msgErro +
+        "<label>Caminho do arquivo SMALL.FDB</label>" +
+        "<div class=\"row-inp\">" +
+        "<input type=\"text\" id=\"fdbPath\" placeholder=\"Ex: C:\\Program Files (x86)\\SmallSoft\\Small Commerce\\SMALL.FDB\">" +
+        "<button class=\"btn btn-sec\" id=\"btnPicker\" title=\"Abrir seletor de arquivos do Windows\">📂 Procurar</button>" +
+        "</div>" +
+        "<p class=\"hint\">Cole o caminho completo ou use o botão <strong>Procurar</strong> para abrir o explorador de arquivos do Windows.</p>" +
+        "<button class=\"btn btn-full\" id=\"btnSalvar\" onclick=\"salvar()\">Conectar ao Banco</button>" +
+        "<div id=\"spin\" style=\"margin-top:16px\"></div>" +
+        "<hr class=\"sep\">" +
+        "<p style=\"font-size:12px;color:#52525b;margin:0 0 8px\">Locais comuns:</p>" +
+        "<ul class=\"cands\" id=\"cands\"></ul>" +
+        "</div>" +
+        "<script>" +
+        "(function(){" +
+        // Candidatos comuns — clique para preencher o campo
+        "var cands=[" +
+        "'C:\\\\Program Files (x86)\\\\SmallSoft\\\\Small Commerce\\\\SMALL.FDB'," +
+        "'C:\\\\Program Files\\\\SmallSoft\\\\Small Commerce\\\\SMALL.FDB'," +
+        "'C:\\\\ProgramData\\\\SmallSoft\\\\Small Commerce\\\\SMALL.FDB'," +
+        "'C:\\\\SmallSoft\\\\Small Commerce\\\\SMALL.FDB'," +
+        "'C:\\\\Dados\\\\SMALL.FDB'," +
+        "'C:\\\\SmallCommerce\\\\SMALL.FDB'" +
+        "];" +
+        "var ul=document.getElementById('cands');" +
+        "cands.forEach(function(c){" +
+        "var li=document.createElement('li');" +
+        "li.textContent=c;" +
+        "li.title='Clique para usar este caminho';" +
+        "li.addEventListener('click',function(){document.getElementById('fdbPath').value=c;});" +
+        "ul.appendChild(li);" +
+        "});" +
+        // Botão Procurar — chama /api/abrir-picker-fdb que spawna OpenFileDialog nativo
+        "document.getElementById('btnPicker').addEventListener('click',function(){" +
+        "var btn=this;" +
+        "btn.disabled=true;btn.textContent='Aguarde...';" +
+        "document.getElementById('spin').style.display='block';" +
+        "fetch('/api/abrir-picker-fdb',{cache:'no-store'})" +
+        ".then(function(r){return r.json();})" +
+        ".then(function(d){" +
+        "btn.disabled=false;btn.textContent='📂 Procurar';" +
+        "document.getElementById('spin').style.display='none';" +
+        "if(d.ok&&d.caminho){document.getElementById('fdbPath').value=d.caminho;}" +
+        "else if(d.cancelado){/* usuario cancelou — sem acao */}" +
+        "else{mostrarErro(d.erro||'Não foi possível abrir o seletor de arquivos.');}}" +
+        ")" +
+        ".catch(function(e){" +
+        "btn.disabled=false;btn.textContent='📂 Procurar';" +
+        "document.getElementById('spin').style.display='none';" +
+        "mostrarErro('Erro ao abrir seletor: '+e.message);" +
+        "});" +
+        "});" +
+        // Tecla Enter no campo dispara salvar
+        "document.getElementById('fdbPath').addEventListener('keydown',function(e){" +
+        "if(e.key==='Enter')salvar();" +
+        "});" +
+        "})();" +
+        "function salvar(){" +
+        "var p=document.getElementById('fdbPath').value.trim();" +
+        "var btn=document.getElementById('btnSalvar');" +
+        "if(!p){mostrarErro('Informe o caminho do arquivo SMALL.FDB.');return;}" +
+        "if(!/\\.fdb$/i.test(p)){mostrarErro('O arquivo deve ter extensão .fdb');return;}" +
+        "btn.disabled=true;btn.textContent='Conectando...';" +
+        "document.getElementById('spin').style.display='block';" +
+        "document.getElementById('err').style.display='none';" +
+        "fetch('/api/salvar-fdb',{method:'POST'," +
+        "headers:{'Content-Type':'application/json'}," +
+        "body:JSON.stringify({caminho:p})})" +
+        ".then(function(r){return r.json();})" +
+        ".then(function(d){" +
+        "if(d.ok){window.location.replace('/');}" +
+        "else{" +
+        "btn.disabled=false;btn.textContent='Conectar ao Banco';" +
+        "document.getElementById('spin').style.display='none';" +
+        "mostrarErro(d.erro||'Não foi possível conectar ao banco.');}" +
+        "})" +
+        ".catch(function(e){" +
+        "btn.disabled=false;btn.textContent='Conectar ao Banco';" +
+        "document.getElementById('spin').style.display='none';" +
+        "mostrarErro('Erro de rede: '+e.message);" +
+        "});" +
+        "}" +
+        "function mostrarErro(t){" +
+        "var e=document.getElementById('err');" +
+        "e.textContent=t;e.style.display='block';" +
+        "window.scrollTo({top:0,behavior:'smooth'});" +
+        "}" +
+        SC4 +
+        "</body></html>";
+};
+
+// ---------------------------------------------------------------------------
+// [NOVO] Abre dialogo nativo Windows para selecionar arquivo .fdb
+// Usa PowerShell + System.Windows.Forms.OpenFileDialog
+// Retorna { ok, caminho } ou { ok:false, erro } ou { cancelado:true }
+// ---------------------------------------------------------------------------
+var abrirPickerFdbWindows = function(cb) {
+    // Script PowerShell inline — monta e executa o diálogo de arquivo
+    var ps = [
+        "Add-Type -AssemblyName System.Windows.Forms;",
+        "$d = New-Object System.Windows.Forms.OpenFileDialog;",
+        "$d.Title  = 'Selecionar banco Firebird (SMALL.FDB)';",
+        "$d.Filter = 'Banco Firebird (*.fdb)|*.fdb|Todos os arquivos (*.*)|*.*';",
+        "$d.InitialDirectory = 'C:\\';",
+        "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.FileName } else { Write-Output '__CANCELADO__' }"
+    ].join(" ");
+
+    var resultado = "";
+    var proc = spawn("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command", ps
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+
+    proc.stdout.on("data", function(d) { resultado += d.toString(); });
+
+    proc.on("error", function(e) {
+        cb({ ok: false, erro: "PowerShell não disponível: " + e.message });
+    });
+
+    proc.on("close", function(code) {
+        var caminho = resultado.trim().replace(/\r?\n.*$/s, "").trim();
+        if (!caminho || caminho === "__CANCELADO__") {
+            cb({ ok: false, cancelado: true });
+        } else {
+            cb({ ok: true, caminho: caminho });
+        }
+    });
+};
+
+// ---------------------------------------------------------------------------
+// [NOVO] Aplica novo caminho FDB em memória e reinicia conexão com o banco.
+// Salva fdbPath e fbHost no config.json para persistir entre reinicializações.
+// ---------------------------------------------------------------------------
+var aplicarNovoFdb = function(caminhoBruto, cb) {
+    // Aceita formatos: "C:\...\SMALL.FDB" ou "192.168.1.10:C:\...\SMALL.FDB"
+    var parsed = parseFdb(caminhoBruto);
+    var novoHost = parsed.host;
+    var novoPath = parsed.dbPath;
+
+    // Validação: arquivo deve existir localmente se host for 127.0.0.1
+    if (novoHost === "127.0.0.1") {
+        try {
+            if (!fs.existsSync(novoPath)) {
+                cb({ ok: false, erro: "Arquivo não encontrado: " + novoPath });
+                return;
+            }
+        } catch(e) {
+            cb({ ok: false, erro: "Erro ao verificar arquivo: " + e.message });
+            return;
+        }
+    }
+
+    logTs("[FDB Manual] Testando conexão em " + novoHost + ":" + novoPath + "...");
+
+    testarFdb(novoHost, novoPath, function(ok, erro) {
+        if (!ok) {
+            // Avisa mas permite salvar mesmo assim (banco pode estar offline temporariamente)
+            logTs("[FDB Manual] Conexão de teste falhou (" + (erro||"timeout") + ") — salvando mesmo assim.");
+        }
+
+        // Atualiza vars globais
+        FDB_PATH = novoPath;
+        FDB_HOST = novoHost;
+        FDB      = novoHost + ":" + novoPath;
+
+        // Persiste no config.json
+        updateConfigKey("fdbPath", novoPath);
+        updateConfigKey("fbHost",  novoHost);
+
+        // Atualiza dbStatus
+        if (ok) {
+            dbStatus = { ok: true, ip: novoHost, erro: null, scanCompleto: true, scanning: false };
+        } else {
+            dbStatus = { ok: false, ip: novoHost, erro: erro || "Sem conexão no momento", scanCompleto: true, scanning: false };
+        }
+
+        // Desativa modo de seleção manual — servidor volta ao comportamento normal
+        _aguardandoFdbManual = false;
+
+        // Limpa cache e força regeneração imediata
+        cache = Object.create(null);
+        var dh = hoje();
+        gerarEmBackground(dh, dh, dh);
+
+        logTs("[FDB Manual] Banco configurado: " + FDB + " | Aguardando geração...");
+
+        // Inicia polling se Firebird disponível e conexão OK
+        if (Firebird && ok) {
+            setTimeout(function() {
+                pollStatus();
+                setInterval(pollStatus, POLL_INTERVAL);
+            }, 3000);
+        }
+
+        cb({ ok: true });
+    });
 };
 
 // ---------------------------------------------------------------------------
@@ -857,8 +1056,8 @@ var server=http.createServer(function(req,res){
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-cache,no-store"});
         res.end(JSON.stringify(statusAtual));return;
     }
-	
-	// /api/restart — Reinicia o servidor (GET ou POST)
+
+    // /api/restart
     if(rota==="/api/restart"){
         logTs("Reinicialização solicitada via API ("
             + (req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "local")
@@ -869,13 +1068,13 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-	// /api/db-status
+    // /api/db-status
     if(rota==="/api/db-status"){
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-cache,no-store"});
         res.end(JSON.stringify(dbStatus));return;
     }
 
-    // /api/proibidos GET — retorna lista do config.json
+    // /api/proibidos GET
     if(rota==="/api/proibidos" && req.method === "GET"){
         var cp = loadConfig();
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-cache,no-store"});
@@ -883,7 +1082,7 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /api/proibidos POST — Recebe e salva a nova lista no config.json
+    // /api/proibidos POST
     if(rota==="/api/proibidos" && req.method === "POST"){
         var body = "";
         req.on("data", function(chunk){ body+=chunk.toString(); });
@@ -892,12 +1091,9 @@ var server=http.createServer(function(req,res){
                 var payload = JSON.parse(body);
                 updateConfigKey("proibidos", payload);
                 appCfg.proibidos = payload;
-                
-                // Limpa o cache e força a regeração para atualizar as abas abertas de todos os clientes
                 cache = Object.create(null);
                 var dh = hoje();
                 gerarEmBackground(dh, dh, dh);
-
                 res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
                 res.end(JSON.stringify({ok:true}));
             } catch(e) {
@@ -907,7 +1103,7 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /api/config GET — retorna campos editáveis pelo modal
+    // /api/config GET
     if(rota==="/api/config" && req.method==="GET"){
         var cc = loadConfig();
         sendJson({
@@ -920,7 +1116,7 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /api/config POST — salva apenas os campos editáveis pelo modal
+    // /api/config POST
     if(rota==="/api/config" && req.method==="POST"){
         var cfgBody="";
         req.on("data",function(c){cfgBody+=c.toString();});
@@ -933,7 +1129,6 @@ var server=http.createServer(function(req,res){
                 if(rawCfg){ try{ obj=JSON.parse(rawCfg); }catch(e){ res.writeHead(500); res.end(JSON.stringify({ok:false,erro:"config.json corrompido"})); return; } }
                 if(typeof obj!=="object"||Array.isArray(obj)) obj={};
 
-                // Somente campos permitidos pelo modal
                 if(p.appName      !== undefined){ var n=String(p.appName||"").trim();   if(n) obj.appName=n; }
                 if(p.pollInterval !== undefined){ var pi=parseInt(p.pollInterval,10);   if(pi>=200) obj.pollInterval=pi; }
                 if(p.maxLogLines  !== undefined){ var ml=parseInt(p.maxLogLines,10);    if(ml>=100) obj.maxLogLines=ml; }
@@ -942,14 +1137,12 @@ var server=http.createServer(function(req,res){
 
                 fs.writeFileSync(CONFIG,JSON.stringify(obj,null,2),"utf8");
 
-                // Aplica em memória imediatamente (sem reiniciar)
                 var novosCfg=loadConfig();
                 APP_NAME=(novosCfg.appName&&novosCfg.appName.trim())?novosCfg.appName.trim():"Relatorios";
                 if(novosCfg.pollInterval&&parseInt(novosCfg.pollInterval,10)>0) POLL_INTERVAL=parseInt(novosCfg.pollInterval,10);
                 if(novosCfg.maxLogLines&&parseInt(novosCfg.maxLogLines,10)>=100){ MAX_LOG_LINES=parseInt(novosCfg.maxLogLines,10); if(_logBuffer.length>MAX_LOG_LINES)_logBuffer=_logBuffer.slice(-MAX_LOG_LINES); }
                 if(novosCfg.favicon&&novosCfg.favicon.trim()) FAVICON=novosCfg.favicon.trim();
 
-                // Invalida cache para refletir mudanças visuais
                 cache=Object.create(null);
                 var dh=hoje(); gerarEmBackground(dh,dh,dh);
 
@@ -965,7 +1158,7 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /config — página HTML de edição de configurações (tray → browser)
+    // /config — página HTML
     if(rota==="/config"){
         var SC3="</"+"script>";
         var cfgHtml=(function(){
@@ -1026,7 +1219,6 @@ var server=http.createServer(function(req,res){
             "(function(){"+
             "var pr="+_pr+";"+
             "document.getElementById('proibidos').value=Array.isArray(pr)?pr.join('\\n'):'';"+
-            // File picker
             "var _fi=document.getElementById('favFile');"+
             "document.getElementById('favPick').addEventListener('click',function(){_fi.click();});"+
             "_fi.addEventListener('change',function(){"+
@@ -1050,7 +1242,6 @@ var server=http.createServer(function(req,res){
             "if(!an){showMsg('O nome do sistema nao pode estar vazio.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(pi<200){showMsg('Intervalo minimo e 200 ms.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(ml<100){showMsg('Maximo de linhas minimo e 100.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
-            // Função que salva o config após (opcional) upload do favicon
             "var doSave=function(){"+
             "fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},"+
             "body:JSON.stringify({appName:an,pollInterval:pi,maxLogLines:ml,favicon:fv,proibidos:pr})})"+
@@ -1062,7 +1253,6 @@ var server=http.createServer(function(req,res){
             "})"+
             ".catch(function(e){showMsg('Erro de rede: '+e.message,'er');btn.disabled=false;btn.textContent='Salvar configuracoes';});"+
             "};"+
-            // Se há arquivo de favicon selecionado, faz upload primeiro
             "if(favFile){"+
             "var reader=new FileReader();"+
             "reader.onload=function(ev){"+
@@ -1086,7 +1276,7 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /api/log-error — recebe erros JS do browser e grava no relatorio.log
+    // /api/log-error
     if(rota==="/api/log-error" && req.method==="POST"){
         var errBody="";
         req.on("data",function(c){errBody+=c.toString();});
@@ -1100,9 +1290,61 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /api/sse-clients — quantas abas com SSE ativo
+    // /api/sse-clients
     if(rota==="/api/sse-clients"){
         sendJson({clients: sseClients.length});return;
+    }
+
+    // -----------------------------------------------------------------------
+    // [NOVO] /selecionar-fdb — página HTML de seleção manual do FDB
+    // Acessível sempre (mesmo quando dbStatus.ok=true) para reconfiguração.
+    // -----------------------------------------------------------------------
+    if(rota==="/selecionar-fdb"){
+        res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"});
+        res.end(paginaEscolherFdb());
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // [NOVO] /api/abrir-picker-fdb GET — abre OpenFileDialog nativo do Windows
+    // Responde: { ok:true, caminho:"C:\..." } | { ok:false, cancelado:true } | { ok:false, erro:"..." }
+    // -----------------------------------------------------------------------
+    if(rota==="/api/abrir-picker-fdb" && req.method==="GET"){
+        abrirPickerFdbWindows(function(resultado) {
+            res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
+            res.end(JSON.stringify(resultado));
+        });
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // [NOVO] /api/salvar-fdb POST — recebe { caminho } e aplica o novo FDB
+    // Valida existência do arquivo, testa conexão, persiste e limpa cache.
+    // Responde: { ok:true } | { ok:false, erro:"..." }
+    // -----------------------------------------------------------------------
+    if(rota==="/api/salvar-fdb" && req.method==="POST"){
+        var fdbBody="";
+        req.on("data",function(c){fdbBody+=c.toString();});
+        req.on("end",function(){
+            try{
+                var payload = JSON.parse(fdbBody);
+                var caminho = String(payload.caminho||"").trim();
+                if(!caminho){
+                    sendJson({ok:false, erro:"Caminho não informado."}); return;
+                }
+                if(!/\.fdb$/i.test(caminho)){
+                    sendJson({ok:false, erro:"O arquivo deve ter extensão .fdb"}); return;
+                }
+                logTs("[FDB Manual] Caminho recebido: "+caminho);
+                aplicarNovoFdb(caminho, function(r){
+                    sendJson(r);
+                });
+            }catch(e){
+                logTs("ERRO /api/salvar-fdb: "+e.message);
+                sendJson({ok:false, erro:e.message});
+            }
+        });
+        return;
     }
 
     // /api/events — SSE stream
@@ -1115,8 +1357,6 @@ var server=http.createServer(function(req,res){
             "X-Accel-Buffering":"no",
             "X-Content-Type-Options":"nosniff"
         });
-        // flushHeaders garante que os headers chegam ao browser imediatamente
-        // sem isso o browser pode ficar aguardando dados antes de confirmar a conexao
         res.flushHeaders();
         res.write(": connected\n\n");
         res.write("retry: 5000\n");
@@ -1139,19 +1379,27 @@ var server=http.createServer(function(req,res){
         return;
     }
 
-    // /api/navigate/hoje — foca aba existente (tray)
+    // /api/navigate/hoje
     if(rota==="/api/navigate/hoje"){
         var sent = broadcastSSE({type:"navigate", url:"/"});
         sendJson({ok:true, clients:sent});return;
     }
 
-    // /api/navigate/config — abre modal de configurações na aba existente
+    // /api/navigate/config
     if(rota==="/api/navigate/config"){
         var sentCfg = broadcastSSE({type:"navigate-hash", hash:"config"});
         sendJson({ok:true, clients:sentCfg});return;
     }
 
-    // /api/navigate/periodo/YYYY-MM-DD/YYYY-MM-DD — tray
+    // /api/navigate/selecionar-fdb
+    // Navega a aba aberta para a pagina de selecao manual do FDB.
+    // Usado pelo item "Selecionar banco (FDB)..." do menu de bandeja.
+    if(rota==="/api/navigate/selecionar-fdb"){
+        var sentFdb = broadcastSSE({type:"navigate", url:"/selecionar-fdb"});
+        sendJson({ok:true, clients:sentFdb});return;
+    }
+
+    // /api/navigate/periodo/YYYY-MM-DD/YYYY-MM-DD
     var mNav = rota.match(/^\/api\/navigate\/periodo\/(\d{4}-\d{2}-\d{2})\/(\d{4}-\d{2}-\d{2})$/);
     if(mNav){
         var navUrl = "/periodo?i="+mNav[1]+"&f="+mNav[2];
@@ -1159,14 +1407,13 @@ var server=http.createServer(function(req,res){
         sendJson({ok:true, clients:sentNav});return;
     }
 
-    // /api/upload-favicon POST — salva arquivo de favicon enviado pelo modal
+    // /api/upload-favicon POST
     if(rota==="/api/upload-favicon" && req.method==="POST"){
         var favChunks=[];
         req.on("data",function(c){favChunks.push(c);});
         req.on("end",function(){
             try{
                 var buf=Buffer.concat(favChunks);
-                // Aceita PNG, ICO, JPEG — verifica magic bytes
                 var isPng =buf.length>4&&buf[0]===0x89&&buf[1]===0x50&&buf[2]===0x4E&&buf[3]===0x47;
                 var isIco =buf.length>4&&buf[0]===0x00&&buf[1]===0x00&&buf[2]===0x01&&buf[3]===0x00;
                 var isJpeg=buf.length>3&&buf[0]===0xFF&&buf[1]===0xD8&&buf[2]===0xFF;
@@ -1192,6 +1439,12 @@ var server=http.createServer(function(req,res){
 
     // /
     if(rota==="/"){
+        // [NOVO] Se FDB não encontrado automaticamente, exibe picker manual
+        if(_aguardandoFdbManual){
+            res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});
+            res.end(paginaEscolherFdb());
+            return;
+        }
         var dh=hoje(),ent=cache[dh];
         if(!ent){gerarEmBackground(dh,dh,dh);ent=cache[dh];}
         if(ent.gerando){res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaLoading("Gerando relatorio de hoje...",isoParaBR(dh),dh,"/"));return;}
@@ -1199,7 +1452,7 @@ var server=http.createServer(function(req,res){
         res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(ent.html);return;
     }
 
-    // /atualizar — simples redirect, igual ao original
+    // /atualizar
     if(rota==="/atualizar"){
         logTs("Atualizando "+isoParaBR(hoje())+"...");
         delete cache[hoje()];
@@ -1208,13 +1461,19 @@ var server=http.createServer(function(req,res){
 
     // /periodo
     if(rota==="/periodo"){
+        // [NOVO] Se FDB não encontrado automaticamente, exibe picker manual
+        if(_aguardandoFdbManual){
+            res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});
+            res.end(paginaEscolherFdb());
+            return;
+        }
         var inicio = parsed.searchParams.get("i") || parsed.searchParams.get("inicio") || "";
-		var fim    = parsed.searchParams.get("f") || parsed.searchParams.get("fim")    || "";
-		inicio = String(inicio).trim();
-		fim = String(fim).trim();
-		if (!inicio && !fim) {res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaFormPeriodo(hoje()));return;}
-		if (!inicio && fim) inicio = fim;
-		if (inicio && !fim) fim = inicio;
+        var fim    = parsed.searchParams.get("f") || parsed.searchParams.get("fim")    || "";
+        inicio = String(inicio).trim();
+        fim = String(fim).trim();
+        if (!inicio && !fim) {res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaFormPeriodo(hoje()));return;}
+        if (!inicio && fim) inicio = fim;
+        if (inicio && !fim) fim = inicio;
         var fixISO=function(s){
             var m2=String(s||"").match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
             return m2?m2[3]+"-"+m2[2].padStart(2,"0")+"-"+m2[1].padStart(2,"0"):s;
@@ -1245,27 +1504,31 @@ server.listen(PORT, BIND_ADDR, function(){
     var addr = _maquinaIP
         ? "http://" + _maquinaIP + ":" + PORT + "  (acesso externo habilitado)"
         : "http://localhost:" + PORT;
-    // Usa logTs para que as linhas de inicio apareçam com [HH:MM:SS] como todas as outras
     logTs(APP_NAME+" | "+addr);
     logTs("Banco configurado: "+FDB);
 
-    // Declara o dia no log somente uma vez — útil para localizar inícios no histórico
     var _dhHoje = hoje();
     var _marcaDia = "=== Servidor iniciado "+isoParaBR(_dhHoje)+" ===";
     var _jaDeclarou = _logBuffer.some(function(l){ return l.indexOf(_marcaDia) >= 0; });
     if (!_jaDeclarou) {
-        logTs(_marcaDia);   // usa logTs para ter [HH:MM:SS] igual às demais linhas
+        logTs(_marcaDia);
         clearTimeout(_logFlushTimer); _flushLog();
     }
 
-    // Aguarda FDB (com retry em caso de boot com rede lenta)
     aguardarFDB(function(dbOk){
         if(dbOk){
             logTs("Banco disponível em "+FDB_HOST+". Gerando relatório de hoje...");
+            _aguardandoFdbManual = false;
         } else {
-            logTs("AVISO: Banco não encontrado. Gerando relatório mesmo assim (dados podem estar incompletos).");
+            // [NOVO] FDB não encontrado após todas tentativas automáticas.
+            // Ativa modo de seleção manual — qualquer acesso a / ou /periodo
+            // exibirá a página paginaEscolherFdb() até o usuário configurar.
+            logTs("AVISO: Banco não encontrado. Aguardando seleção manual em http://localhost:"+PORT+"/selecionar-fdb");
+            _aguardandoFdbManual = true;
         }
+
         var dh=hoje();
+        // Gera relatório mesmo sem banco — resultado mostrará mensagem de erro adequada
         gerarEmBackground(dh,dh,dh);
 
         if(Firebird&&dbOk){
@@ -1279,8 +1542,6 @@ server.listen(PORT, BIND_ADDR, function(){
         agendarRegen();
         logTs("Regeneração agendada ("+POLL_INTERVAL/1000+"s). Servidor pronto.");
     });
-
-    // O servidor NUNCA abre o browser — o tray (iniciar-tray.ps1) gerencia isso.
 });
 
 server.on("error",function(err){

@@ -5,11 +5,15 @@ cd /d "%~dp0"
 :: =========================================================
 ::  Relatorio por Data Especifica
 ::  - Verifica / instala Node.js automaticamente
+::  - Verifica / instala modulo node-firebird automaticamente
 ::  - Inicia servidor se necessario
 ::  - Abre relatorio no navegador
 :: =========================================================
 
 call :verificar_node
+if %errorlevel% neq 0 exit /b 1
+
+call :verificar_modulos
 if %errorlevel% neq 0 exit /b 1
 
 :: Ano padrao
@@ -73,6 +77,47 @@ powershell -NoProfile -Command ^
 if %errorlevel% equ 0 exit /b 0
 timeout /t 2 /nobreak >nul
 goto :_loop_ini
+
+:: -------------------------------------------------------
+:: Verifica se node-firebird esta instalado.
+:: Se nao estiver, instala via npm.
+:: -------------------------------------------------------
+:verificar_modulos
+node -e "require('node-firebird')" >nul 2>&1
+if %errorlevel% equ 0 exit /b 0
+
+echo.
+echo  Modulo node-firebird nao encontrado. Instalando...
+echo.
+pushd "%~dp0"
+
+call npm install node-firebird --prefer-offline >nul 2>&1
+if %errorlevel% equ 0 goto :_mod_validar
+
+call npm install node-firebird
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERRO: Falha ao instalar node-firebird.
+    echo  Execute node-firebird.bat como Administrador.
+    echo.
+    popd
+    pause
+    exit /b 1
+)
+
+:_mod_validar
+popd
+node -e "require('node-firebird')" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERRO: node-firebird instalado mas nao reconhecido nesta sessao.
+    echo  Feche e reabra o terminal e tente novamente.
+    echo.
+    pause
+    exit /b 1
+)
+echo  [OK] node-firebird pronto.
+exit /b 0
 
 :: -------------------------------------------------------
 :verificar_node

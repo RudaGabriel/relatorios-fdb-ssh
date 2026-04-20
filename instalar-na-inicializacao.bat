@@ -47,7 +47,45 @@ for /f "tokens=*" %%V in ('node --version 2^>nul') do echo Node.js: %%V
 echo.
 
 :: ---------------------------------------------------------------------------
-:: 2. Le appName do config.json
+:: 2. Verifica / instala modulo node-firebird
+:: ---------------------------------------------------------------------------
+node -e "require('node-firebird')" >nul 2>&1
+if %errorlevel% equ 0 goto :modulos_ok
+
+echo Modulo node-firebird nao encontrado. Instalando...
+pushd "%~dp0"
+
+call npm install node-firebird --prefer-offline >nul 2>&1
+if %errorlevel% neq 0 (
+    call npm install node-firebird
+    if !errorlevel! neq 0 (
+        echo.
+        echo ERRO: Falha ao instalar node-firebird.
+        echo Execute node-firebird.bat como Administrador e tente novamente.
+        echo.
+        popd
+        pause
+        exit /b 1
+    )
+)
+popd
+
+node -e "require('node-firebird')" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo ERRO: node-firebird instalado mas nao reconhecido nesta sessao.
+    echo Feche e reabra o terminal e tente novamente.
+    echo.
+    pause
+    exit /b 1
+)
+echo [OK] node-firebird pronto.
+echo.
+
+:modulos_ok
+
+:: ---------------------------------------------------------------------------
+:: 3. Le appName do config.json
 :: ---------------------------------------------------------------------------
 set "CFG=%~dp0config.json"
 set "_TMP=%TEMP%\_relcfg_%RANDOM%.txt"
@@ -95,9 +133,9 @@ echo Sistema: !APP_NAME!
 echo.
 
 :: ---------------------------------------------------------------------------
-:: 3. Gera o bootstrap LOCAL
-::    O bootstrap aguarda o launcher.vbs ficar disponível na rede (até 30 min)
-::    e então o executa. Fica em %LOCALAPPDATA% — sempre acessível sem rede.
+:: 4. Gera o bootstrap LOCAL
+::    O bootstrap aguarda o launcher.vbs ficar disponivel na rede (ate 30 min)
+::    e entao o executa. Fica em %LOCALAPPDATA% — sempre acessivel sem rede.
 :: ---------------------------------------------------------------------------
 set "LAUNCHER_PATH=%~dp0launcher.vbs"
 set "TASK_NAME=!APP_NAME! - Relatorios"
@@ -180,9 +218,9 @@ echo Bootstrap criado com sucesso.
 echo.
 
 :: ---------------------------------------------------------------------------
-:: 4. Registra tarefa agendada apontando para o BOOTSTRAP LOCAL
-::    - Nunca falha com "arquivo nao encontrado" (bootstrap é local)
-::    - O delay de 2 min dá tempo ao Windows de montar drives de rede
+:: 5. Registra tarefa agendada apontando para o BOOTSTRAP LOCAL
+::    - Nunca falha com "arquivo nao encontrado" (bootstrap e local)
+::    - O delay de 2 min da tempo ao Windows de montar drives de rede
 :: ---------------------------------------------------------------------------
 schtasks /delete /tn "!TASK_NAME!" /f >nul 2>&1
 

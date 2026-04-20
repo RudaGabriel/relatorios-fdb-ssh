@@ -22,44 +22,78 @@ if (-not $acquired) { exit 0 }
 $DIR     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $cfgPath = Join-Path $DIR "config.json"
 
-$APP_NAME = "Relatorios"
-$PORT     = 7734
+$APP_NAME  = "Relatorios"
+$PORT      = 7734
+$MAQUINA_IP = $null
 
 try {
     if (Test-Path $cfgPath) {
-        $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($cfg.appName -and $cfg.appName -ne "") { $APP_NAME = $cfg.appName }
-        if ($cfg.porta   -and $cfg.porta   -gt 0)  { $PORT = [int]$cfg.porta }
+        $raw = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+        $cfg = $raw | ConvertFrom-Json
+        if ($cfg.appName   -and $cfg.appName   -ne "") { $APP_NAME   = $cfg.appName }
+        if ($cfg.porta     -and $cfg.porta      -gt 0)  { $PORT       = [int]$cfg.porta }
+        if ($cfg.maquinaIP -and $cfg.maquinaIP  -ne "") { $MAQUINA_IP = $cfg.maquinaIP.Trim() }
     }
 } catch {}
 
-$ADDR = "http://localhost:$PORT"
+# $ADDR      → usado em Start-Process (abre no browser)
+# $ADDR_LOCAL → usado em Invoke-WebRequest (sempre IPv4 127.0.0.1, nunca falha por ::1)
+$ADDR       = "http://localhost:$PORT"
+$ADDR_LOCAL = "http://127.0.0.1:$PORT"
 
 # ---------------------------------------------------------------------------
 # Funcao: Abre relatorio — foca aba existente se possivel
 # ---------------------------------------------------------------------------
 function Open-Relatorio {
     param([string]$UrlPath = "/")
-    # Verifica quantas abas SSE estao abertas
     $clients = 0
     try {
-        $r = Invoke-WebRequest "$ADDR/api/sse-clients" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        $r = Invoke-WebRequest "$ADDR_LOCAL/api/sse-clients" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
         $j = $r.Content | ConvertFrom-Json
         $clients = [int]$j.clients
     } catch { $clients = 0 }
 
     if ($clients -gt 0) {
-        # Ha aba aberta — navega ela em vez de abrir nova
         if ($UrlPath -eq "/") {
-            try { Invoke-WebRequest "$ADDR/api/navigate/hoje" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch {}
+            try { Invoke-WebRequest "$ADDR_LOCAL/api/navigate/hoje" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch {}
         } else {
-            # Para /periodo?i=D1&f=D2 passado como path bruto, abre mesmo assim
             try { Start-Process ($ADDR + $UrlPath) } catch {}
         }
     } else {
-        # Nenhuma aba — abre nova
         try { Start-Process ($ADDR + $UrlPath) } catch {}
     }
+}
+
+# ---------------------------------------------------------------------------
+# Funcao: retorna contagem de clientes SSE (usa ADDR_LOCAL)
+# ---------------------------------------------------------------------------
+function Get-SseClients {
+    try {
+        $r = Invoke-WebRequest "$ADDR_LOCAL/api/sse-clients" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        $j = $r.Content | ConvertFrom-Json
+        return [int]$j.clients
+    } catch { return 0 }
+}
+
+# ---------------------------------------------------------------------------
+# Funcao: verifica se o servidor HTTP esta respondendo.
+# Retorna $true se OK, $false caso contrario.
+# Usa TCP primeiro (rapido), depois confirma com HTTP.
+# ---------------------------------------------------------------------------
+function Test-ServidorAtivo {
+    # 1) Teste TCP rapido (< 500 ms)
+    try {
+        $tc = New-Object Net.Sockets.TcpClient
+        $ok = $tc.ConnectAsync("127.0.0.1", $PORT).Wait(500)
+        $tc.Close()
+        if (-not $ok) { return $false }
+    } catch { return $false }
+
+    # 2) Confirma via HTTP (garante que o Node ja subiu o listener)
+    try {
+        $r = Invoke-WebRequest "$ADDR_LOCAL/api/db-status" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        return ($r.StatusCode -eq 200)
+    } catch { return $false }
 }
 
 # ---------------------------------------------------------------------------
@@ -67,8 +101,7 @@ function Open-Relatorio {
 # ---------------------------------------------------------------------------
 $serverScript = Join-Path $DIR "servidor-relatorio.js"
 
-# Aguarda o script e dependências ficarem acessíveis (rede pode estar mapeando no boot)
-# Tenta a cada 15 segundos por até 30 minutos (120 tentativas)
+# Aguarda o script e dependencias ficarem acessiveis (rede pode estar mapeando no boot)
 $maxTentativas = 120
 $tentativa     = 0
 while (-not (Test-Path $serverScript) -and $tentativa -lt $maxTentativas) {
@@ -83,14 +116,14 @@ $psi.WindowStyle     = [System.Diagnostics.ProcessWindowStyle]::Hidden
 $psi.CreateNoWindow  = $true
 $psi.UseShellExecute = $false
 
-# Função auxiliar: testa se a porta já está em uso
+# Testa se a porta ja esta em uso
 function Test-PortaLivre {
     param([int]$Porta)
     try {
         $tc = New-Object Net.Sockets.TcpClient
         $tc.Connect("127.0.0.1", $Porta)
         $tc.Close()
-        return $false  # porta ocupada (servidor já rodando)
+        return $false  # porta ocupada
     } catch {
         return $true   # porta livre
     }
@@ -99,7 +132,6 @@ function Test-PortaLivre {
 $script:nodeProc = $null
 
 if (Test-PortaLivre -Porta $PORT) {
-    # Porta livre — inicia o Node normalmente
     try {
         $script:nodeProc = [System.Diagnostics.Process]::Start($psi)
     } catch {
@@ -112,10 +144,30 @@ if (Test-PortaLivre -Porta $PORT) {
         try { $mutex.ReleaseMutex() } catch {}
         exit 1
     }
-} else {
-    # Servidor já rodando nessa porta (iniciado por outra instância)
-    # O tray mostra o ícone normalmente e gerencia o processo existente
-    # nodeProc permanece null; o watchTimer só reinicia se a porta também parar de responder
+}
+
+# ---------------------------------------------------------------------------
+# Aguarda o servidor ficar disponivel (ate 30s) antes de continuar
+# (necessario para que o maquinaIP seja salvo pelo servidor antes de ler)
+# ---------------------------------------------------------------------------
+$_espera = 0
+while ($_espera -lt 30) {
+    if (-not (Test-PortaLivre -Porta $PORT)) { break }
+    Start-Sleep -Milliseconds 500
+    $_espera++
+}
+
+# Tenta reler maquinaIP do config (o servidor grava na inicializacao)
+if (-not $MAQUINA_IP) {
+    try {
+        if (Test-Path $cfgPath) {
+            $raw2 = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+            $cfg2 = $raw2 | ConvertFrom-Json
+            if ($cfg2.maquinaIP -and $cfg2.maquinaIP -ne "") {
+                $MAQUINA_IP = $cfg2.maquinaIP.Trim()
+            }
+        }
+    } catch {}
 }
 
 # ---------------------------------------------------------------------------
@@ -143,6 +195,7 @@ if (Test-Path $faviconPath) {
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
 
+# --- Abrir Relatorio (negrito) ---
 $itemAbrir = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemAbrir.Text = "Abrir Relatorio"
 $itemAbrir.Font = New-Object System.Drawing.Font($menu.Font.FontFamily, $menu.Font.Size, [System.Drawing.FontStyle]::Bold)
@@ -151,11 +204,13 @@ $menu.Items.Add($itemAbrir) | Out-Null
 
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+# --- Atualizar dados de hoje ---
 $itemAtualizar = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemAtualizar.Text = "Atualizar dados de hoje"
 $itemAtualizar.Add_Click({ Start-Process "$ADDR/atualizar" })
 $menu.Items.Add($itemAtualizar) | Out-Null
 
+# --- Gerar por periodo ---
 $itemPeriodo = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemPeriodo.Text = "Gerar por periodo..."
 $itemPeriodo.Add_Click({ Start-Process "$ADDR/periodo" })
@@ -163,24 +218,16 @@ $menu.Items.Add($itemPeriodo) | Out-Null
 
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+# --- Editar configuracoes ---
 $itemEditarCfg = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemEditarCfg.Text = "Editar configuracoes..."
 $itemEditarCfg.Add_Click({
-    # Verifica se ha aba aberta com SSE — se sim, abre o modal inline (navigate-hash)
-    $clients = 0
-    try {
-        $r = Invoke-WebRequest "$ADDR/api/sse-clients" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-        $j = $r.Content | ConvertFrom-Json
-        $clients = [int]$j.clients
-    } catch { $clients = 0 }
-
+    $clients = Get-SseClients
     if ($clients -gt 0) {
-        # Ha aba aberta — dispara o modal de configuracoes via SSE
         try {
-            Invoke-WebRequest "$ADDR/api/navigate/config" -UseBasicParsing -TimeoutSec 2 | Out-Null
+            Invoke-WebRequest "$ADDR_LOCAL/api/navigate/config" -UseBasicParsing -TimeoutSec 2 | Out-Null
         } catch {}
     } else {
-        # Sem aba aberta — abre browser na pagina /config
         try {
             Start-Process "$ADDR/config"
         } catch {
@@ -195,8 +242,65 @@ $itemEditarCfg.Add_Click({
 })
 $menu.Items.Add($itemEditarCfg) | Out-Null
 
+# --- Selecionar banco (FDB)... ---
+$itemFdb = New-Object System.Windows.Forms.ToolStripMenuItem
+$itemFdb.Text = "Selecionar banco (FDB)..."
+$itemFdb.Add_Click({
+    # 1) Verifica se o servidor esta respondendo antes de qualquer acao
+    if (-not (Test-ServidorAtivo)) {
+        $tray.BalloonTipTitle = "$APP_NAME - Atencao"
+        $tray.BalloonTipText  = "O servidor nao esta respondendo.`nAguarde a inicializacao ou use 'Reiniciar servidor'."
+        $tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::Warning
+        $tray.ShowBalloonTip(5000)
+        return
+    }
+
+    # 2) Verifica se ha banco ja configurado e funcionando (avisa mas nao bloqueia)
+    $dbOk = $false
+    try {
+        $r   = Invoke-WebRequest "$ADDR_LOCAL/api/db-status" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        $st  = $r.Content | ConvertFrom-Json
+        $dbOk = [bool]$st.ok
+    } catch {}
+
+    # Se banco ja esta OK, pede confirmacao antes de trocar
+    if ($dbOk) {
+        $resp = [System.Windows.Forms.MessageBox]::Show(
+            "O banco de dados atual esta conectado e funcionando.`n`nDeseja selecionar um banco diferente mesmo assim?",
+            "$APP_NAME - Selecionar banco",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($resp -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    }
+
+    # 3) Navega ou abre a pagina de selecao de FDB
+    $clients = Get-SseClients
+    if ($clients -gt 0) {
+        try {
+            Invoke-WebRequest "$ADDR_LOCAL/api/navigate/selecionar-fdb" -UseBasicParsing -TimeoutSec 2 | Out-Null
+        } catch {
+            # Fallback: abre nova aba
+            try { Start-Process "$ADDR/selecionar-fdb" } catch {}
+        }
+    } else {
+        try {
+            Start-Process "$ADDR/selecionar-fdb"
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Nao foi possivel abrir o seletor de banco.`nVerifique se o servidor esta rodando.",
+                "$APP_NAME",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            ) | Out-Null
+        }
+    }
+})
+$menu.Items.Add($itemFdb) | Out-Null
+
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+# --- Reiniciar servidor ---
 $itemReiniciar = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemReiniciar.Text = "Reiniciar servidor"
 $itemReiniciar.Add_Click({
@@ -227,6 +331,7 @@ $menu.Items.Add($itemReiniciar) | Out-Null
 
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+# --- Sair ---
 $itemSair = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemSair.Text = "Sair"
 $itemSair.Add_Click({
@@ -249,8 +354,6 @@ $watchTimer.Add_Tick({
     try {
         $procMorreu = ($null -eq $script:nodeProc -or $script:nodeProc.HasExited)
         if ($procMorreu) {
-            # Confirma que a porta também parou antes de reiniciar
-            # (evita reinício em loop quando servidor externo ocupa a porta)
             $portaLivre = Test-PortaLivre -Porta $PORT
             if ($portaLivre) {
                 $script:nodeProc = [System.Diagnostics.Process]::Start($psi)
@@ -259,7 +362,6 @@ $watchTimer.Add_Tick({
                 $tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::Warning
                 $tray.ShowBalloonTip(2500)
             } else {
-                # Porta ocupada por outra instância — adota o processo existente
                 $script:nodeProc = $null
             }
         }
@@ -278,7 +380,7 @@ $dbTimer.Add_Tick({
     $script:dbChecked = $true
     $dbTimer.Stop()
     try {
-        $r  = Invoke-WebRequest "$ADDR/api/db-status" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        $r  = Invoke-WebRequest "$ADDR_LOCAL/api/db-status" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
         $st = $r.Content | ConvertFrom-Json
         if ($st.scanCompleto -and -not $st.ok) {
             $tray.BalloonTipTitle = "$APP_NAME - Atencao!"
@@ -294,7 +396,11 @@ $dbTimer.Start()
 # Notificacao inicial
 # ---------------------------------------------------------------------------
 $tray.BalloonTipTitle = $APP_NAME
-$tray.BalloonTipText  = "Servidor iniciado! Duplo clique para abrir."
+if ($MAQUINA_IP) {
+    $tray.BalloonTipText = "Servidor iniciado!`nAcesso externo: http://${MAQUINA_IP}:${PORT}`nDuplo clique para abrir."
+} else {
+    $tray.BalloonTipText = "Servidor iniciado! Duplo clique para abrir."
+}
 $tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::Info
 $tray.ShowBalloonTip(3500)
 
