@@ -5,6 +5,5 @@
   "fbHost": "",
   "maquinaIP": "",
   "proibidos": [],
-  "maxLogLines": 10000,
-  "favicon": ""
+  "maxLogLines": 10000
 }
