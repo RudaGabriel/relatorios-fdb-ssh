@@ -33,15 +33,12 @@
         process.exit(1);
     }
 
-    // === LÊ CONFIG (proibidos + appName) ===
+    // === LÊ PROIBIDOS DO CONFIG ===
     const pathConfig = require("node:path").join(__dirname, "config.json");
     let cfgProibidos = [];
-    let cfgAppName   = "";
     try {
-        const rawCfg = fs.readFileSync(pathConfig, "utf8").replace(/^\uFEFF/, "");
-        const c = JSON.parse(rawCfg);
-        if (Array.isArray(c.proibidos))            cfgProibidos = c.proibidos;
-        if (c.appName && String(c.appName).trim()) cfgAppName   = String(c.appName).trim();
+        const c = JSON.parse(fs.readFileSync(pathConfig, "utf8"));
+        if (Array.isArray(c.proibidos)) cfgProibidos = c.proibidos;
     } catch(e) {}
 
     // === LÓGICA DE IDENTIFICAÇÃO DE REDE DO FIREBIRD ===
@@ -680,7 +677,7 @@
 			};
 			const dadosJSON = JSON.stringify(dados).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 			tick("JSON montado — gerando HTML...");
-			const html = String.raw`<!doctype html><html lang="pt-br"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName || "Relatório")} ― ${escHtml(dataBR)}</title>
+			const html = String.raw`<!doctype html><html lang="pt-br"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório Pet World ${escHtml(dataBR)}</title>
 <script>
       (function(){
         try {
@@ -2128,7 +2125,7 @@ var __abrirModalConfig = function() {
             '<div class="mbody" style="gap:14px;padding-bottom:24px">' +
               '<div class="kv">' +
                 '<div class="k">Nome do sistema</div>' +
-                '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Loja 1" style="flex:1">' +
+                '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Pet World" style="flex:1">' +
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Intervalo de atualização (ms)</div>' +
