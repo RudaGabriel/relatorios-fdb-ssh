@@ -1,50 +1,74 @@
 @echo off
-chcp 65001 >nul 2>&1
+title Node-Firebird - Instalador de Modulo
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
+chcp 65001 >nul 2>&1
 
 :: =========================================================
-::  Instalador node-firebird
+::  node-firebird.bat
 ::  - Verifica / instala Node.js automaticamente
-::  - Atualiza PATH da sessao para evitar erros pos-instalacao
-::  - Executa npm install com validacao de saida
+::  - Instala o modulo node-firebird via npm
+::  - Tratamento robusto de erros e atualizacao de PATH
 :: =========================================================
+
+echo.
+echo  [INFO] Verificando ambiente Node.js...
+echo.
 
 call :verificar_node
 if %errorlevel% neq 0 (
-    echo ERRO CRITICO: Nao foi possivel preparar o ambiente Node.js.
+    echo  [ERRO CRITICO] Falha ao preparar ambiente Node.js.
     pause
     exit /b 1
 )
 
+:: =========================================================
+:: EXIBIR VERSOES CONFIRMADAS
+:: =========================================================
+for /f "tokens=*" %%v in ('node -v 2^>nul') do set "NODE_VER=%%v"
+for /f "tokens=*" %%v in ('npm -v 2^>nul') do set "NPM_VER=%%v"
+
+echo  [OK] Node.js: %NODE_VER%
+echo  [OK] NPM: %NPM_VER%
 echo.
-echo Instalando modulo node-firebird...
-echo.
-call npm i node-firebird
+
+:: =========================================================
+:: INSTALAR MODULO node-firebird
+:: =========================================================
+echo  [INFO] Instalando modulo node-firebird...
+
+call npm install node-firebird
 if %errorlevel% neq 0 (
     echo.
-    echo ERRO: Falha ao instalar o pacote via npm.
-    echo Verifique sua conexao com a internet e as permissoes de rede.
+    echo  [ERRO] Falha ao instalar node-firebird.
+    echo  Possiveis causas:
+    echo   - Sem conexao com a internet
+    echo   - Proxy corporativo nao configurado
+    echo   - Permissao de escrita negada em node_modules
+    echo.
+    echo  Solucao manual:
+    echo   npm install node-firebird
+    echo.
     pause
     exit /b 1
 )
 
 echo.
-echo node-firebird instalado com sucesso.
+echo  [OK] node-firebird instalado com sucesso.
 echo.
 pause
 exit /b 0
 
 :: -------------------------------------------------------
-:: Sub-rotina: Verificar e instalar Node.js
+:: SUB-ROTINA: VERIFICAR E INSTALAR NODE.JS
+:: Reutiliza logica padronizada dos demais scripts .bat
 :: -------------------------------------------------------
 :verificar_node
 where node >nul 2>&1
 if %errorlevel% equ 0 exit /b 0
 
-echo.
-echo  Node.js nao encontrado. Iniciando instalacao silenciosa...
-echo  (Acompanhe o progresso ou aguarde a finalizacao)
+echo  [AVISO] Node.js nao detectado no PATH.
+echo  [INFO] Iniciando instalacao silenciosa via _instalar-node.ps1...
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -NonInteractive ^
@@ -52,15 +76,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -NonInteractive ^
 
 if %errorlevel% neq 0 (
     echo.
-    echo  ERRO: O instalador do Node.js retornou falha.
-    echo  Log de diagnostico: %TEMP%\node-install-log.txt
-    echo  Alternativa manual: https://nodejs.org/en/download
+    echo  [ERRO] Instalacao do Node.js falhou.
+    echo  [INFO] Log de diagnostico: %TEMP%\node-install-log.txt
+    echo  [INFO] Alternativa manual: https://nodejs.org/en/download
     echo.
     pause
     exit /b 1
 )
 
-:: Atualiza PATH da sessao atual para reconhecer o node imediatamente
+:: Atualiza PATH da sessao atual com valor do PATH do sistema
 for /f "usebackq tokens=*" %%P in (
     `powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','Machine')"`
 ) do (
@@ -71,9 +95,8 @@ for /f "usebackq tokens=*" %%P in (
 where node >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
-    echo  ERRO: Node.js instalado, mas nao detectado no PATH da sessao.
-    echo  Feche este terminal, abra um novo e execute novamente.
-    echo  Se o problema persistir, reinicie a estacao de trabalho.
+    echo  [ERRO] Node.js instalado mas nao reconhecido nesta sessao.
+    echo  [INFO] Feche este terminal, abra um novo e execute novamente.
     echo.
     pause
     exit /b 1
