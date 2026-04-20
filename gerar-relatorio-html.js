@@ -2125,7 +2125,7 @@ var __abrirModalConfig = function() {
             '<div class="mbody" style="gap:14px;padding-bottom:24px">' +
               '<div class="kv">' +
                 '<div class="k">Nome do sistema</div>' +
-                '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Pet World" style="flex:1">' +
+                '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Loja 1" style="flex:1">' +
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Intervalo de atualização (ms)</div>' +
