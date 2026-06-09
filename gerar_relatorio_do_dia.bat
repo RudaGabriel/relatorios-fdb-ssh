@@ -86,6 +86,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo  [OK] node-firebird pronto.
+echo
 exit /b 0
 
 :: -------------------------------------------------------

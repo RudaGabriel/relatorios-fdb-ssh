@@ -30,9 +30,10 @@ try {
     if (Test-Path $cfgPath) {
         $raw = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
         $cfg = $raw | ConvertFrom-Json
-        if ($cfg.appName   -and $cfg.appName   -ne "") { $APP_NAME   = $cfg.appName }
-        if ($cfg.porta     -and $cfg.porta      -gt 0)  { $PORT       = [int]$cfg.porta }
-        if ($cfg.maquinaIP -and $cfg.maquinaIP  -ne "") { $MAQUINA_IP = $cfg.maquinaIP.Trim() }
+        if ($cfg.appName -and $cfg.appName -ne "") { $APP_NAME = $cfg.appName }
+        if ($cfg.porta   -and $cfg.porta    -gt 0)  { $PORT     = [int]$cfg.porta }
+        # maquinaIP NÃO é lido aqui — o servidor sempre o sobrescreve na inicialização.
+        # Será relido logo após o servidor subir (bloco abaixo).
     }
 } catch {}
 
@@ -157,18 +158,18 @@ while ($_espera -lt 30) {
     $_espera++
 }
 
-# Tenta reler maquinaIP do config (o servidor grava na inicializacao)
-if (-not $MAQUINA_IP) {
-    try {
-        if (Test-Path $cfgPath) {
-            $raw2 = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
-            $cfg2 = $raw2 | ConvertFrom-Json
-            if ($cfg2.maquinaIP -and $cfg2.maquinaIP -ne "") {
-                $MAQUINA_IP = $cfg2.maquinaIP.Trim()
-            }
+# Reler maquinaIP do config após o servidor subir.
+# O servidor SEMPRE sobrescreve maquinaIP com o IP real da máquina na inicialização,
+# então aqui sempre obteremos o valor correto e atualizado.
+try {
+    if (Test-Path $cfgPath) {
+        $raw2 = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+        $cfg2 = $raw2 | ConvertFrom-Json
+        if ($cfg2.maquinaIP -and $cfg2.maquinaIP -ne "") {
+            $MAQUINA_IP = $cfg2.maquinaIP.Trim()
         }
-    } catch {}
-}
+    }
+} catch {}
 
 # ---------------------------------------------------------------------------
 # Icone da bandeja
@@ -207,13 +208,35 @@ $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 # --- Atualizar dados de hoje ---
 $itemAtualizar = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemAtualizar.Text = "Atualizar dados de hoje"
-$itemAtualizar.Add_Click({ Start-Process "$ADDR/atualizar" })
+$itemAtualizar.Add_Click({
+    $clients = Get-SseClients
+    if ($clients -gt 0) {
+        # Aba aberta: navega para / (reload) e força foco
+        try { Invoke-WebRequest "$ADDR_LOCAL/api/navigate/hoje" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch {}
+        try { Invoke-WebRequest "$ADDR_LOCAL/api/navigate/foco" -UseBasicParsing -TimeoutSec 1 | Out-Null } catch {}
+    } else {
+        # Sem aba aberta: abre /atualizar no browser (redireciona para / após limpar cache)
+        try { Start-Process "$ADDR/atualizar" } catch {}
+    }
+})
 $menu.Items.Add($itemAtualizar) | Out-Null
 
 # --- Gerar por periodo ---
 $itemPeriodo = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemPeriodo.Text = "Gerar por periodo..."
-$itemPeriodo.Add_Click({ Start-Process "$ADDR/periodo" })
+$itemPeriodo.Add_Click({
+    $clients = Get-SseClients
+    if ($clients -gt 0) {
+        # Aba aberta: abre modal de período via SSE (não abre nova aba)
+        try {
+            Invoke-WebRequest "$ADDR_LOCAL/api/navigate/hash/periodo" -UseBasicParsing -TimeoutSec 2 | Out-Null
+        } catch {}
+        try { Invoke-WebRequest "$ADDR_LOCAL/api/navigate/foco" -UseBasicParsing -TimeoutSec 1 | Out-Null } catch {}
+    } else {
+        # Sem aba aberta: abre /periodo no browser
+        try { Start-Process "$ADDR/periodo" } catch {}
+    }
+})
 $menu.Items.Add($itemPeriodo) | Out-Null
 
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
@@ -304,17 +327,39 @@ $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $itemReiniciar = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemReiniciar.Text = "Reiniciar servidor"
 $itemReiniciar.Add_Click({
+    # 1) Mata o processo rastreado pelo tray
     try {
         if ($script:nodeProc -and -not $script:nodeProc.HasExited) {
             $script:nodeProc.Kill()
-            $script:nodeProc.WaitForExit(3000)
+            $script:nodeProc.WaitForExit(3000) | Out-Null
         }
     } catch {}
+    $script:nodeProc = $null
+
+    # 2) Mata TODOS os processos node.exe restantes (orphans, filhos, etc.)
+    try {
+        Get-Process -Name "node" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $_.Kill()
+                $_.WaitForExit(2000) | Out-Null
+            } catch {}
+        }
+    } catch {}
+
+    # 3) Aguarda a porta ficar livre (até 10s) antes de relançar
+    $esperaPorta = 0
+    while (-not (Test-PortaLivre -Porta $PORT) -and $esperaPorta -lt 20) {
+        Start-Sleep -Milliseconds 500
+        $esperaPorta++
+    }
+
+    # 4) Relança o servidor via tray
     $reiniciouOk = $false
     try {
         $script:nodeProc = [System.Diagnostics.Process]::Start($psi)
-        $reiniciouOk = $true
+        $reiniciouOk = ($null -ne $script:nodeProc)
     } catch {}
+
     if ($reiniciouOk) {
         $tray.BalloonTipTitle = $APP_NAME
         $tray.BalloonTipText  = "Servidor reiniciado com sucesso!"
@@ -322,7 +367,7 @@ $itemReiniciar.Add_Click({
         $tray.ShowBalloonTip(3000)
     } else {
         $tray.BalloonTipTitle = "$APP_NAME - Erro"
-        $tray.BalloonTipText  = "Falha ao reiniciar o servidor."
+        $tray.BalloonTipText  = "Falha ao reiniciar o servidor.`nVerifique se o Node.js está instalado."
         $tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::Error
         $tray.ShowBalloonTip(5000)
     }
