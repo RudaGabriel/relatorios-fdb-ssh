@@ -1,9 +1,17 @@
 {
-  "appName": "",
+  "appName": "Relatorios",
   "porta": 7734,
-  "pollInterval": 800,
+  "pollInterval": 200,
   "fbHost": "",
+  "fdbPath": "",
   "maquinaIP": "",
+  "fbUser": "",
+  "fbPass": "",
   "proibidos": [],
-  "maxLogLines": 10000
+  "maxLogLines": 5000,
+  "logDebug": false,
+  "favicon": "",
+  "toastDuration": 5000,
+  "spawnTimeoutMs": 120000,
+  "teclasPersonalizadas": []
 }

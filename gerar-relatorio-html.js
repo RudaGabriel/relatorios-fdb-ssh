@@ -1,4 +1,28 @@
+/**
+ * gerar-relatorio-html.js
+ * @version 2.7.5
+ * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
+ * @changelog
+ *   2.7.5 - 2026-08-08 02:30 - Nova regra de hora fixa (definida pelo
+ *                              usuário), agora idêntica nos dois lados.
+ *     - TOLERANCIA_RELOGIO_MIN passou de 1,5 para 3 min e MAXIMO_ATRASO_MIN
+ *       de 18 para 60 min. Nenhum dos dois batia com a regra pedida, e o
+ *       segundo também não batia com a janela usada pelo servidor — havia
+ *       uma faixa em que um lado corrigia e o outro não, fazendo a venda
+ *       parecer "pular" de horário conforme quem processou por último.
+ *     - Regra final: futuro -> corrige para a hora atual; até 3 min atrás
+ *       -> aceita como está (marca OK); de 3 min a 1 hora atrás -> corrige
+ *       para a hora atual; mais de 1 hora atrás -> ignora.
+ *     - Verificado por simulação em toda a faixa (+5, 0, -3, -3.1, -30,
+ *       -60, -61, -90 min): cada intervalo cai na ação correta.
+ */
+
 (function() {
+    // Mantida em sincronia manual com @version no header do arquivo.
+    // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
+    // suporte técnico consegue identificar qual versão do script gerou um relatório
+    // específico sem precisar abrir o gerar-relatorio-html.js.
+    const SCRIPT_VERSION = "2.7.5";
     const Firebird = require("node-firebird");
     const fs = require("node:fs");
     const process = require("node:process");
@@ -21,30 +45,77 @@
         return str;
     };
 
+    // Valida não só o FORMATO (regex) mas também se representa uma data de
+    // calendário real — ex: "2026-02-30" bate no regex mas não existe.
+    // BUG CORRIGIDO: antes, uma string que não batesse em NENHUM formato
+    // reconhecido (ex: "amanha", digitação errada) era retornada inalterada
+    // por parseISO() e passava incólume pela checagem "!dataInicioISO" (pois
+    // é uma string não-vazia). Isso propagava para new Date(...).getTime(),
+    // virava NaN, contaminava _diasIntervalo/_tGlobal, e o setTimeout do
+    // watchdog (linha ~155) disparava com delay NaN — que o Node/browser
+    // tratam como 0ms — derrubando o processo quase instantaneamente com uma
+    // mensagem enganosa de "Tempo limite excedido", quando o problema real
+    // era um argumento de data inválido.
+    const isDataValidaISO = (iso) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+        const [ano, mes, dia] = iso.split("-").map(Number);
+        const d = new Date(Date.UTC(ano, mes - 1, dia));
+        // Round-trip: se o JS "normalizou" (ex: dia 30 de fevereiro virou março),
+        // os componentes não batem mais — detecta datas de calendário inválidas.
+        return d.getUTCFullYear() === ano && d.getUTCMonth() === mes - 1 && d.getUTCDate() === dia;
+    };
+
     const dataInicioISO = parseISO(dataInicioRaw);
     const dataFimISO = parseISO(dataFimRaw);
 
     const saida = pegar("--saida");
     const usuario = pegar("--user") || "SYSDBA";
     const senha = pegar("--pass") || "masterkey";
+    // Aviso de segurança: SYSDBA/masterkey são as credenciais de fábrica do
+    // Firebird. Mantido como fallback para não quebrar instalações existentes
+    // que dependem dele, mas o operador precisa SABER que está usando o padrão
+    // — se o Firebird de produção nunca teve a senha trocada, isso conecta com
+    // privilégios de DBA completos sem nenhum aviso prévio.
+    if (!pegar("--user") || !pegar("--pass")) {
+        console.warn("[AVISO] --user e/ou --pass não informados — usando credenciais padrão do Firebird (SYSDBA/masterkey). Se o banco de produção usa credenciais diferentes, configure --user e --pass explicitamente.");
+    }
+    const FIREBIRD_PORT = 3050; // porta padrão Firebird — única fonte da verdade
 
     if (!fdbRaw || !dataInicioISO || !dataFimISO || !saida) {
         console.log("Uso:\nnode gerar-relatorio-html.js --fdb 192.168.1.100:C:\\Banco.fdb --data 2026-03-01 --saida out.html");
         process.exit(1);
     }
+    // Validação explícita de calendário — falha cedo e com mensagem clara,
+    // em vez de deixar o erro se manifestar como timeout enganoso mais tarde.
+    if (!isDataValidaISO(dataInicioISO) || !isDataValidaISO(dataFimISO)) {
+        console.log("ERRO: data inválida. Use --data AAAA-MM-DD ou DD/MM/AAAA (ex: --data 2026-03-01 ou --data 01/03/2026).");
+        console.log("  --data-inicio recebido: " + JSON.stringify(dataInicioRaw) + " -> interpretado como: " + JSON.stringify(dataInicioISO));
+        console.log("  --data-fim    recebido: " + JSON.stringify(dataFimRaw)    + " -> interpretado como: " + JSON.stringify(dataFimISO));
+        process.exit(1);
+    }
+    if (dataInicioISO > dataFimISO) {
+        console.log("ERRO: --data-inicio (" + dataInicioISO + ") é posterior a --data-fim (" + dataFimISO + "). Inverta o intervalo.");
+        process.exit(1);
+    }
 
     // === LÊ CONFIG (proibidos + appName) ===
     const pathConfig = require("node:path").join(__dirname, "config.json");
-    let cfgProibidos    = [];
-    let cfgAppName      = "";
-    let cfgToastDuracao = 5000;
+    let cfgProibidos             = [];
+    let cfgAppName               = "Relatorios"; // default igual ao servidor — evita título "Relatório  YYYY-MM-DD" (espaço duplo) quando config.json não tem appName
+    let cfgToastDuracao          = 5000;
+    let cfgTeclasPersonalizadas  = [];
     try {
         const rawCfg = fs.readFileSync(pathConfig, "utf8").replace(/^\uFEFF/, "");
         const c = JSON.parse(rawCfg);
         if (Array.isArray(c.proibidos))            cfgProibidos    = c.proibidos;
         if (c.appName && String(c.appName).trim()) cfgAppName      = String(c.appName).trim();
-        if (c.toastDuration && parseInt(c.toastDuration,10) >= 500) cfgToastDuracao = parseInt(c.toastDuration,10);
-    } catch(e) {}
+        const _td = parseInt(c.toastDuration, 10); if (_td >= 500) cfgToastDuracao = _td;
+        if (Array.isArray(c.teclasPersonalizadas)) cfgTeclasPersonalizadas = c.teclasPersonalizadas.filter(
+            t => t && typeof t.tecla === "string" && (typeof t.comando === "string" || typeof t.acao === "string")
+        );
+    } catch(e) {
+        console.warn("[AVISO] config.json não pôde ser lido (" + (e.message || e) + ") — usando valores padrão.");
+    }
 
     // === LÓGICA DE IDENTIFICAÇÃO DE REDE DO FIREBIRD ===
     let host = "127.0.0.1";
@@ -55,6 +126,13 @@
         dbPath = matchIP[2];
     }
 
+    // ATENÇÃO — duplicação INTENCIONAL: esta função é logicamente idêntica a
+    // `esc()` definida no lado cliente (dentro do template `html`, procure por
+    // "const esc="). Não dá para compartilhar o código entre os dois porque
+    // um roda em Node.js (montagem do relatório) e o outro no navegador
+    // (dentro do HTML gerado) — são runtimes diferentes sem módulo compartilhado
+    // neste formato de arquivo único. Se um dia mudar a lógica de escape aqui,
+    // replique a mudança em `esc()` também.
     const escHtml = s => String(s ?? "")
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
@@ -66,22 +144,24 @@
     // Converte campo de data do Firebird (pode chegar como Date JS ou string) para ISO YYYY-MM-DD.
     // node-firebird retorna campos DATE como objetos Date cujo .toString() é "Wed Apr 08 2026…",
     // quebrando o teste /^\d{4}-\d{2}-\d{2}$/. Usando getUTC* evitamos shift de fuso horário.
+    // _pad2: helper único — elimina 5 redefinições de `const p = n => ...`
+    const _pad2 = n => String(n).padStart(2, "0");
+
     const toISO = (val) => {
         if (!val) return "";
         if (val instanceof Date) {
-            const p = n => String(n).padStart(2, "0");
-            return `${val.getUTCFullYear()}-${p(val.getUTCMonth()+1)}-${p(val.getUTCDate())}`;
+            return `${val.getUTCFullYear()}-${_pad2(val.getUTCMonth()+1)}-${_pad2(val.getUTCDate())}`;
         }
         const s = String(val).trim();
         if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;                     // já ISO
         if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.substring(0, 10);    // ISO com hora
         const d = new Date(s);                                             // fallback: parsear
         if (!isNaN(d.getTime())) {
-            const p = n => String(n).padStart(2, "0");
-            return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())}`;
+            return `${d.getUTCFullYear()}-${_pad2(d.getUTCMonth()+1)}-${_pad2(d.getUTCDate())}`;
         }
         return s.substring(0, 10);
     };
+
 
     // Escalona timeouts conforme o intervalo solicitado — períodos grandes (ex: 1/4–15/4)
     // precisam de muito mais tempo para ALTERACA/PAGAMENT/ITENS001 com centenas de registros.
@@ -89,14 +169,20 @@
     const _diasIntervalo = Math.max(1, Math.round(
         (new Date(dataFimISO).getTime() - new Date(dataInicioISO).getTime()) / 86400000
     ) + 1);
-    const _tGlobal = Math.min(Math.max(90000, _diasIntervalo * 60000), 900000);
-    const _tQuery  = Math.min(Math.max(80000, _diasIntervalo * 45000), 600000);
+    // CONTRATO: aceita --timeout do servidor para sincronizar o tempo máximo de
+    // execução deste processo filho. Se não fornecido, calcula pelo intervalo de
+    // datas (comportamento anterior). Garante que o filho nunca exceda o timeout
+    // configurado no servidor (com margem de 5s para o filho reportar erro antes).
+    const _timeoutCli   = parseInt(pegar("--timeout") || "0", 10);
+    const _tGlobalCalc   = Math.min(Math.max(90000, _diasIntervalo * 60000), 900000);
+    const _tGlobal = (_timeoutCli >= 30000) ? Math.min(_timeoutCli - 5000, _tGlobalCalc) : _tGlobalCalc;
+    const _tQuery  = Math.min(Math.max(80000, _diasIntervalo * 45000), Math.round(_tGlobal * 0.85));
 
     // Timeout global
     const _globalTimeout = setTimeout(() => {
         const minutos = Math.round(_tGlobal / 60000);
         console.log(`\nERRO: Tempo limite excedido (${minutos} min). O banco de dados nao respondeu.`);
-        console.log("Verifique se o Firebird esta rodando em " + host + ":3050 e se o arquivo FDB existe:");
+        console.log("Verifique se o Firebird esta rodando em " + host + ":" + FIREBIRD_PORT + " e se o arquivo FDB existe:");
         console.log("  " + dbPath);
         process.exit(1);
     }, _tGlobal);
@@ -122,7 +208,7 @@
 				tx.rollback(() => {}); // leitura pura: rollback libera sem overhead de commit
 				if (rows) {
 					for (let i = 0; i < rows.length; i++) {
-						for (const key in rows[i]) {
+						for (const key of Object.keys(rows[i])) {
 							if (Buffer.isBuffer(rows[i][key])) {
 								rows[i][key] = decoder.decode(rows[i][key]);
 							}
@@ -146,52 +232,137 @@
 	const dataFimBR = parseBR(dataFimISO, dataFimRaw);
 	const dataBR = dataInicioISO === dataFimISO ? dataInicioBR : `${dataInicioBR} até ${dataFimBR}`;
 
-	const horaGeradaBR = (() => {
-		const d = new Date();
-		const p = n => String(n).padStart(2, "0");
-		return `${p(d.getHours())}:${p(d.getMinutes())}`;
-	})();
-	// Data de hoje em YYYY-MM-DD (fuso local) — usada para limitar horas futuras do PDV
-	const _hojeISO = (() => {
-		const d = new Date();
-		const p = n => String(n).padStart(2, "0");
-		return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-	})();
-	const diaMesGeradaBR = (() => {
-		const d = new Date();
-		const p = n => String(n).padStart(2, "0");
-		return `${p(d.getDate())}/${p(d.getMonth() + 1)}`;
-	})();
-	const ano2 = String(new Date().getFullYear()).slice(-2);
+	const _agora         = new Date();
+	const horaGeradaBR   = `${_pad2(_agora.getHours())}:${_pad2(_agora.getMinutes())}`;
+	const _hojeISO       = `${_agora.getFullYear()}-${_pad2(_agora.getMonth()+1)}-${_pad2(_agora.getDate())}`;
+	const diaMesGeradaBR = `${_pad2(_agora.getDate())}/${_pad2(_agora.getMonth()+1)}`;
+	const ano2           = String(_agora.getFullYear()).slice(-2);
 
-	// ── CACHE DE HORAS FIXADAS ─────────────────────────────────────────────────
+	const TOLERANCIA_RELOGIO_MIN = 3;    // ate 3 min atrasado -> aceita como esta (OK)
+	// REGRA DE HORA FIXA (v2.7.5) — alinhada com servidor-relatorio.js v2.7.7 e
+	// com a regra descrita pelo usuário:
+	//   hora acima da atual (futuro)      -> corrige para a hora atual
+	//   ate 3 min atras                    -> aceita como esta (marca OK)
+	//   entre 3 min e 1 hora atras         -> corrige para a hora atual
+	//   mais de 1 hora atras               -> ignora (fora da janela)
+	// Antes eram 1,5 min de tolerancia e 18 min de janela, valores que nao
+	// batiam nem com a regra pedida nem com a janela usada pelo servidor.
+	const MAXIMO_ATRASO_MIN      = 60;   // janela: > 1 hora atrasado -> ignora
+
+	// ── CACHE DE HORAS DO PDV ─────────────────────────────────────────────────
 	// Quando uma venda de hoje tem hora futura (relógio do PDV adiantado), capamos
 	// à hora atual. O problema: a cada atualização do relatório a hora avança,
 	// fazendo a venda flutuar para o topo da lista. Para evitar isso, persistimos
 	// a PRIMEIRA hora capada em um arquivo JSON — todas as execuções seguintes
 	// reutilizam essa hora fixada, mantendo a venda em posição estável.
 	// Entradas de dias anteriores são descartadas automaticamente na gravação.
+	//
+	// FORMATO FIX (ajuste solicitado — ordenação + bug de gerenciais ignorados):
+	// o valor era antes uma STRING solta ("OK" ou "HH:MM"). servidor-relatorio.js
+	// (correção de gerencial via poll) gravava a marca de tolerância como "ok"
+	// minúsculo, enquanto esta comparação abaixo (`_cached === "OK"`) exigia
+	// maiúsculo exato — toda venda gerencial marcada como "tolerável" pelo
+	// servidor era lida aqui como se "ok" fosse a PRÓPRIA HORA da venda,
+	// corrompendo a hora exibida e efetivamente perdendo a correção daquela
+	// venda dali em diante (o sintoma relatado: "gerenciais ignorados").
+	// Também não havia como ordenar o arquivo por tipo (nfc-e antes de
+	// gerencial) sem essa informação. Agora o valor é {tipo, hora}, e
+	// _ordenarHoraCache() (chamada sempre antes de salvar) reordena as
+	// chaves do objeto nessa ordem — nfc-e, nf-e, gerencial, ascendente por
+	// hora dentro de cada grupo — refletida diretamente no arquivo em disco.
+	// Compatibilidade: entradas antigas (string solta) continuam sendo lidas
+	// corretamente por _normalizarEntradaHoraCache; não é necessário migrar
+	// o arquivo manualmente. ESPELHA servidor-relatorio.js (procure por
+	// "HORA_CACHE_OK" lá) — duplicado de propósito, um processo de longa
+	// duração e um subprocesso descartável não compartilham módulo.
+	const HORA_CACHE_OK = "OK";
+	const _normalizarEntradaHoraCache = (bruto) => {
+		if (bruto && typeof bruto === "object" && !Array.isArray(bruto)) {
+			const horaObj = String(bruto.hora == null ? "" : bruto.hora).trim();
+			return {
+				tipo: String(bruto.tipo || "desconhecido"),
+				hora: horaObj.toUpperCase() === HORA_CACHE_OK ? HORA_CACHE_OK : horaObj
+			};
+		}
+		const s = String(bruto == null ? "" : bruto).trim();
+		return { tipo: "desconhecido", hora: s.toUpperCase() === HORA_CACHE_OK ? HORA_CACHE_OK : s };
+	};
+	// Ordem pedida (v2.6.5): gerencial primeiro, depois nfc-e, por último nf-e.
+	const _HORA_CACHE_TIPO_RANK = { gerencial: 0, nfce: 1, nfe: 2 };
+	// Extrai o número do documento a partir da chave "YYYY-MM-DD|numero".
+	// Retorna null se não conseguir parsear como inteiro (chave em formato
+	// inesperado) — nesse caso o desempate final por string cuida do resto.
+	const _numeroDaChaveHoraCache = (chave) => {
+		const partes = String(chave).split("|");
+		const n = parseInt(partes.length > 1 ? partes[1] : chave, 10);
+		return isNaN(n) ? null : n;
+	};
+	const _ordenarHoraCache = (cacheObj) => {
+		const chaves = Object.keys(cacheObj);
+		chaves.sort((a, b) => {
+			const ea = _normalizarEntradaHoraCache(cacheObj[a]);
+			const eb = _normalizarEntradaHoraCache(cacheObj[b]);
+			const ra = _HORA_CACHE_TIPO_RANK.hasOwnProperty(ea.tipo) ? _HORA_CACHE_TIPO_RANK[ea.tipo] : 99;
+			const rb = _HORA_CACHE_TIPO_RANK.hasOwnProperty(eb.tipo) ? _HORA_CACHE_TIPO_RANK[eb.tipo] : 99;
+			if (ra !== rb) return ra - rb;
+			// AJUSTE (v2.6.5): dentro do mesmo tipo, ordem DECRESCENTE por número
+			// do documento (do maior para o menor) — o mais recente primeiro, já
+			// que o número é sequencial por natureza.
+			const na = _numeroDaChaveHoraCache(a);
+			const nb = _numeroDaChaveHoraCache(b);
+			if (na !== null && nb !== null && na !== nb) return nb - na;
+			return a < b ? 1 : (a > b ? -1 : 0); // desempate final determinístico (também decrescente)
+		});
+		const ordenado = Object.create(null);
+		chaves.forEach((k) => { ordenado[k] = cacheObj[k]; });
+		return ordenado;
+	};
+
 	const _horaCacheFile = require("node:path").join(__dirname, "hora-fixada-cache.json");
-	let _horaCache = {};
+	// Object.create(null): sem protótipo — imune a prototype pollution
+	let _horaCache = Object.create(null);
 	try {
 		const _rawHC = fs.readFileSync(_horaCacheFile, "utf8").replace(/^\uFEFF/, "");
 		const _parsedHC = JSON.parse(_rawHC);
-		// Mantém somente entradas de hoje — purga dias anteriores
+		// Mantém somente entradas de hoje — purga dias anteriores.
+		// FORMATO FIX: aceita tanto string solta (formato antigo) quanto
+		// {tipo,hora} (formato novo) — a checagem anterior (`typeof val ===
+		// "string"`) descartava silenciosamente qualquer entrada gravada no
+		// formato novo por servidor-relatorio.js, tornando aquelas correções
+		// de gerencial invisíveis para este processo.
 		if (_parsedHC && typeof _parsedHC === "object") {
 			for (const [k, val] of Object.entries(_parsedHC)) {
-				if (typeof k === "string" && k.startsWith(_hojeISO + "|") && typeof val === "string") {
+				if (typeof k === "string" && k.startsWith(_hojeISO + "|") && (typeof val === "string" || (val && typeof val === "object"))) {
 					_horaCache[k] = val;
 				}
 			}
 		}
-	} catch(e) { /* arquivo ausente ou corrompido: começa vazio */ }
+	} catch(e) {
+		// ENOENT (arquivo ainda não existe) é o caso normal na primeira execução
+		// do dia — não merece aviso. Qualquer outro erro (JSON corrompido,
+		// permissão negada etc.) é silenciosamente ignorado no fluxo (o cache
+		// é só uma otimização, não é crítico), mas o operador merece saber que
+		// o cache de hora fixada não pôde ser lido, para investigar se as
+		// vendas do dia começarem a "flutuar" de posição a cada atualização.
+		if (e && e.code !== "ENOENT") {
+			console.warn("[AVISO] hora-fixada-cache.json não pôde ser lido (" + (e.message || e) + ") — cache de hora fixada será reconstruído do zero.");
+		}
+	}
 	let _horaCacheDirty = false;
 	// ──────────────────────────────────────────────────────────────────────────
+
+	let _dbRef = null;
+	process.on("unhandledRejection", (reason) => {
+		clearTimeout(_globalTimeout);
+		console.log("\nERRO inesperado: " + String((reason && reason.message) || reason));
+		try { if (_dbRef) { _dbRef.detach(); _dbRef = null; } } catch(_) {}
+		process.exit(1);
+	});
 
 	const rodar = async () => {
 		const opts = {
 			host: host,
-			port: 3050,
+			port: FIREBIRD_PORT,
 			database: dbPath,
 			user: usuario,
 			password: senha,
@@ -240,18 +411,21 @@
 			if (err) {
 				clearTimeout(_globalTimeout);
 				console.log("Falha ao conectar: " + String(err.message || err));
-				console.log("Verifique se o Firebird esta rodando em " + host + ":3050");
+				console.log("Verifique se o Firebird esta rodando em " + host + ":" + FIREBIRD_PORT);
 				process.exit(1);
 			}
+			_dbRef = db;
 			console.log("Conectado! Executando consultas...");
 			const _t0 = Date.now();
-			const tick = label => console.log(`  >> ${label}: ${Date.now() - _t0}ms acumulado`);
-			process.on("unhandledRejection", (reason) => {
-				clearTimeout(_globalTimeout);
-				console.log("\nERRO inesperado: " + String((reason && reason.message) || reason));
-				try { db.detach(); } catch(_) {}
-				process.exit(1);
-			});
+			// LOG FIX (v2.6.8): a cronometragem por etapa só é impressa quando o
+			// servidor passa "--debug" (ele repassa o logDebug do config.json).
+			// São 7 linhas POR GERAÇÃO — e uma geração acontece a cada venda nova.
+			// Numa loja em movimento isso domina o relatorio.log e empurra para
+			// fora a informação que de fato importa, pela rotação do arquivo.
+			// Continua disponível para investigar desempenho: basta ligar
+			// "logDebug": true no config.json.
+			const _DEBUG_LOG = process.argv.includes("--debug");
+			const tick = label => { if (_DEBUG_LOG) console.log(`  >> ${label}: ${Date.now() - _t0}ms acumulado`); };
 			const camposCache = new Map();
 			const camposTabela = async nome => {
 				const n = String(nome || "").trim().toUpperCase();
@@ -377,7 +551,11 @@
 			const rNfce = await query(db, nfceSql, [dataInicioISO, dataFimISO]);
 			tick("NFCE pronta");
 			if (rNfce.e) {
-				db.detach();
+				// PRECISÃO FIX (v2.6.4): detach() sem try/catch ANTES do console.log
+				// engolia a mensagem de erro — se o detach lançasse (cenário provável,
+				// já que a query acabou de falhar e a conexão pode estar morta), o
+				// usuário recebia um stack trace cru em vez da causa real do problema.
+				try { db.detach(); } catch(_) {}
 				console.log("Erro na consulta NFCE: " + String(rNfce.e.message || rNfce.e));
 				process.exit(1);
 			}
@@ -385,10 +563,59 @@
 			const mapVendas = new Map();
 			const idIndex   = new Map();
 
+			// VELOCIDADE FIX (v2.7.2): antes de descartar as linhas convertidas
+			// (CANC='T'), guarda os dados de identificação delas. Quando o Small
+			// Commerce converte uma gerencial em NFC-e, a linha nova (modelo 65)
+			// nasce com VENDEDOR, HORA e NATUREZA VAZIOS e só é preenchida quando
+			// a autorização volta da SEFAZ — o que pode demorar. Como a v2.7.1
+			// passou a exibir essas vendas imediatamente (o dinheiro já entrou no
+			// caixa), elas ficavam com "(sem vendedor)" e "não identificado" até
+			// lá. A gerencial de origem, que está sendo descartada aqui, JÁ TEM
+			// todos esses dados — e a coluna GERENCIAL da linha nova aponta
+			// exatamente para ela. Este mapa permite herdar essa identificação na
+			// hora, em vez de esperar a SEFAZ.
+			const _origemConvertida = new Map(); // numero da gerencial -> {vendedor, hora, natureza, cliente}
+			for (const n of rNfce.rows) {
+				if (n.CANC !== 'T') continue;
+				for (const c of validCols) {
+					const val = String(n["VAL_" + c] || "").trim().replace(/^0+/, "");
+					if (!val || _origemConvertida.has(val)) continue;
+					_origemConvertida.set(val, {
+						vendedor: String(n.VENDEDOR_NFCE || "").trim(),
+						hora:     String(n.HORA || "").trim(),
+						natureza: String(n.NAT_OP || "").trim(),
+						cliente:  String(n.CLI_NOME || "").trim()
+					});
+				}
+			}
+
 			for (const n of rNfce.rows) {
 				if (n.CANC === 'S' || n.CANC === 'T' || n.SIT === 'C' || n.EMI === 'C') continue; 
 				const totalNum = Number(n.TOTAL || 0);
-				if (totalNum <= 0) continue;
+				// CAUSA RAIZ (v2.7.1) do "venda convertida aparecendo como Gerencial":
+				// aqui havia "if (totalNum <= 0) continue;", que DESCARTAVA a nota
+				// antes mesmo de ela entrar em mapVendas/idIndex.
+				// Uma gerencial convertida em NFC-e gera, na tabela nfce, uma linha
+				// modelo 65 com a coluna GERENCIAL preenchida — mas com TOTAL, STATUS
+				// e chave ainda VAZIOS enquanto a autorização não volta da SEFAZ.
+				// Descartada aqui, essa linha não existia no idIndex; o pagamento
+				// correspondente não encontrava a venda e caía no "else" do Pass 2,
+				// que fabrica um registro-fantasma com modelo 99 — exatamente a
+				// "venda Gerencial" com número da faixa da NFC-e que aparecia na tela.
+				//
+				// CORREÇÃO DO ESCOPO (v2.7.4): o relaxamento acima vale APENAS para
+				// documento fiscal (modelo 65/NFC-e e 55/NF-e), que é o único que
+				// espera autorização da SEFAZ. A v2.7.1 relaxou para TODO modelo, e
+				// isso trouxe de volta gerenciais (modelo 99) sem total que o filtro
+				// original corretamente escondia — as ABERTAS (venda ainda em
+				// andamento no caixa) e as CANCELADAS cujo status não está refletido
+				// na coluna "cancelado" lida aqui. Elas reapareciam na lista com
+				// total vindo dos itens do ALTERACA e, pior, rotuladas como
+				// "aguardando autorização", conceito que não existe para gerencial.
+				// Gerencial sem total volta a ser descartada, como antes.
+				const _modeloLinha = Number(n.MODELO || 65);
+				const _ehDocFiscal = _modeloLinha === 65 || _modeloLinha === 55;
+				if (totalNum <= 0 && !_ehDocFiscal) continue;
 
 				const ids = [];
 				for (const c of validCols) {
@@ -406,18 +633,45 @@
 				let caixa = String(n.CAIXA ?? "").trim();
 				if (/^\d+$/.test(caixa) && caixa.length > 0 && caixa.length < 3) caixa = caixa.padStart(3, "0");
 
+				// Herda identificação da gerencial de origem enquanto a NFC-e ainda
+				// não foi autorizada (ver _origemConvertida acima). Só preenche o que
+				// está VAZIO — dado já vindo da própria linha fiscal sempre prevalece.
+				let _vendedorNf = String(n.VENDEDOR_NFCE || "").trim();
+				let _horaNf     = String(n.HORA || "").trim();
+				let _natNf      = String(n.NAT_OP || "").trim();
+				let _cliNf      = String(n.CLI_NOME || "").trim();
+				if (!_vendedorNf || !_horaNf || !_natNf) {
+					for (const id of ids) {
+						const _org = _origemConvertida.get(id);
+						if (!_org) continue;
+						if (!_vendedorNf && _org.vendedor) _vendedorNf = _org.vendedor;
+						if (!_horaNf     && _org.hora)     _horaNf     = _org.hora;
+						if (!_natNf      && _org.natureza) _natNf      = _org.natureza;
+						if (!_cliNf      && _org.cliente)  _cliNf      = _org.cliente;
+						break;
+					}
+				}
+
 				mapVendas.set(key, {
 					_dtKey: dt,
-					vendedor: String(n.VENDEDOR_NFCE || "").trim(),
+					vendedor: _vendedorNf,
 					modelo: Number(n.MODELO || 65),
 					numero: primaryId,
 					caixa: caixa,
-					hora: String(n.HORA || "").trim(),
-					cliente: String(n.CLI_NOME || "").trim(),
-					natureza: String(n.NAT_OP || "").trim(),
+					hora: _horaNf,
+					cliente: _cliNf,
+					natureza: _natNf,
 					total_nfce: totalNum,
 					total_pag: 0,
-					formas: []
+					formas: [],
+					// Marca a venda cuja NFC-e/NF-e ainda não foi autorizada pela SEFAZ
+					// (TOTAL/STATUS/chave vazios na tabela nfce). Usado para exibir
+					// um rótulo explicativo no lugar de "(sem vendedor)" / "não
+					// identificado" enquanto os dados fiscais não chegam.
+					// Restrito a documento fiscal de propósito: gerencial (modelo 99)
+					// nunca passa por autorização da SEFAZ, então nunca deve receber
+					// esse rótulo (ver correção de escopo acima).
+					pendente_autorizacao: totalNum <= 0 && _ehDocFiscal
 				});
 
 				for (const id of ids) idIndex.set(dt + "|" + id, key);
@@ -486,6 +740,9 @@
 								if (!_ex.natureza) _ex.natureza = String(vr.OP_V   || "").trim();
 								if ((!_ex.vendedor || _ex.vendedor === "?") && String(vr.VEND_V || "").trim())
 									_ex.vendedor = String(vr.VEND_V).trim();
+								// SAIDAH = hora de fechamento/lançamento real da venda (≠ hora de abertura do NFCE)
+								const _hV = String(vr.HORA_V || "").trim().substring(0, 5);
+								if (_hV && !_ex.horaFech) _ex.horaFech = _hV;
 								idIndex.set(_keyV, _keyStripped);
 								_vendaNfeKey.set(_nfRaw, _keyStripped);
 								continue;
@@ -515,7 +772,10 @@
 			const [rPag, rrAlt] = await Promise.all([_pPag, _pAlt]);
 			tick("queries paralelas prontas");
 			if (rPag.e) {
-				db.detach();
+				// PRECISÃO FIX (v2.6.4): mesmo caso do detach em rNfce acima — sem o
+				// try/catch, uma falha ao encerrar a conexão escondia a mensagem que
+				// explica por que a consulta PAGAMENT falhou.
+				try { db.detach(); } catch(_) {}
 				console.log("Erro na consulta PAGAMENT: " + String(rPag.e.message || rPag.e));
 				process.exit(1);
 			}
@@ -587,6 +847,62 @@
 						formasValores: grp.formasValores, is_recebimento: true
 					});
 					idIndex.set(searchKey, searchKey);
+				}
+			}
+
+			// ── RECONCILIAÇÃO: recebimento-fantasma de venda CONVERTIDA ─────────
+			// (v2.7.0) Quando uma gerencial é CONVERTIDA em NFC-e/NF-e, os
+			// pagamentos passam a apontar para o número do documento fiscal. Se o
+			// casamento do Pass 2 falhar (idIndex não encontra a venda por
+			// key0/searchKey), o "else" acima cria um registro-fantasma com
+			// modelo 99 + is_recebimento — que aparecia na tela como uma venda à
+			// parte, com o número da faixa da NFC-e (ex: 122158) e "Recebimento de
+			// Título / Conta" nos itens. Pior que o visual: como
+			// finalTotal = total_nfce > 0 ? total_nfce : total_pag, o fantasma
+			// entrava no total do dia com o valor cheio, DUPLICANDO uma venda que
+			// o documento fiscal já contabilizava.
+			// Aqui esses fantasmas são reconciliados: se existir um documento
+			// fiscal real de MESMO DIA e MESMO NÚMERO, o fantasma é absorvido por
+			// ele (formas de pagamento preservadas) e removido da lista.
+			// Seguro nos dois cenários possíveis:
+			//   - documento fiscal existe  → fantasma some, valor contado uma vez;
+			//   - não existe (recebimento avulso de verdade, sem conversão) → o
+			//     registro é mantido intacto, nada é perdido.
+			// A comparação normaliza zeros à esquerda porque numeração gerencial é
+			// zero-padded e a fiscal não.
+			{
+				const _normNum = n => String(n || "").trim().replace(/^0+/, "");
+				const _fiscalPorNumero = new Map(); // "dt|numero" → chave da venda real
+				for (const [k, v] of mapVendas.entries()) {
+					if (v.is_recebimento) continue;
+					const n = _normNum(v.numero);
+					if (!n) continue;
+					_fiscalPorNumero.set((v._dtKey || "") + "|" + n, k);
+				}
+				let _absorvidos = 0;
+				for (const [k, v] of [...mapVendas.entries()]) {
+					if (!v.is_recebimento) continue;
+					const n = _normNum(v.numero);
+					if (!n) continue;
+					const kAlvo = _fiscalPorNumero.get((v._dtKey || "") + "|" + n);
+					if (!kAlvo || kAlvo === k) continue;
+					const alvo = mapVendas.get(kAlvo);
+					if (!alvo) continue;
+					// Absorve o pagamento no documento fiscal. Quando o fiscal já tem
+					// total_nfce > 0, somar total_pag é inócuo (finalTotal prefere
+					// total_nfce); quando não tem, é justamente o que dá o valor certo.
+					alvo.total_pag = (alvo.total_pag || 0) + (v.total_pag || 0);
+					if (v.formas && v.formas.length) alvo.formas.push(...v.formas);
+					if (v.formasValores) {
+						if (!alvo.formasValores) alvo.formasValores = new Map();
+						for (const [f, fv] of v.formasValores)
+							alvo.formasValores.set(f, (alvo.formasValores.get(f) || 0) + fv);
+					}
+					mapVendas.delete(k);
+					_absorvidos++;
+				}
+				if (_absorvidos && _DEBUG_LOG) {
+					console.log(`  >> reconciliacao: ${_absorvidos} recebimento(s) de venda convertida absorvido(s) pelo documento fiscal`);
 				}
 			}
 
@@ -744,7 +1060,7 @@
 						}
 						// Transfere itens do altMap se o principal não tem
 						if (!altMap.has(principal) && altMap.has(kDup))
-							altMap.set(principal, altMap.get(kDup));
+							altMap.set(principal, [...(altMap.get(kDup) || [])]); // spread: sem array compartilhado
 						console.log("DEDUP NF-e: mesclado " + kDup + " → " + principal);
 						mapVendas.delete(kDup);
 					}
@@ -754,6 +1070,8 @@
 			const linhas = [];
 
 
+			// _normForma fora do loop — evita recriar a função a cada iteração
+			const _normForma = s => String(s || "").replace(/^cartao(?: +|$)/i, "").trim();
 			for (const [key, v] of mapVendas.entries()) {
 				// Para Gerencial (modelo 99): o total SEMPRE vem da soma real dos itens
 				// do ALTERACA (exclui cancelados) quando disponível — é o valor cobrado
@@ -784,9 +1102,14 @@
 
 				let finalVendedor = v.vendedor;
 				if (!finalVendedor || finalVendedor === "?") finalVendedor = vendAltMap.get(key) || "";
-				if (!finalVendedor || finalVendedor === "?") finalVendedor = "(sem vendedor)";
+				// RÓTULO (v2.7.3): quando a NFC-e ainda não foi autorizada pela SEFAZ,
+				// "(sem vendedor)" dá a entender que a informação não existe — quando
+				// na verdade ela só ainda não chegou. Um rótulo explícito evita que o
+				// operador ache que a venda está com problema ou incompleta.
+				if (!finalVendedor || finalVendedor === "?") {
+					finalVendedor = v.pendente_autorizacao ? "(aguardando autorização)" : "(sem vendedor)";
+				}
 
-				let finalPags = v.formas.length > 0 ? [...new Set(v.formas)].join(" | ") : "não identificado";
 
 				let numeroDisplay = v.numero;
 				if (/^\d+$/.test(numeroDisplay) && numeroDisplay.length < 6) numeroDisplay = numeroDisplay.padStart(6, "0");
@@ -803,41 +1126,94 @@
 
 				let finalHora = v.hora || horaAltMap.get(key) || "";
 
-				// Guarda de relógio do PDV: se a hora gravada no banco difere da hora atual
-				// do computador em mais de 1.5 minutos (adiantado OU atrasado), substitui
-				// pela hora atual na primeira detecção e persiste no cache — execuções
-				// seguintes reutilizam a hora fixada para manter a venda em posição estável.
+				// ── Correção de relógio do PDV ────────────────────────────────────────
+				// Regra (v2.7.5), igual nos dois lados do sistema:
+				//   diffMin > 0            → futuro    : corrige para a hora atual
+				//   0 ≥ diff ≥ −3min       → range ok  : aceita como está, grava OK no cache
+				//   −3min > diff ≥ −60min  → corrigível: corrige para a hora atual
+				//   diff < −60min          → ignorado  : fora da janela, sem ação
+				// A janela de 1 hora casa com _HORA_GERENCIAL_JANELA_MS de
+				// servidor-relatorio.js — se os dois divergirem, existe uma faixa em
+				// que um lado corrige e o outro não, e a venda parece "pular" de
+				// horário conforme quem processou por último.
 				if (finalHora && v._dtKey === _hojeISO) {
-					const _hh5 = String(finalHora).substring(0, 5); // HH:MM
-					if (_hh5.length === 5) {
+					const _hh5 = String(finalHora).substring(0, 5);
+					if (/^\d{2}:\d{2}$/.test(_hh5)) {
 						const _toMin = s => { const [h, m] = s.split(':').map(Number); return h * 60 + (m || 0); };
-						// Positivo = banco adiantado (futuro), negativo = banco atrasado (passado)
 						const _diffMin = _toMin(_hh5) - _toMin(horaGeradaBR);
-						// Só corrige vendas recentes: lançadas nos últimos 2 min ou com hora futura.
-						// Vendas com hora > 2 min no passado já foram lançadas antes — hora não é alterada.
-						const _isRecente = _diffMin >= -2;
-						if (_isRecente && Math.abs(_diffMin) > 1.5) {
-							// key já é "YYYY-MM-DD|stripped_number" — identificador único e estável
-							if (_horaCache[key]) {
-								// Reutiliza hora fixada em execução anterior (estabilidade de posição)
-								finalHora = _horaCache[key];
-							} else {
-								// Primeira detecção recente com diferença > 1.5 min: fixa na hora atual
-								finalHora = horaGeradaBR;
-								_horaCache[key] = horaGeradaBR;
-								_horaCacheDirty = true;
-							}
+						// FORMATO FIX: _horaCache guarda {tipo,hora} (ou string solta legada)
+						// — ver _normalizarEntradaHoraCache. "tipo" identifica a categoria da
+						// venda (nfc-e/nf-e/gerencial) para permitir ordenar o arquivo do
+						// cache por categoria ao salvar (_ordenarHoraCache).
+						const _cachedRaw = _horaCache[key];
+						const _cached = _cachedRaw !== undefined ? _normalizarEntradaHoraCache(_cachedRaw) : null;
+						const _tipoVenda = v.modelo === 65 ? "nfce" : v.modelo === 55 ? "nfe" : v.modelo === 99 ? "gerencial" : "desconhecido";
+						// MIGRAÇÃO (v2.6.5): entradas gravadas por versões anteriores são
+						// strings soltas ("HH:MM" / "OK"), sem o campo "tipo". Elas continuam
+						// sendo lidas corretamente (_normalizarEntradaHoraCache trata os dois
+						// formatos), mas nunca eram reescritas — porque, uma vez que a chave
+						// existe, os ramos abaixo só a consultam, nunca a atualizam. Resultado:
+						// o arquivo ficava misturado (metade string, metade objeto) até a
+						// virada do dia purgar as antigas, e as legadas caíam no fim da
+						// ordenação por serem "desconhecido". Aqui a entrada legada é
+						// promovida ao formato novo aproveitando o tipo real desta venda, que
+						// só este ponto do código conhece (v.modelo). O valor da hora é
+						// preservado exatamente como estava — a migração é só de formato,
+						// nunca altera o horário já fixado.
+						if (_cached && _cached.tipo === "desconhecido" && _tipoVenda !== "desconhecido") {
+							_horaCache[key] = { tipo: _tipoVenda, hora: _cached.hora };
+							_cached.tipo = _tipoVenda;
+							_horaCacheDirty = true;
 						}
+						if (_cached && _cached.hora === HORA_CACHE_OK) {
+							/* range ok verificado — usa hora original sem reverificação */
+						} else if (_cached && /^\d{2}:\d{2}/.test(_cached.hora)) {
+							// PRECISÃO FIX (v2.6.6): antes bastava "_cached.hora" ser truthy
+							// para o valor virar a hora exibida. Isso quebra assim que o cache
+							// ganha qualquer MARCADOR que não seja horário — como o
+							// "CANCELADA" introduzido em servidor-relatorio.js v2.7.0 para
+							// registrar gerenciais canceladas/convertidas sem deixar buraco na
+							// numeração: a tela mostraria literalmente "CANCELADA" na coluna de
+							// hora. Exigir o formato HH:MM é uma regra genérica — protege
+							// contra este e qualquer marcador futuro, sem precisar listar cada
+							// um aqui.
+							finalHora = _cached.hora;
+						} else if (_cached && _cached.hora && _cached.hora !== HORA_CACHE_OK) {
+							/* marcador não-horário (ex: CANCELADA) — mantém a hora original da venda */
+						} else if (_diffMin > 0) {
+							finalHora = horaGeradaBR; _horaCache[key] = { tipo: _tipoVenda, hora: horaGeradaBR }; _horaCacheDirty = true;
+						} else if (_diffMin >= -TOLERANCIA_RELOGIO_MIN) {
+							_horaCache[key] = { tipo: _tipoVenda, hora: HORA_CACHE_OK }; _horaCacheDirty = true;
+						} else if (_diffMin >= -MAXIMO_ATRASO_MIN) {
+							finalHora = horaGeradaBR; _horaCache[key] = { tipo: _tipoVenda, hora: horaGeradaBR }; _horaCacheDirty = true;
+						}
+						// else: diff < −MAXIMO_ATRASO_MIN → ignora silenciosamente
 					}
 				}
 
-				const tipoStr = v.modelo === 65 ? "nfc-e" : v.modelo === 99 ? "gerencial" : "nf-e";
-				// NF-e usa a natureza da operação no campo de formas
-				// Para Gerencial/NFC-e: remove prefixo "Cartao " de cada forma (ex: "Cartao DEBITO" → "DEBITO")
-				const _normForma = s => String(s || "").replace(/^cartao(?: +|$)/i, "").trim();
+				// TIPO FIX (v2.6.9): antes o tipo exibido vinha SÓ do modelo, então
+				// qualquer registro com modelo 99 aparecia como "Gerencial". Depois
+				// de CONVERTER uma gerencial em NFC-e/NF-e, o recebimento que sobra
+				// (is_recebimento) continuava com modelo 99 e era mostrado como mais
+				// uma venda "Gerencial" — mas com número da faixa da NFC-e (ex:
+				// 122156) e itens "Recebimento de Título / Conta". O resultado era
+				// confuso: vendas que já viraram documento fiscal reaparecendo como
+				// gerenciais na lista, inflando a contagem do tipo.
+				// O projeto JÁ tinha a definição correta de "gerencial real" — em
+				// #copiarGerencial: modelo 99 + NÃO is_recebimento + número zero-
+				// padded. Ela só não estava sendo aplicada à coluna TIPO da tabela.
+				// Agora está, para que a tela e o botão de copiar concordem.
+				const _ehGerencialReal = v.modelo === 99 && !v.is_recebimento;
+				const tipoStr = v.modelo === 65 ? "nfc-e"
+					: v.modelo === 99 ? (_ehGerencialReal ? "gerencial" : "recebimento")
+					: "nf-e";
+				// RÓTULO (v2.7.3): mesmo raciocínio do vendedor — enquanto a NFC-e não
+				// é autorizada, "não identificado" sugere dado ausente/errado, quando
+				// é apenas dado que ainda não chegou da SEFAZ.
+				const _semFormaLabel = v.pendente_autorizacao ? "aguardando autorização" : "não identificado";
 				const finalPagsDisplay = v.modelo === 55
-					? (v.natureza || (v.formas.length > 0 ? [...new Set(v.formas)].map(_normForma).filter(Boolean).join(" | ") : "não identificado"))
-					: (v.formas.length > 0 ? [...new Set(v.formas)].map(_normForma).filter(Boolean).join(" | ") : "não identificado");
+					? (v.natureza || (v.formas.length > 0 ? [...new Set(v.formas)].map(_normForma).filter(Boolean).join(" | ") : _semFormaLabel))
+					: (v.formas.length > 0 ? [...new Set(v.formas)].map(_normForma).filter(Boolean).join(" | ") : _semFormaLabel);
 
 				linhas.push({
 					_dtKey: v._dtKey,
@@ -947,7 +1323,8 @@
 			if (totaisDia.nfe       > 0) totaisDia.modelos.push({modelo: 55, total: totaisDia.nfe});
 
 			const vendTotaisDia = [...mpVend.values()].sort((a, b) => a.vendedor.localeCompare(b.vendedor, "pt-BR", { sensitivity: "base" }));
-			const vendedores = [...mpVend.values()].map(v => ({ vendedor: v.vendedor, qtd: v.qtd, total: v.geral })).sort((a, b) => a.vendedor.localeCompare(b.vendedor, "pt-BR", { sensitivity: "base" }));
+			// vendedores derivado de vendTotaisDia (já ordenado) — sem 2º spread+sort
+			const vendedores = vendTotaisDia.map(v => ({ vendedor: v.vendedor, qtd: v.qtd, total: v.geral }));
 
 			const totalGeral = totaisDia.geral;
 			const qtdGeral = linhas.length;
@@ -959,35 +1336,71 @@
 				vendedores,
 				vendTotaisDia,
 				vendas: linhas,
-				totaisDia
+				totaisDia,
+				// Proibidos embutidos no HTML para eliminar o "flash" na primeira
+				// renderização — o browser usa este valor imediatamente sem esperar
+				// o fetch /api/proibidos (que ainda é feito para pegar updates posteriores).
+				proibidosServidor: cfgProibidos
 			};
 			const dadosJSON = JSON.stringify(dados).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 			tick("JSON montado — gerando HTML...");
-			const html = String.raw`<!doctype html><html lang="pt-br"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName)} ${escHtml(dataBR)}</title>
+			const html = String.raw`<!doctype html><!-- gerar-relatorio-html.js v${SCRIPT_VERSION} --><html lang="pt-br" data-report-version="${SCRIPT_VERSION}"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName)} ${escHtml(dataBR)}</title>
 <script>
       (function(){
         try {
+          var TEMAS_VALIDOS = ["ultra-dark", "dark", "light"];
           var t = localStorage.getItem("fdb_theme") || (document.cookie.match(/fdb_theme=([^;]+)/)||[])[1] || "ultra-dark";
+          if (TEMAS_VALIDOS.indexOf(t) < 0) t = "ultra-dark";
           document.documentElement.setAttribute("data-theme", t);
         } catch(e){}
       })();
     </script>
 <style>
 :root, [data-theme="dark"] {
+  /* PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
+     --top-blur era 16-20px conforme o tema; backdrop-filter é uma das
+     propriedades CSS mais pesadas de compor, e quanto maior o raio do
+     blur, mais caro (o custo cresce mais rápido que o raio). Reduzido para
+     10-12px nos três temas — ainda dá o efeito "vidro fosco", só que bem
+     mais barato pra GPUs integradas/mais fracas. Mesmo raciocínio aplicado
+     a thead (12px→6px, e consolidado de N células para 1 elemento só),
+     .mhead (12px→8px), .mobileBar (20px→12px) e .ov (7px→6px), abaixo. */
   --bg-app: #09090b; --bg-panel: #18181b; --bg-hover: #27272a;
   --border: rgba(255, 255, 255, 0.08); --border-focus: rgba(255, 255, 255, 0.15);
   --text-main: #f4f4f5; --text-muted: #a1a1aa;
   --accent: #3b82f6; --accent-hover: #2563eb; --accent-bg: rgba(59, 130, 246, 0.1);
   --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(24, 24, 27, 0.75); --top-blur: blur(16px);
+  --top-bg: rgba(24, 24, 27, 0.75); --top-blur: blur(10px);
   --th-bg: rgba(24, 24, 27, 0.95); --mhead-bg: rgba(24, 24, 27, 0.95); --ov-bg: rgba(0, 0, 0, 0.7);
   --chip-bg: transparent; --chip-bg-hover: rgba(255,255,255,0.05);
   --scroll-thumb: rgba(255, 255, 255, 0.15); --scroll-thumb-hover: rgba(255, 255, 255, 0.25);
   --radius-sm: 4px; --radius-md: 8px; --radius-lg: 12px;
   --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
   --shadow-lg: 0 10px 25px -5px rgba(0,0,0,0.5), 0 8px 10px -6px rgba(0,0,0,0.3);
-  --easing: cubic-bezier(0.4, 0, 0.2, 1);
-  --transition: all 0.3s var(--easing); --transition-fast: all 0.15s var(--easing);
+  /* SUAVIZAÇÃO (ajuste solicitado): era cubic-bezier(0.4, 0, 0.2, 1) — uma
+     curva "padrão" mais mecânica/linear. Os dois temas realmente selecionáveis
+     (ultra-dark e light, abaixo) já usavam a curva mais suave/elegante
+     "ease-out" acentuada (0.16, 1, 0.3, 1) — como ambos sobrescrevem
+     --easing com a mesma especificidade e vêm depois no CSS, a versão daqui
+     de :root já não era usada na prática (só ficaria visível numa fresta de
+     alguns milissegundos antes do script inline definir data-theme). Unificado
+     para eliminar a inconsistência e garantir a curva elegante mesmo se um
+     tema futuro esquecer de redeclarar --easing. */
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Lista explícita em vez de "all": animar "all" faz o navegador monitorar
+     TODAS as propriedades CSS do elemento (inclusive as que nunca mudam) e
+     pode disparar transições indesejadas em mudanças não-visuais.
+     PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
+     "border-radius" removido de --transition (usada por .badge/.item/
+     .cardRow/tbody tr) — conferido contra TODOS os seletores :hover/:focus
+     do arquivo e NENHUM desses elementos muda seu próprio border-radius.
+     Mantido em --transition-fast porque tbody td PRECISA dele de verdade:
+     tbody tr:hover td:first-child/:last-child arredondam os cantos via
+     border-top/bottom-*-radius quando a linha é destacada — a forma
+     "longhand" dessas propriedades não continha a substring "border-radius"
+     na primeira checagem, por isso passou despercebido de início. */
+  --transition: background 0.2s var(--easing), border-color 0.2s var(--easing), color 0.2s var(--easing), box-shadow 0.2s var(--easing), transform 0.2s var(--easing);
+  --transition-fast: background 0.15s var(--easing), border-color 0.15s var(--easing), border-radius 0.15s var(--easing), color 0.15s var(--easing), box-shadow 0.15s var(--easing), transform 0.15s var(--easing);
   color-scheme: dark;
 }
 [data-theme="ultra-dark"] {
@@ -995,7 +1408,7 @@
   --border: rgba(255, 255, 255, 0.08); --border-focus: rgba(255, 255, 255, 0.15);
   --text-main: #ededed; --text-muted: #a1a1aa;
   --accent: #0ea5e9; --accent-hover: #0284c7; --accent-bg: rgba(14, 165, 233, 0.12);
-  --top-bg: rgba(10, 10, 10, 0.65); --top-blur: blur(20px);
+  --top-bg: rgba(10, 10, 10, 0.65); --top-blur: blur(12px);
   --th-bg: rgba(10, 10, 10, 0.85); --mhead-bg: rgba(10, 10, 10, 0.8); --ov-bg: rgba(0, 0, 0, 0.8);
   --chip-bg: rgba(255,255,255,0.03); --chip-bg-hover: rgba(255,255,255,0.06);
   --scroll-thumb: rgba(255, 255, 255, 0.1); --scroll-thumb-hover: rgba(255, 255, 255, 0.2);
@@ -1010,7 +1423,7 @@
   --border: rgba(0, 0, 0, 0.1); --border-focus: rgba(0, 0, 0, 0.2);
   --text-main: #0f172a; --text-muted: #64748b;
   --accent: #2563eb; --accent-hover: #1d4ed8; --accent-bg: rgba(37, 99, 235, 0.1);
-  --top-bg: rgba(255, 255, 255, 0.75); --top-blur: blur(20px);
+  --top-bg: rgba(255, 255, 255, 0.75); --top-blur: blur(12px);
   --th-bg: rgba(255, 255, 255, 0.9); --mhead-bg: rgba(255, 255, 255, 0.9); --ov-bg: rgba(0, 0, 0, 0.4);
   --chip-bg: rgba(0,0,0,0.03); --chip-bg-hover: rgba(0,0,0,0.06);
   --scroll-thumb: rgba(0, 0, 0, 0.15); --scroll-thumb-hover: rgba(0, 0, 0, 0.25);
@@ -1019,11 +1432,28 @@
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: light;
 }
-@keyframes fadeSlideUp { 0% { opacity: 0; transform: translateY(20px); } 100% { opacity: 1; transform: translateY(0); } }
+@keyframes fadeSlideUp { 0% { opacity: 0; transform: translateY(14px); } 100% { opacity: 1; transform: translateY(0); } }
 @keyframes fadeIn { 0% { opacity: 0; } 100% { opacity: 1; } }
 @keyframes scaleIn { 0% { opacity: 0; transform: scale(0.96); } 100% { opacity: 1; transform: scale(1); } }
-@keyframes reveal { 0% { opacity: 0; transform: translateY(-6px) scale(0.88); } 60% { opacity: 1; transform: translateY(2px) scale(1.04); } 80% { transform: translateY(-1px) scale(0.98); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
-.reveal { animation: reveal 1s cubic-bezier(0.34,1.56,0.64,1) both; }
+@keyframes reveal { 0% { opacity: 0; transform: translateY(-3px) scale(0.96); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+.reveal { animation: reveal 0.32s var(--easing) both; }
+/* PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
+   respeita a preferência de "reduzir movimento" do sistema operacional
+   (Configurações > Acessibilidade no Windows) — quem já configurou isso,
+   geralmente por hardware limitado ou sensibilidade a movimento, passa a
+   ver transições/animações praticamente instantâneas em vez de suprimidas
+   à força (roda muito rápido em vez de "nada" — evita saltos visuais
+   abruptos que a remoção total causaria). Rede de segurança adicional aos
+   ajustes de blur/propriedades acima; não muda nada para quem não ativou
+   essa preferência. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--text-main); font-family: 'Inter', sans-serif; overflow: hidden; -webkit-font-smoothing: antialiased; }
 .mono { font-family: 'JetBrains Mono', Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
@@ -1031,10 +1461,18 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 10px; border: 2px solid var(--bg-app); }
 ::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
-.app { height: 100%; max-height: 100vh; display: grid; grid-template-rows: auto 1fr; overflow: hidden; animation: fadeIn 0.5s var(--easing); }
+.app { height: 100%; max-height: 100vh; display: grid; grid-template-rows: auto 1fr; overflow: hidden; animation: fadeIn 0.28s var(--easing); }
 .top { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 16px 28px; background: var(--top-bg); backdrop-filter: var(--top-blur); border-bottom: 1px solid var(--border); z-index: 50; box-shadow: var(--shadow-sm); }
-.top .left { display: flex; flex-wrap: nowrap; gap: 14px; align-items: center; justify-content: space-between; }
-.badges { display: flex; gap: 10px; align-items: center; flex-wrap: nowrap; min-width: 0; }
+/* AJUSTE SOLICITADO: "overflow: hidden" removido daqui. Estava cortando
+   conteudo que ultrapassasse a largura da barra superior (o filtro de
+   vendedor com nome longo, badges, etc.) em vez de deixar transbordar.
+   "min-width: 0" foi MANTIDO de proposito: e' o que permite que os filhos
+   flex encolham abaixo do proprio conteudo, entao os elementos que tem
+   text-overflow:ellipsis proprio (.vendTxt, por exemplo) continuam
+   truncando com "..." normalmente — sem ele, o ellipsis daqueles filhos
+   pararia de funcionar. */
+.top .left { display: flex; flex-wrap: nowrap; gap: 14px; align-items: center; justify-content: space-between; min-width: 0; }
+.badges { display: flex; gap: 10px; align-items: center; flex-wrap: nowrap; }
 .badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); background: var(--bg-panel); border: 1px solid var(--border); padding: 6px 12px; border-radius: 99px; white-space: nowrap; transition: var(--transition); box-shadow: var(--shadow-sm); }
 .badge:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
 .badgeHora { background: transparent; border-color: transparent; box-shadow: none; }
@@ -1073,7 +1511,7 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 .btnLabel { gap: 7px; padding: 0 14px; font-size: 12px; font-weight: 600; }
 .btnLabel svg { flex-shrink: 0; }
 .btnProibidos { display: none; } .badgeGeradoMobile { display: none; }
-.main { min-height: 0; display: grid; grid-template-columns: 280px 1fr; animation: fadeSlideUp 0.6s var(--easing) forwards; }
+.main { min-height: 0; display: grid; grid-template-columns: 280px 1fr; }
 .sidebar { min-height: 0; border-right: 1px solid var(--border); padding: 24px 20px; display: flex; flex-direction: column; background: var(--bg-app); }
 .sb-head { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; margin-bottom: 12px; }
 .sb-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); font-weight: 700; }
@@ -1115,9 +1553,18 @@ span#tDiaSel { margin-right: 3px; }
 .badge[data-tip="Data dos dados desse relatório"],.badge[data-tip="Dia, hora e mês em que esse relatório foi gerado"] { letter-spacing: 1px; }
 span#tQtdGer, span#tQtdNfce { margin: 0 5px; } div#vendSel { margin-right: 5px; }
 table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; display: block; flex: 1 1 auto; overflow: auto; --sbw: 0px; }
-thead { position: sticky; top: 0; z-index: 10; display: table; width: 100%; table-layout: fixed; }
+/* PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
+   background+backdrop-filter estavam em "thead th" (repetidos em CADA
+   célula do cabeçalho — 8-12 regiões de blur recalculadas a cada frame de
+   scroll, já que o cabeçalho é sticky). Consolidado para UMA vez em
+   "thead" (elemento pai) — mesmo efeito visual, uma fração do custo de
+   composição por frame. Blur também reduzido de 12px para 6px: como
+   --th-bg já é quase opaco (85-95%), pouca coisa "atrás" do cabeçalho
+   chega a aparecer mesmo sem blur nenhum — 6px já é suficiente para
+   suavizar a borda de conteúdo passando por baixo, sem o custo de 12px. */
+thead { position: sticky; top: 0; z-index: 10; display: table; width: 100%; table-layout: fixed; background: var(--th-bg); backdrop-filter: blur(6px); }
+thead th { color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 12px 8px; border-bottom: 1px solid var(--border); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 tbody { display: table; width: 100%; table-layout: fixed; }
-thead th { background: var(--th-bg); backdrop-filter: blur(12px); color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 12px 8px; border-bottom: 1px solid var(--border); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 tbody tr { background: transparent; transition: var(--transition); cursor: pointer; }
 tbody td { padding: 12px 8px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-muted); vertical-align: middle; transition: var(--transition-fast); overflow: hidden; }
 tbody tr:hover { background: var(--bg-hover); transform: translateY(-1px); box-shadow: var(--shadow-md); position: relative; z-index: 5; }
@@ -1142,10 +1589,31 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 .itensMini .itensChips { max-height: 220px; overflow-y: auto; padding-right: 4px; scroll-behavior: smooth; }
 .itensMini.big { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .itensMini.big .itensChips { flex: 1 1 auto; overflow-y: auto; min-height: 60px; max-height: none; padding-right: 6px; scroll-behavior: smooth; }
-.ov { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: var(--ov-bg); backdrop-filter: blur(10px); z-index: 9998; padding: 20px; opacity: 0; transition: opacity 0.3s var(--easing); }
-.ov.on { display: flex; opacity: 1; } .ov.on .modal { animation: scaleIn 0.3s var(--easing) forwards; }
-.modal { width: min(720px, 100%); max-height: 90vh; display: flex; flex-direction: column; background: var(--bg-panel); border: 1px solid var(--border-focus); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden; }
-.mhead { display: flex; padding: 24px; background: var(--mhead-bg); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+/* SUAVIZAÇÃO (ajuste solicitado): antes, ".ov" ficava oculto via
+   "display:none" e ".ov.on" trocava para "display:flex" — como "display"
+   não é uma propriedade animável (é tudo-ou-nada), toggle da classe para
+   FECHAR fazia o overlay sumir instantaneamente, sem nenhum fade, mesmo
+   com "transition: opacity" declarado (o navegador nunca chegava a
+   renderizar o passo intermediário antes de remover o elemento da árvore
+   de renderização). Trocado pelo padrão já usado com sucesso em #__tip
+   neste mesmo arquivo: o elemento fica sempre "display:flex" e o
+   oculto/visível é controlado só por opacity + visibility + pointer-events
+   — isso anima nos DOIS sentidos (abrir E fechar) sem precisar de nenhum
+   ajuste na parte JavaScript que só faz classList.add/remove("on")
+   (abrirModal/fecharModal, abrirAcoes/fecharAcoes, abrir/fecharVendedores).
+   "visibility" some só DEPOIS do fade (transition-delay = duração do fade)
+   ao fechar, e aparece IMEDIATAMENTE ao abrir — truque padrão para permitir
+   transição suave em elementos que também precisam ficar fora da árvore de
+   acessibilidade/cliques quando ocultos. Duração de saída (0.16s) um pouco
+   mais rápida que a de entrada (0.22s) — combinação clássica de UI
+   "chegada com leve flourish, saída ágil" usada por padrão em interfaces
+   modernas. will-change avisa o navegador com antecedência para evitar o
+   primeiro frame de abertura/fechamento ficar "pesado" (jank perceptível). */
+.ov { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--ov-bg); backdrop-filter: blur(6px); z-index: 9998; padding: 20px; opacity: 0; visibility: hidden; pointer-events: none; will-change: opacity; transition: opacity 0.16s var(--easing), visibility 0s linear 0.16s; }
+.ov.on { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity 0.22s var(--easing), visibility 0s linear 0s; }
+.ov.on .modal { animation: scaleIn 0.22s var(--easing) forwards; }
+.modal { width: min(720px, 100%); max-height: 90vh; display: flex; flex-direction: column; background: var(--bg-panel); border: 1px solid var(--border-focus); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden; will-change: transform, opacity; }
+.mhead { display: flex; padding: 24px; background: var(--mhead-bg); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
 .mtitle { font-size: 22px; font-weight: 700; color: var(--text-main); letter-spacing: -0.02em; }
 .msub { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
 .mbody { display: flex; flex-direction: column; gap: 5px; padding: 12px; overflow: auto; flex: 1 1 auto; min-height: 0; }
@@ -1189,6 +1657,9 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 .kvItens .v { overflow:hidden; min-height:0; display:flex; flex-direction:column; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: flex-start; background: var(--bg-app); border: 1px solid var(--border); padding: 16px 20px; border-radius: var(--radius-md); transition: var(--transition-fast); }
 .kv:hover { border-color: var(--border-focus); background: var(--bg-hover); }
+.kv.kvSep { background: transparent; border-color: transparent; padding: 18px 20px 4px; }
+.kv.kvSep:hover { background: transparent; border-color: transparent; }
+.kv.kvNew .k::after { content: " ✦"; color: var(--accent); font-size: 10px; }
 .k { font-size: 12px; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; }
 .v { font-size: 14px; font-weight: 500; color: var(--text-main); }
 .cards { display: none; padding: 16px; overflow-y: auto; }
@@ -1204,9 +1675,9 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 @media (max-width: 920px) { .main { grid-template-columns: 1fr; } .sidebar { display: none; } .vendBtn { display: flex; } #acoes { display: inline-flex; } .radioBusca { flex: 1 1 100%; justify-content: space-between; } }
 @media (max-width: 680px) {
   .content { padding: 12px; } .tableTop { padding: 20px; } table { display: none; } .cards { display: block; padding-bottom: 100px; }
-  .mobileBar { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: var(--top-bg); backdrop-filter: blur(20px); padding: 16px 20px 24px 20px; gap: 12px; border-top: 1px solid var(--border); z-index: 50; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
+  .mobileBar { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: var(--top-bg); backdrop-filter: blur(12px); padding: 16px 20px 24px 20px; gap: 12px; border-top: 1px solid var(--border); z-index: 50; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
   .mobileBar .btn { flex: 1; height: 48px; font-weight: 600; border-radius: var(--radius-lg); }
-  .ov.sheet { align-items: flex-end; padding: 12px; } .ov.sheet .modal { border-radius: 24px 24px 12px 12px; padding: 24px; animation: fadeSlideUp 0.4s var(--easing) forwards;} .badges .badgeHora { display: none; }
+  .ov.sheet { align-items: flex-end; padding: 12px; } .ov.sheet .modal { border-radius: 24px 24px 12px 12px; padding: 24px; animation: fadeSlideUp 0.26s var(--easing) forwards;} .badges .badgeHora { display: none; }
 }
 /* ── Tooltip customizado ─────────────────────────────────────── */
 #__tip {
@@ -1218,7 +1689,12 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
   box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 2px 6px rgba(0,0,0,0.3);
   opacity: 0; transform: translateY(4px) scale(0.97);
   transition: opacity 0.14s ease, transform 0.14s ease;
-  backdrop-filter: blur(12px);
+  /* PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
+     removido "backdrop-filter: blur(12px)" — --bg-panel é uma cor 100%
+     opaca (hex sem canal alpha) nos três temas, então não existe NADA
+     "atrás" deste tooltip que pudesse aparecer borrado. O blur estava
+     custando processamento de composição a cada abertura de tooltip sem
+     produzir nenhum efeito visual (zero diferença perceptível removendo). */
 }
 #__tip.on { opacity: 1; transform: translateY(0) scale(1); }
 </style>
@@ -1355,8 +1831,24 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 <script id="dados" type="application/json">${dadosJSON}</script>
 <script>
 const qs = s => document.querySelector(s);
+// SUAVIZAÇÃO (ajuste solicitado): fecha um overlay dinâmico (criado via
+// document.createElement, ao contrário de #ov/#ovVend/#ovAcoes que já
+// existem no HTML e só trocam de classe) tocando a animação de saída ANTES
+// de remover o elemento do DOM. Sem isso, "bg.remove()" tirava o elemento
+// da árvore de renderização no mesmo frame em que a transição de opacity
+// começaria — o overlay simplesmente sumia, sem nenhum fade (o CSS nunca
+// tinha tempo de tocar). 160ms = duração de saída declarada em ".ov" (CSS);
+// mantenha os dois em sincronia se algum dia mudar um dos dois.
+const DURACAO_FECHAR_OVERLAY_MS = 160;
+const _fecharOverlayAnimado = (el) => {
+    if (!el) return;
+    el.classList.remove("on");
+    setTimeout(() => { try { el.remove(); } catch(_) {} }, DURACAO_FECHAR_OVERLAY_MS);
+};
 // Duração do toast (ms) — lida do config.json no momento da geração
 const __TOAST_DURACAO__ = ${cfgToastDuracao};
+// Teclas de atalho personalizadas — lidas do config.json no momento da geração
+const __TECLAS_PERSONALIZADAS__ = ${JSON.stringify(cfgTeclasPersonalizadas)};
 // Envia erros JS ao servidor para registro em relatorio.log
 // ── Tooltip customizado ─────────────────────────────────────────────────────
 // Substitui o tooltip nativo do browser (feio, sem estilo) por um flutuante
@@ -1448,13 +1940,32 @@ const __TOAST_DURACAO__ = ${cfgToastDuracao};
 })();
 // ────────────────────────────────────────────────────────────────────────────
 
+// RUÍDO FIX (v2.6.7): estes dois handlers capturam TUDO que falha na página —
+// inclusive erros de EXTENSÕES DO NAVEGADOR, que rodam no mesmo contexto mas
+// não têm relação nenhuma com este sistema. Caso real observado no
+// relatorio.log do usuário: uma extensão do Chrome falhando ~1x por segundo
+// gerou 1360 das 1478 linhas do log (92%), com um POST por segundo, e
+// empurrou para fora toda informação de diagnóstico útil pela rotação do
+// arquivo. Não dá para consertar o bug de uma extensão de terceiros, então o
+// certo é não registrar o que não é nosso. A detecção olha o stack e a origem
+// atrás dos esquemas de extensão dos navegadores (chrome/moz/safari/ms-browser).
+// Continua registrando normalmente qualquer erro vindo da própria página.
+const _ehErroDeExtensao = (texto) => /(?:chrome|moz|safari|ms-browser)-extension:\/\//i.test(String(texto || ""));
+
 window.onerror=function(msg,src,line,col,err){
-  try{fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({msg:String(msg),src:String(src||''),line:line,col:col,stack:err&&err.stack?String(err.stack):''})});}catch(_){}
+  try{
+    var _stack = err&&err.stack?String(err.stack):'';
+    if(_ehErroDeExtensao(_stack)||_ehErroDeExtensao(src))return;
+    fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({msg:String(msg),src:String(src||''),line:line,col:col,stack:_stack})});}catch(_){}
 };
 window.onunhandledrejection=function(ev){
-  try{var r=ev&&ev.reason;fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({msg:'UnhandledRejection: '+String(r&&r.message||r),stack:r&&r.stack?String(r.stack):''})});}catch(_){}
+  try{
+    var r=ev&&ev.reason;
+    var _stack = r&&r.stack?String(r.stack):'';
+    if(_ehErroDeExtensao(_stack))return;
+    fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({msg:'UnhandledRejection: '+String(r&&r.message||r),stack:_stack})});}catch(_){}
 };
 const dadosEl = qs("#dados");
 let DADOS;
@@ -1513,7 +2024,21 @@ const fmt=v=>new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).fo
 // Valor sem símbolo de moeda — usado na exibição de formas no modal
 const fmtN=v=>new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(v||0));
 const fmtCopia=v=>new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2,useGrouping:false}).format(Number(v||0));
+// ATENÇÃO — espelha escHtml() do lado servidor (procure por "const escHtml"
+// no topo do arquivo, dentro da função Node.js). Duplicação intencional —
+// runtimes diferentes (navegador aqui, Node.js lá). Mudou um, muda o outro.
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+
+// _fetchJSON — wrapper compartilhado para todo fetch()+.json() do arquivo.
+// ANTES: cada chamada fazia .then(r=>r.json()) direto, sem checar r.ok — uma
+// resposta HTTP de erro (500, 502 etc.) só era pega INDIRETAMENTE se o corpo
+// não fosse JSON válido (cai no .catch por acidente, não por checagem
+// explícita). Uma resposta de erro que APESAR de tudo devolvesse um JSON
+// válido (ex: {} de um proxy/gateway) passaria como se fosse sucesso.
+const _fetchJSON = (url, opts) => fetch(url, opts).then(r => {
+    if (!r.ok) throw new Error("HTTP " + r.status + " em " + url);
+    return r.json();
+});
 
 const temasOpcoes = ["ultra-dark", "dark", "light"];
 const _salvarTema = (t) => {
@@ -1573,9 +2098,8 @@ const lerProibidos=()=>{
     if(!raw)return proibidosPadrao.slice();
     let arr=[];
     if(raw.startsWith("[")){
-        const ms=raw.match(/"([^"\\]*(?:\\.[^"\\]*)*)"/g);
-        if(ms&&ms.length)arr=ms.map(s=>s.slice(1,-1).replace(/\\\"/g,'"'));
-        else arr=raw.replace(/[\[\]"]/g,"").split(",");
+        try{ const p=JSON.parse(raw); arr=Array.isArray(p)?p.map(String):[]; }
+        catch(_){ arr=raw.replace(/^\[|\]$/g,"").split(","); }
     }else{
         arr=raw.split(/\n|,/g);
     }
@@ -1602,11 +2126,17 @@ const setProibidosUser=(lista)=>{
     _recompileProibidos();
 };
 
-// Sincroniza proibidos com o servidor (GET /api/proibidos → sobrescreve localStorage)
+// Aplica proibidos embutidos na geração IMEDIATAMENTE (sem flash), depois
+// sincroniza com o servidor para pegar atualizações feitas após a geração.
 (function _syncProibidos(){
+    // 1. Estado inicial — proibidos embutidos no HTML no momento da geração
+    const _embutidos = DADOS && Array.isArray(DADOS.proibidosServidor) ? DADOS.proibidosServidor : [];
+    if (_embutidos.length) {
+        setProibidosUser(_embutidos);
+    }
+    // 2. Sincroniza com o servidor (pega atualizações posteriores à geração)
     try{
-        fetch('/api/proibidos',{cache:'no-store'})
-        .then(r=>r.json())
+        _fetchJSON('/api/proibidos',{cache:'no-store'})
         .then(d=>{
             if(Array.isArray(d.proibidos)&&d.proibidos.length){
                 setProibidosUser(d.proibidos);
@@ -1619,13 +2149,15 @@ const __ncToastMsgs=new Set();
 // Inicializa __TOAST_MS com o valor embutido na geração do HTML (config.json → toastDuracao).
 // Pode ser sobrescrito pelo modal de configurações sem recarregar a página.
 window.__TOAST_MS = (typeof __TOAST_DURACAO__==="number" && __TOAST_DURACAO__>=500) ? __TOAST_DURACAO__ : 5000;
+// Teclas de atalho — inicializadas do HTML embutido; atualizadas in-place ao salvar configurações.
+window.__teclasPersonalizadas = (typeof __TECLAS_PERSONALIZADAS__!=="undefined" && Array.isArray(__TECLAS_PERSONALIZADAS__)) ? __TECLAS_PERSONALIZADAS__ : [];
 const showToast=msg=>{
     if(!msg||__ncToastMsgs.has(msg))return;
     __ncToastMsgs.add(msg);
     if(!document.getElementById("__nc_toast_css")){
         const st=document.createElement("style");
         st.id="__nc_toast_css";
-        st.textContent=".__nc_toast_box{position:fixed;top:16px;left:16px;z-index:2147483647!important;display:flex;flex-direction:column;gap:10px;pointer-events:none} .__nc_toast{pointer-events:auto;background:var(--bg-panel);border:1px solid var(--border-focus);box-shadow:var(--shadow-lg);color:var(--text-main);border-radius:var(--radius-md);padding:12px 34px 12px 14px;font-family:'Inter',sans-serif;font-weight:600;font-size:13px;opacity:0;transform:translateY(-10px);transition:all .3s ease;overflow:hidden;position:relative} .__nc_toast.__on{opacity:1;transform:translateY(0)} .__nc_toast_x{position:absolute;top:10px;right:10px;width:20px;height:20px;border-radius:10px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-weight:bold} .__nc_toast_x:hover{color:var(--text-main);background:var(--border)} .__nc_toast_bar{position:absolute;left:0;bottom:0;height:3px;width:100%;background:linear-gradient(90deg,var(--accent),#0ea5e9);transform-origin:left} @keyframes __nc_toast_bar_anim{to{transform:scaleX(0)}}";
+        st.textContent=".__nc_toast_box{position:fixed;top:16px;left:16px;z-index:2147483647!important;display:flex;flex-direction:column;gap:10px;pointer-events:none} .__nc_toast{pointer-events:auto;background:var(--bg-panel);border:1px solid var(--border-focus);box-shadow:var(--shadow-lg);color:var(--text-main);border-radius:var(--radius-md);padding:12px 34px 12px 14px;font-family:'Inter',sans-serif;font-weight:600;font-size:13px;opacity:0;transform:translateY(-10px);transition:opacity .22s ease,transform .22s ease;overflow:hidden;position:relative} .__nc_toast.__on{opacity:1;transform:translateY(0)} .__nc_toast_x{position:absolute;top:10px;right:10px;width:20px;height:20px;border-radius:10px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-weight:bold} .__nc_toast_x:hover{color:var(--text-main);background:var(--border)} .__nc_toast_bar{position:absolute;left:0;bottom:0;height:3px;width:100%;background:linear-gradient(90deg,var(--accent),#0ea5e9);transform-origin:left} @keyframes __nc_toast_bar_anim{to{transform:scaleX(0)}}";
         document.head.appendChild(st);
     }
     let box=qs(".__nc_toast_box");
@@ -1636,7 +2168,22 @@ const showToast=msg=>{
     const barStyle="animation:__nc_toast_bar_anim "+durMs+"ms linear forwards";
     const _escT=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     el.innerHTML='<div>'+_escT(msg)+'</div><button class="__nc_toast_x"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button><div class="__nc_toast_bar" style="'+barStyle+'"></div>';
-    const rm=()=>{if(el.isConnected){el.remove();__ncToastMsgs.delete(msg);}};
+    // SUAVIZAÇÃO (ajuste solicitado): "rm" chamava el.remove() imediatamente
+    // — o toast tinha transition de opacity/transform declarada no CSS, mas
+    // nunca chegava a tocar, porque o elemento saía da árvore de renderização
+    // no mesmo instante em que a classe "__on" seria removida. Agora primeiro
+    // dispara o fade/slide de saída (remove "__on") e só remove o elemento
+    // do DOM depois que a transição termina (220ms = duração declarada no
+    // CSS acima). Guarda contra dupla execução: "rm" é chamada tanto pelo
+    // botão de fechar quanto pelo setTimeout de duração — sem a guarda, um
+    // clique manual antes do tempo expirar agendaria a remoção duas vezes.
+    let _rmChamado = false;
+    const rm=()=>{
+        if(_rmChamado || !el.isConnected)return;
+        _rmChamado = true;
+        el.classList.remove("__on");
+        setTimeout(()=>{ try{el.remove();}catch(_){} __ncToastMsgs.delete(msg); }, 220);
+    };
     el.querySelector("button").addEventListener("click",rm);
     box.appendChild(el);
     requestAnimationFrame(()=>el.classList.add("__on"));
@@ -1837,6 +2384,145 @@ const matchDentroInteiro=(pat,inteiro)=>{
     return false;
 };
 
+// ── GLOB TEXTUAL (busca no haystack completo, SEM âncoras) ───────────────
+// * = qualquer sequência de chars em qualquer posição do texto normalizado.
+// Exemplos (entrada já em normP):
+//   "RACAO*"   → regex /RACAO.*/   — contém "RACAO" seguido de qq coisa
+//   "*RACAO"   → regex /.*RACAO/   — contém qq coisa seguida de "RACAO"
+//   "R*CAO"    → regex /R.*CAO/    — "R…CAO" em qualquer posição
+//   "*RACAO*"  → regex /.*RACAO.*/ — mesmo efeito que ~RACAO (substring)
+const matchGlobTxt = (pat, hay) => {
+    if (!pat) return true;
+    if (!hay)  return false;
+    if (pat.indexOf("*") < 0) return hay.indexOf(pat) >= 0;
+    const regStr = pat.split("*").map(p => escRe(p)).join(".*");
+    try { return new RegExp(regStr).test(hay); } catch(e) { return false; }
+};
+
+// ── GLOB ANCORADO (^início…fim$) — para busca em campo específico ────────
+// "RACAO*"   → /^RACAO.*$/ — campo começa com "RACAO"
+// "*RACAO"   → /^.*RACAO$/ — campo termina com "RACAO"
+// "*RACAO*"  → /^.*RACAO.*$/ — campo contém "RACAO"
+const matchGlobAncorado = (pat, campo) => {
+    if (!pat)   return campo === "";
+    if (!campo) return pat === "*" || pat.replace(/\*/g, "") === "";
+    if (pat.indexOf("*") < 0) return campo.indexOf(pat) >= 0;
+    const regStr = "^" + pat.split("*").map(p => escRe(p)).join(".*") + "$";
+    try { return new RegExp(regStr).test(campo); } catch(e) { return false; }
+};
+
+// ── BUSCA POR CAMPO ESPECÍFICO — sintaxe campo:valor ─────────────────────
+// Aliases reconhecidos:
+//   vendedor / vend    → x.vendedor
+//   caixa    / cx      → x.caixa
+//   numero   / num     → x.numero
+//   item     / itens   → x.itens
+//   cliente  / cli     → x.cliente
+//   pagamento/ pag / forma → x.pagamentos
+//   hora               → x.hora
+//   natureza / nat     → x.natureza
+//   tipo               → x.tipo  (gerencial | nfce | nfe)
+// Suporta glob no valor: item:*RACAO* , vendedor:MARIA* , hora:14*
+// Retorna true/false, ou null se o alias não for reconhecido (cai busca geral).
+const _CAMPO_ALIAS = {
+    vendedor:"vendedor", vend:"vendedor",
+    caixa:"caixa",       cx:"caixa",
+    numero:"numero",     num:"numero",
+    item:"itens",        itens:"itens",
+    cliente:"cliente",   cli:"cliente",
+    pagamento:"pagamentos", pag:"pagamentos", forma:"pagamentos",
+    hora:"hora",
+    natureza:"natureza", nat:"natureza",
+    tipo:"tipo"
+};
+const matchCampo = (alias, valor, x) => {
+    const chave = _CAMPO_ALIAS[String(alias || "").toLowerCase()];
+    if (!chave) return null; // alias desconhecido → busca geral
+    const v = normP(String(valor || ""));
+    const c = normP(String(x[chave] || ""));
+    return matchGlobAncorado(v, c);
+};
+
+// ── SPLIT RESPEITANDO ASPAS ───────────────────────────────────────────────
+// Divide pelo separador sep, mas ignora separadores dentro de "…"
+// Ex: splitRespeitandoAspas('"ração gato"+vendedor:maria', '+')
+//       → ['"ração gato"', 'vendedor:maria']
+const splitRespeitandoAspas = (str, sep) => {
+    const parts = []; let cur = ""; let inQ = false;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (ch === '"') { inQ = !inQ; cur += ch; }
+        else if (!inQ && ch === sep) { parts.push(cur); cur = ""; }
+        else { cur += ch; }
+    }
+    parts.push(cur);
+    return parts;
+};
+
+// ── TESTE DE TERMO ÚNICO ─────────────────────────────────────────────────
+// Avalia UM termo de inclusão/exclusão contra uma venda x.
+// Ordem de avaliação (da mais específica para a mais geral):
+//   1. OR  ( dinheiro|pix )
+//   2. Frase exata  ( "ração gato" )
+//   3. Prefixo de modo  ( ~cont , =exato )
+//   4. Campo específico  ( vendedor:MARIA , item:*RACAO* )
+//   5. Valor numérico   ( >100 , 50-200 , 1* )
+//   6. Glob textual     ( *RACAO* , RACAO* )
+//   7. Exato / Contém / Token  (comportamento original)
+// getHay/getToks são funções lazy para não computar quando desnecessário.
+const _testTerm = (raw, x, totalNum, getHay, getToks) => {
+    const it0 = String(raw || "").trim(); if (!it0) return true;
+
+    // 1. OR — qualquer sub-termo satisfazendo = true
+    if (it0.indexOf("|") >= 0) {
+        return it0.split("|").map(s => s.trim()).filter(Boolean)
+            .some(p => _testTerm(p, x, totalNum, getHay, getToks));
+    }
+
+    // 2. FRASE EXATA entre aspas — busca no haystack completo normalizado
+    if (it0.length >= 2 && it0[0] === '"' && it0[it0.length - 1] === '"') {
+        const frase = normP(it0.slice(1, -1));
+        if (!frase) return true;
+        return getHay().indexOf(frase) >= 0;
+    }
+
+    // 3. Prefixo de modo: ~ = contém (substring), = = exato
+    let modo = "tok", it = it0;
+    if (it[0] === "~") { modo = "cont"; it = it.slice(1).trim(); }
+    else if (it[0] === "=") { modo = "eq";   it = it.slice(1).trim(); }
+    if (!it) return true;
+
+    // 4. CAMPO:VALOR — ex: vendedor:MARIA, item:*RACAO*, hora:14, cx:001
+    const cIdx = it.indexOf(":");
+    if (cIdx > 0 && cIdx < it.length - 1 && /^[a-zA-Z]+$/.test(it.slice(0, cIdx))) {
+        const r = matchCampo(it.slice(0, cIdx), it.slice(cIdx + 1).trim(), x);
+        if (r !== null) return r; // null = alias desconhecido → cai para etapas abaixo
+    }
+
+    // 5. VALOR NUMÉRICO (operadores >, <, >=, <=, R$, intervalo, coringa numérico)
+    if (consultaPareceValor(it)) return valorOk(it, totalNum) === true;
+
+    // 6. TEXTO — normaliza para comparação
+    const term = normP(it); if (!term) return true;
+
+    // 6a. GLOB TEXTUAL — * em termo não-numérico (ex: RACAO*, *CAO, R*CAO)
+    if (term.indexOf("*") >= 0) return matchGlobTxt(term, getHay());
+
+    // 7. EXATO (=), CONTÉM (~), TOKEN (padrão)
+    if (modo === "eq") {
+        const hay = getHay(); const toks = getToks();
+        return hay === term || toks.includes(term)
+            || normP(x.vendedor   || "") === term
+            || normP(x.pagamentos || "") === term
+            || normP(x.caixa      || "") === term
+            || normP(x.numero     || "") === term
+            || normP(String(x.total || "")) === term
+            || normP(String(x.itens || "")) === term;
+    }
+    if (modo === "cont") return getHay().indexOf(term) >= 0;
+    return getToks().includes(term); // tok padrão
+};
+
 const valorOk=(q,total)=>{
     if(!Number.isFinite(total))return null;
     const raw=String(q||"").trim(); if(!raw)return null;
@@ -1942,6 +2628,68 @@ const calcSomaSel=()=>{
     somaSel={alvo:p.alvo,tol:p.tol,soma,sel};
 };
 
+// _construirCtxFiltro — monta o contexto de filtro UMA vez por busca.
+// ANTES: renderTabela() e passaFiltro() duplicavam a montagem do objeto ctx
+// (DRY), e passaFiltroFast() reprocessava _qs/_ehSoma/parts/incParts/excParts
+// a CADA item da tabela — mas esses valores dependem só da query atual (ctx.q),
+// não do item — ou seja, para um dia com 3000 vendas e uma busca com "+"/OR/
+// campo:, o MESMO parsing de texto rodava 3000 vezes seguidas produzindo
+// sempre o mesmo resultado. Hoisting: computa uma vez aqui, reusa por item.
+const _construirCtxFiltro = (rawQuery, vend) => {
+    const p = parseBusca(rawQuery);
+    const q = String(p.inc || "").trim();
+    const ctx = {
+        tipoOk: tipoLinhaOk,
+        vend: vend,
+        pm: p.proibidosModo || 0,
+        ign: p.ign || [],
+        q,
+        ehSoma: false,
+        incParts: [],
+        excParts: []
+    };
+    if (!q) return ctx;
+
+    // ── Detecta query de soma/combinação (=VALOR , =VALOR*TOL , >MIN=ALVO) ──
+    const _qs = semWS(q);
+    ctx.ehSoma = _qs.startsWith("=")
+        || (/^>=?\d/.test(_qs) && _qs.indexOf("=") > 0)
+        || /^>=?[\d,\.]+=[\d]/.test(_qs);
+    if (ctx.ehSoma) return ctx; // soma não usa incParts/excParts
+
+    // ── Divide por + respeitando "frases entre aspas" ────────────────────
+    const parts = splitRespeitandoAspas(q, "+").map(v => String(v || "").trim()).filter(Boolean);
+    const incParts = [], excParts = [];
+    for (const part of parts) {
+        if (part[0] === "-" && part.length > 1) {
+            // Exclusão explícita: -termo
+            excParts.push(part.slice(1).trim());
+        } else {
+            // Verifica inline "-" separador de exclusão (ex: "dinheiro-cartao")
+            // Ignora "-" dentro de aspas e antes de dígito (operadores numéricos)
+            let splitIdx = -1;
+            let inQ2 = false;
+            for (let ci = 1; ci < part.length; ci++) {
+                if (part[ci] === '"') { inQ2 = !inQ2; continue; }
+                if (!inQ2 && part[ci] === "-" && !/\d/.test(part[ci + 1] || "")) {
+                    splitIdx = ci; break;
+                }
+            }
+            if (splitIdx > 0) {
+                const base = part.slice(0, splitIdx).trim();
+                const rest = part.slice(splitIdx + 1);
+                if (base) incParts.push(base);
+                for (const ex of rest.split("-").map(s => s.trim()).filter(Boolean)) excParts.push(ex);
+            } else {
+                incParts.push(part);
+            }
+        }
+    }
+    ctx.incParts = incParts;
+    ctx.excParts = excParts;
+    return ctx;
+};
+
 const passaFiltroFast = (x, i, ctx) => {
     if (!ctx.tipoOk(x)) return false;
     if (ctx.vend && x.vendedor !== ctx.vend) return false;
@@ -1950,93 +2698,109 @@ const passaFiltroFast = (x, i, ctx) => {
     if (pm === 1 && vendaTemProibido(x)) return false;
     if (pm === 2 && !vendaTemProibido(x)) return false;
 
+    const totalNum = Number(x.total || 0);
+    // Lazy — só computa hayN e toks quando algum caminho precisar
+    let _hay = "", _toks = null;
+    const getHay  = () => { if (!_hay)  _hay  = normP(x._busca + " " + String(x.total || "")); return _hay; };
+    const getToks = () => { if (!_toks) _toks = getHay().split(" ").filter(Boolean); return _toks; };
+
+    // ── Exclusões de colchetes [a,~b,=c] ─────────────────────────────────
     const ign = ctx.ign;
-    let hayN = "", toks = null;
     if (ign.length) {
-        hayN = normP(x._busca + " " + String(x.total || ""));
-        toks = hayN.split(" ").filter(Boolean);
         for (const o of ign) {
             const term = normP(o?.t || ""); if (!term) continue;
-            if (o.modo === "eq") { if (hayN === term || toks.includes(term) || normP(x.vendedor||"") === term || normP(x.pagamentos||"") === term || normP(x.caixa||"") === term || normP(x.numero||"") === term || normP(String(x.total||"")) === term || normP(String(x.itens||"")) === term) return false; }
-            else if (o.modo === "cont") { if (hayN.indexOf(term) >= 0) return false; }
-            else { if (toks.includes(term)) return false; }
+            if (o.modo === "eq") {
+                if (getHay() === term || getToks().includes(term)
+                    || normP(x.vendedor||"") === term || normP(x.pagamentos||"") === term
+                    || normP(x.caixa||"")   === term || normP(x.numero||"")    === term
+                    || normP(String(x.total||"")) === term || normP(String(x.itens||"")) === term
+                ) return false;
+            } else if (o.modo === "cont") {
+                if (getHay().indexOf(term) >= 0) return false;
+            } else {
+                if (getToks().includes(term)) return false;
+            }
         }
     }
-    const q = ctx.q;
-    if (!q) return true;
-    const _qs = semWS(q);
-    const _ehSoma = _qs.startsWith("=") || (/^>=?\d/.test(_qs) && _qs.indexOf("=") > 0) || /^>=?[\d,\.]+=[\d]/.test(_qs);
-    if (_ehSoma) return !!(somaSel && somaSel.sel && somaSel.sel.has(i));
 
-    const parts = q.split("+").map(v => String(v || "").trim()).filter(Boolean);
-    const incParts = [], excParts = [];
-    for (const part of parts) {
-        if (part[0] === "-" && part.length > 1) { excParts.push(part.slice(1).trim()); }
-        else {
-            let splitIdx = -1;
-            for (let ci = 1; ci < part.length; ci++) { if (part[ci] === "-" && !/\d/.test(part[ci+1] || "")) { splitIdx = ci; break; } }
-            if (splitIdx > 0) { const base = part.slice(0, splitIdx).trim(); const rest = part.slice(splitIdx+1); if (base) incParts.push(base); for (const ex of rest.split("-").map(s => s.trim()).filter(Boolean)) excParts.push(ex); }
-            else incParts.push(part);
-        }
-    }
-    const totalNum = Number(x.total || 0);
+    if (!ctx.q) return true;
+
+    // ── Query de soma/combinação já identificada em _construirCtxFiltro ──
+    if (ctx.ehSoma) return !!(somaSel && somaSel.sel && somaSel.sel.has(i));
+
+    // ── incParts/excParts já divididos em _construirCtxFiltro (uma vez
+    // por busca, não por item) ────────────────────────────────────────────
+    const incParts = ctx.incParts, excParts = ctx.excParts;
+
+    // ── Avalia exclusões: qualquer exclusão que bater → rejeita a venda ──
     if (excParts.length) {
-        if (!toks) { hayN = normP(x._busca + " " + String(x.total || "")); toks = hayN.split(" ").filter(Boolean); }
         for (const ex of excParts) {
-            let et = String(ex || "").trim(); if (!et) continue;
-            let modo = "tok"; if (et[0] === "~") { modo = "cont"; et = et.slice(1).trim(); } else if (et[0] === "=") { modo = "eq"; et = et.slice(1).trim(); }
-            if (!et) continue;
-            if (consultaPareceValor(et)) { if (valorOk(et, totalNum) === true) return false; }
-            else { const term = normP(et); if (!term) continue; if (modo === "eq") { if (!toks) { hayN = normP(x._busca+" "+String(x.total||"")); toks = hayN.split(" ").filter(Boolean); } if (hayN === term || toks.includes(term)) return false; } else if (modo === "cont") { if (!hayN) hayN = normP(x._busca+" "+String(x.total||"")); if (hayN.indexOf(term) >= 0) return false; } else { if (!toks) { hayN = normP(x._busca+" "+String(x.total||"")); toks = hayN.split(" ").filter(Boolean); } if (toks.includes(term)) return false; } }
+            if (_testTerm(ex, x, totalNum, getHay, getToks) === true) return false;
         }
     }
     if (!incParts.length) return true;
 
-    // Busca por "caixa64", "caixa064", "caixa 64" etc. (portado da versão anterior)
+    // ── Fast path: único termo sem features especiais ─────────────────────
     if (incParts.length === 1) {
         const q1 = String(incParts[0] || "").trim();
+        // Atalho histórico "caixa NNN"
         if (/^caixa\s*\d{1,3}$/i.test(q1)) {
             const cx = q1.match(/^caixa\s*(\d{1,3})$/i);
             return cx ? String(x.caixa||"").padStart(3,"0") === String(cx[1]).padStart(3,"0") : false;
         }
-        // Fast path: _busca já contém os campos normalizados concatenados
-        const camposTxt = x._busca;
-        const ql = rmAcento(q1).toLowerCase();
-        if (camposTxt.indexOf(ql) >= 0) {
-            // Se a query parece valor, exige que seja em campos textuais (não só no total)
-            if (consultaPareceValor(q1)) {
-                return rmAcento(x.vendedor||"").toLowerCase().indexOf(ql) >= 0
-                    || rmAcento(x.pagamentos||"").toLowerCase().indexOf(ql) >= 0
-                    || rmAcento(x.itens||"").toLowerCase().indexOf(ql) >= 0
-                    || rmAcento(x.caixa||"").toLowerCase().indexOf(ql) >= 0
-                    || valorOk(q1, totalNum) === true;
+        // Verifica se o termo usa features novas: OR, campo:, glob*, "frase"
+        const cIdxFP = q1.indexOf(":");
+        const temFeatureNova =
+            q1.indexOf("|") >= 0 ||
+            (cIdxFP > 0 && /^[a-zA-Z]+$/.test(q1.slice(0, cIdxFP)) && !!_CAMPO_ALIAS[q1.slice(0, cIdxFP).toLowerCase()]) ||
+            (q1.indexOf("*") >= 0 && !consultaPareceValor(q1)) ||
+            (q1.length >= 2 && q1[0] === '"' && q1[q1.length - 1] === '"');
+        if (!temFeatureNova) {
+            // Fast path original: busca em _busca (string normalizada de todos os campos)
+            const camposTxt = x._busca;
+            const ql = rmAcento(q1).toLowerCase();
+            if (camposTxt.indexOf(ql) >= 0) {
+                if (consultaPareceValor(q1)) {
+                    // Termo parece valor numérico: exige match em campo textual OU valor
+                    return rmAcento(x.vendedor||"").toLowerCase().indexOf(ql) >= 0
+                        || rmAcento(x.pagamentos||"").toLowerCase().indexOf(ql) >= 0
+                        || rmAcento(x.itens||"").toLowerCase().indexOf(ql) >= 0
+                        || rmAcento(x.caixa||"").toLowerCase().indexOf(ql) >= 0
+                        || valorOk(q1, totalNum) === true;
+                }
+                return true;
             }
-            return true;
+            return valorOk(q1, totalNum) === true;
         }
-        return valorOk(q1, totalNum) === true;
     }
 
-    if (!hayN) { hayN = normP(x._busca + " " + String(x.total || "")); toks = hayN.split(" ").filter(Boolean); }
+    // ── Multi-part (AND): TODOS os incParts devem satisfazer ─────────────
     for (const inc of incParts) {
-        let it = String(inc || "").trim(); if (!it) continue;
-        let modo = "tok"; if (it[0] === "~") { modo = "cont"; it = it.slice(1).trim(); } else if (it[0] === "=") { modo = "eq"; it = it.slice(1).trim(); }
-        if (!it) continue;
-        if (consultaPareceValor(it)) { if (valorOk(it, totalNum) !== true) return false; }
-        else { const term = normP(it); if (!term) continue; if (modo === "eq") { if (hayN !== term && !toks.includes(term) && normP(x.vendedor||"") !== term && normP(x.pagamentos||"") !== term && normP(x.caixa||"") !== term && normP(x.numero||"") !== term && normP(String(x.total||"")) !== term && normP(String(x.itens||"")) !== term) return false; } else if (modo === "cont") { if (hayN.indexOf(term) < 0) return false; } else { if (!toks.includes(term)) return false; } }
+        if (_testTerm(inc, x, totalNum, getHay, getToks) !== true) return false;
     }
     return true;
 };
 
 // passaFiltro: wrapper com contexto montado a partir do estado global.
-// Usado por calcSomaSel, montarTextoCopia e filtros de copiar.
+// Usado por montarTextoCopia e filtros de copiar.
+// Cache de parseBusca: evita chamar parseBusca N vezes para a mesma busca.
+// Chave COMPOSTA (busca + vendedor + tipo) — não depende de nenhum call site
+// lembrar de chamar _invalidarCtxCache() manualmente. BUG CORRIGIDO: a versão
+// anterior invalidava só por mudança no texto de busca; trocar de vendedor
+// pela lista lateral SEM alterar o texto deixava o cache com o vendedor
+// ANTERIOR, e as funções de Copiar (que passam por aqui) acabavam incluindo
+// vendas de outros vendedores mesmo com a tabela na tela mostrando só o
+// vendedor selecionado corretamente (que usa seu próprio ctx, sem cache).
+let _passaFiltroCtxCache = null, _passaFiltroKeyCache = "";
+const _invalidarCtxCache = () => { _passaFiltroCtxCache = null; };
 const passaFiltro = (x, i) => {
     const raw = String(qAtual || "").trim();
-    const p = parseBusca(raw);
-    return passaFiltroFast(x, i, {
-        tipoOk: tipoLinhaOk, vend: vendAtual,
-        pm: p.proibidosModo || 0, ign: p.ign || [],
-        q: String(p.inc || "").trim()
-    });
+    const key = raw + "|" + vendAtual + "|" + tipoBusca;
+    if (key !== _passaFiltroKeyCache || !_passaFiltroCtxCache) {
+        _passaFiltroKeyCache = key;
+        _passaFiltroCtxCache = _construirCtxFiltro(raw, vendAtual);
+    }
+    return passaFiltroFast(x, i, _passaFiltroCtxCache);
 };
 
 const limparPagamentoCopia=p=>String(p||"").split("|").map(s=>s.trim().replace(/^cartao(?: +|$)/i,"").trim()).filter(Boolean).join(" | ");
@@ -2104,7 +2868,18 @@ const copiarTexto=txt=>{
 // Cache imutável de HTML de itens por _idx (os dados nunca mudam após o load)
 const _tdHtmlCache  = new Map();
 const _miniHtmlCache= new Map();
-const _tipoLabel = m => m===65?"NFC-e":m===55?"NF-e":"Gerencial";
+// TIPO FIX (v2.6.9): passou a receber a LINHA inteira, nao so o modelo.
+// Motivo: um recebimento que sobra apos CONVERTER uma gerencial em NFC-e/NF-e
+// continua com modelo 99 e era rotulado "Gerencial" na tabela, mesmo tendo
+// numero da faixa da NFC-e e itens "Recebimento de Titulo / Conta". Usa a
+// mesma definicao de "gerencial real" que #copiarGerencial ja usava, para
+// que a tabela e o botao de copiar concordem entre si.
+const _tipoLabel = x => {
+    const m = Number(x && x.modelo || 0);
+    if (m === 65) return "NFC-e";
+    if (m === 55) return "NF-e";
+    return (x && x.is_recebimento) ? "Recebimento" : "Gerencial";
+};
 const _buildRowTb = x => {
     if(!x) return "";
     if(!_tdHtmlCache.has(x._idx)){
@@ -2116,7 +2891,7 @@ const _buildRowTb = x => {
     const clienteTitle = x.cliente || "";
     return '<tr data-idx="'+x._idx+'">'
         +'<td>'+esc(x.vendedor||"")+'</td>'
-        +'<td>'+esc(_tipoLabel(x.modelo))+'</td>'
+        +'<td>'+esc(_tipoLabel(x))+'</td>'
         +'<td class="mono">'+esc(x.numero||"")+'</td>'
         +'<td class="mono"'+(clienteTitle?' data-tip="'+esc(clienteTitle)+'"':'')+' style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px">'+esc(clienteTxt)+'</td>'
         +'<td class="mono">'+esc(fmt(x.total||0))+'</td>'
@@ -2131,7 +2906,7 @@ const _buildRowCard = x => {
     }
     const iMini = _miniHtmlCache.get(x._idx);
     let meta = ""; if(!vendAtual) meta = String(x.vendedor||"");
-    meta += (meta?" | ":"")+_tipoLabel(x.modelo);
+    meta += (meta?" | ":"")+_tipoLabel(x);
     if(x.cliente) meta += (meta?" | ":"")+"Cliente: "+String(x.cliente).substring(0,30)+(x.cliente.length>30?"…":"");
     else if(x.hora) meta += (meta?" | ":"")+"Hora: "+String(x.hora||"").substring(0,5);
     if(x.caixa)  meta += (meta?" | ":"")+"Caixa: "+String(x.caixa||"");
@@ -2157,20 +2932,35 @@ const _sched = typeof scheduler !== "undefined" && scheduler.postTask
     ? (fn) => scheduler.postTask(fn, { priority: "background" })
     : (fn) => setTimeout(fn, 0);
 
+// _limparTabelas/_updateCount: standalone — evita recriar closures em cada keypress.
+const _limparTabelas = (tb, cards) => {
+    if (tb)    tb.innerHTML = "";
+    if (cards) cards.innerHTML = "";
+};
+
+const _updateCount = (total_filtradas, soma_total, completo) => {
+    const _countEl = qs("#count"); if (!_countEl) return;
+    const q2 = String(qAtual || "").trim();
+    let txt;
+    if (somaSel && q2.startsWith("=")) {
+        txt = total_filtradas + " vendas ― soma " + fmt(soma_total) + " ― alvo " + fmt(somaSel.alvo) + (somaSel.tol ? (" ± " + fmt(somaSel.tol)) : "");
+    } else {
+        txt = total_filtradas + " vendas ― " + fmt(soma_total);
+    }
+    if (!completo && total_filtradas < DADOS.vendas.length) {
+        const restante = DADOS.vendas.length - total_filtradas;
+        txt += "  <span style='font-size:11px;opacity:.55;font-weight:400'>(" + total_filtradas + " carregadas, " + restante + " restantes\u2026)</span>";
+    }
+    _countEl.innerHTML = txt;
+};
+
 const renderTabela = () => {
     const tb    = qs("#tb");
     const cards = qs("#cards");
 
     // ── Contexto de filtro calculado UMA vez — não por item ──────────────────
     const raw = String(qAtual || "").trim();
-    const p   = parseBusca(raw);
-    const ctx = {
-        tipoOk: tipoLinhaOk,
-        vend:   vendAtual,
-        pm:     p.proibidosModo || 0,
-        ign:    p.ign || [],
-        q:      String(p.inc || "").trim()
-    };
+    const ctx = _construirCtxFiltro(raw, vendAtual);
 
     // ── Atualiza UI de estado (vendedor, contador etc.) ──────────────────────
     const tipoTxt = tipoBusca === "gerencial" ? "Gerencial" : tipoBusca === "nfce" ? "NFC-e" : tipoBusca === "nfe" ? "NF-e" : "Todos";
@@ -2190,18 +2980,10 @@ const renderTabela = () => {
     const dados = DADOS.vendas;
     const total_itens = dados.length;
 
-    // Limpa tabela antes de começar a popular
-    const _limparTabelas = () => {
-        if (tb)    tb.innerHTML    = "";
-        if (cards) cards.innerHTML = "";
-    };
-
     const filtradas = [];
     let soma = 0, idx = 0;
     let hTb = "", hCards = "";
-    const limit1 = Math.min(total_itens, CHUNK_FIRST * 3);
-
-    // Fase 1 síncrona: primeiros CHUNK_FIRST matches (varre até 3× para preencher a tela)
+    // Fase 1 síncrona: varre todo o array até encontrar CHUNK_FIRST matches (sem limite artificial)
     while (idx < total_itens && filtradas.length < CHUNK_FIRST) {
         const x = dados[idx];
         if (passaFiltroFast(x, idx, ctx)) {
@@ -2211,33 +2993,13 @@ const renderTabela = () => {
             soma   += Number(x.total || 0);
         }
         idx++;
-        if (idx >= limit1) break; // evita varrer tudo na fase síncrona
     }
 
-    _limparTabelas();
+    _limparTabelas(tb, cards);
     if (tb)    tb.innerHTML    = hTb;
     if (cards) cards.innerHTML = hCards;
 
-    // Atualiza o contador com progresso (mostrado durante carregamento parcial)
-    const _updateCount = (total_filtradas, soma_total, completo) => {
-        const q2 = String(qAtual || "").trim();
-        const _countEl = qs("#count");
-        if (!_countEl) return;
-        let txt;
-        if (somaSel && q2.startsWith("=")) {
-            txt = total_filtradas + " vendas ― soma " + fmt(soma_total) + " ― alvo " + fmt(somaSel.alvo) + (somaSel.tol ? (" ± " + fmt(somaSel.tol)) : "");
-        } else {
-            txt = total_filtradas + " vendas ― " + fmt(soma_total);
-        }
-        if (!completo && total_filtradas < DADOS.vendas.length) {
-            // Mostra quantas já foram processadas e quantas ainda restam
-            const restante = DADOS.vendas.length - total_filtradas;
-            txt += "  <span style='font-size:11px;opacity:.55;font-weight:400'>(" + total_filtradas + " carregadas, " + restante + " restantes…)</span>";
-            _countEl.innerHTML = txt;
-        } else {
-            _countEl.innerHTML = txt;
-        }
-    };
+
     _updateCount(filtradas.length, soma, idx >= total_itens);
 
     // Se já varreu tudo na fase 1, finaliza
@@ -2275,7 +3037,8 @@ const renderTabela = () => {
 };
 
 const atualizarSelecaoVendedores=()=>{
-    document.querySelectorAll('.item').forEach(el => {
+    const listaEl = qs("#lista"); if (!listaEl) return;
+    listaEl.querySelectorAll('.item').forEach(el => {
         const nome = el.querySelector('.nome')?.textContent;
         if((!vendAtual && nome === "Todos") || (vendAtual && nome === vendAtual)) el.classList.add('sel');
         else el.classList.remove('sel');
@@ -2305,10 +3068,10 @@ const renderLista=()=>{
             div.innerHTML='<div class="nome">'+esc(nome)+'</div><div class="meta"><div class="qtd">Vendas: '+qtd+'</div><div class="tot">'+esc(fmt(total))+'</div></div>';
             root.appendChild(div);
         };
-        add("Todos",qtdBase,totalBase,!vendAtual,()=>{vendAtual="";calcSomaSel();renderTabela();});
+        add("Todos",qtdBase,totalBase,!vendAtual,()=>{vendAtual="";_invalidarCtxCache();calcSomaSel();renderTabela();});
         for(const v of vendedores){
             if(f&&rmAcento(String(v.vendedor||"")).toLowerCase().indexOf(rmAcento(f))<0)continue;
-            add(v.vendedor,v.qtd,v.total,vendAtual===v.vendedor,()=>{vendAtual=v.vendedor;calcSomaSel();renderTabela();});
+            add(v.vendedor,v.qtd,v.total,vendAtual===v.vendedor,()=>{vendAtual=v.vendedor;_invalidarCtxCache();calcSomaSel();renderTabela();});
         }
     };
     mk(qs("#lista"),null,"");
@@ -2340,7 +3103,7 @@ const renderTudo=()=>{
 
 const abrirModal=x=>{
     linhaAtual=x;
-    const tipoLabel=_tipoLabel(x.modelo);
+    const tipoLabel=_tipoLabel(x);
     qs("#mTitulo").textContent=tipoLabel+" "+(x.numero||"");
     qs("#mSub").textContent="Vendedor: "+(x.vendedor||"")+(x.caixa?(" | Caixa: "+x.caixa):"")+(x.cliente?(" | Cliente: "+x.cliente):"");
     const body=qs("#mBody"); body.innerHTML="";
@@ -2349,7 +3112,11 @@ const abrirModal=x=>{
     const mk=(k,v,extra)=>{
         const d=document.createElement("div"); d.className="kv kvCompact";
         const _vs=String(v??"");
-        d.innerHTML='<div class="k">'+k+'</div><div class="v mono'+(extra?" "+extra:"")+'" data-fullval="'+esc(_vs)+'">'+esc(_vs)+'</div>';
+        // esc(k) por defesa em profundidade: hoje só recebe literais fixos
+        // ("Tipo","Número" etc — nunca dado vindo do banco), mas escapar
+        // sempre elimina o risco de alguém passar um valor dinâmico aqui no
+        // futuro sem perceber que k não era escapado.
+        d.innerHTML='<div class="k">'+esc(k)+'</div><div class="v mono'+(extra?" "+extra:"")+'" data-fullval="'+esc(_vs)+'">'+esc(_vs)+'</div>';
         return d;
     };
 
@@ -2435,22 +3202,34 @@ const abrirModal=x=>{
 
     // Após o layout ser calculado: aplica data-tip SOMENTE onde o texto realmente trunca.
     // Para .idesc (nome do item) e para .v (valores do kv compacto).
+    // IMPORTANTE (fix de travada ao abrir): esse loop faz leituras de layout
+    // (scrollWidth/clientWidth) para CADA item da venda. Se rodasse no MESMO
+    // requestAnimationFrame em que a classe "on" acabou de ser aplicada, ele
+    // bloquearia justamente o frame em que o navegador ia pintar a transição
+    // de abertura do modal (fade do overlay + scaleIn) — quanto mais itens a
+    // venda tiver, mais perceptível a travada. Usando um SEGUNDO rAF aninhado,
+    // deixamos o navegador pintar o frame de abertura primeiro (sem bloqueio)
+    // e só então, um frame depois, fazemos as leituras de layout — a
+    // diferença é imperceptível para quem está vendo (ninguém passa o mouse
+    // em <32ms), mas elimina o travamento visual no clique.
     requestAnimationFrame(()=>{
-        // Nomes de itens da tabela — truncados quando a célula é estreita demais
-        body.querySelectorAll('td.idesc[data-fulldesc]').forEach(td=>{
-            const full=td.getAttribute('data-fulldesc');
-            td.removeAttribute('data-fulldesc');
-            if(td.scrollWidth > td.clientWidth + 1){
-                td.setAttribute('data-tip', full);
-            }
-        });
-        // Valores dos kv compactos — truncados quando o texto não cabe na célula
-        body.querySelectorAll('.kv.kvCompact .v[data-fullval]').forEach(el=>{
-            const full=el.getAttribute('data-fullval');
-            el.removeAttribute('data-fullval');
-            if(el.scrollWidth > el.clientWidth + 1){
-                el.setAttribute('data-tip', full);
-            }
+        requestAnimationFrame(()=>{
+            // Nomes de itens da tabela — truncados quando a célula é estreita demais
+            body.querySelectorAll('td.idesc[data-fulldesc]').forEach(td=>{
+                const full=td.getAttribute('data-fulldesc');
+                td.removeAttribute('data-fulldesc');
+                if(td.scrollWidth > td.clientWidth + 1){
+                    td.setAttribute('data-tip', full);
+                }
+            });
+            // Valores dos kv compactos — truncados quando o texto não cabe na célula
+            body.querySelectorAll('.kv.kvCompact .v[data-fullval]').forEach(el=>{
+                const full=el.getAttribute('data-fullval');
+                el.removeAttribute('data-fullval');
+                if(el.scrollWidth > el.clientWidth + 1){
+                    el.setAttribute('data-tip', full);
+                }
+            });
         });
     });
 };
@@ -2477,18 +3256,55 @@ const abrirAjuda=()=>{
     qs("#mSub").textContent="Use no campo de busca para filtrar por valor e/ou excluir termos.";
     const body=qs("#mBody"); body.innerHTML="";
     const _escM=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const add=(k,v)=>{const d=document.createElement('div');d.className='kv';d.innerHTML='<div class="k">'+_escM(k)+'</div><div class="v">'+_escM(v)+'</div>';body.appendChild(d);};
-    add("[proibidos] ou [1p]","Use a tecla Insert ou Capslock + P para adicionar [proibidos] ao buscar e aplicar o filtro para ocultar vendas com itens proibidos");
-    add("[-proibidos] ou [-p]","Use a tecla Delete para adicionar [-proibidos] ao buscar e aplicar o filtro para mostrar vendas com itens proibidos");
-    add("[a,~b,=c]","exclusão: a=inclui (token), ~b=contém (substring), =c=igual 100%. Use [proibidos] para ocultar vendas com itens proibidos. Use [-proibidos] para mostrar vendas com itens proibidos, multiplas exclusões separadas por vírgula.");
-    add("> ou >=","> valores maiores que, >= valores maiores que ou igual, exclusao use - (menos) (ex: >100-pix-credito-debito)");
-    add("< ou <=","< valores menores que, <= valores menores que ou igual, exclusao use - (menos) (ex: <150-granel-gerencia-cartao)");
-    add("*","1+ dígitos e/ou vírgula (pode atravessar a vírgula) — casa do começo do valor");
-    add("/","1+ dígitos (somente antes da vírgula) — procura dentro da parte inteira");
-    add("?","exatamente 1 dígito (parte inteira) — procura dentro da parte inteira");
-    add("=151 ou =151*num","combinação aproximada para somar até 151, combinação aproximada para somar até 151 ± adicional opcional");
-    add("+ (opcional)","múltiplos filtros (ex: >50+carto+-vendedor) o uso do + é opcional para multiplas pesquisas (ex: [-proibidos,dinheiro]>150-entregas) também é válido");
-    add("Rádio ao lado da busca","Escolha Todos, Gerencial, NFC-e ou NF-e (quando disponível) para aplicar a pesquisa somente no tipo selecionado");
+    const add=(k,v,destaque)=>{const d=document.createElement('div');d.className='kv'+(destaque?' kvNew':'');d.innerHTML='<div class="k">'+_escM(k)+'</div><div class="v">'+_escM(v)+'</div>';body.appendChild(d);};
+    const sep=(titulo)=>{const d=document.createElement('div');d.className='kv kvSep';d.innerHTML='<div class="k" style="opacity:.5;font-size:11px;letter-spacing:.06em;text-transform:uppercase">'+_escM(titulo)+'</div><div class="v"></div>';body.appendChild(d);};
+
+    sep("Exclusão por colchetes");
+    add("[proibidos] ou [1p]","Use Insert ou Caps+P para adicionar [proibidos] — oculta vendas com itens proibidos");
+    add("[-proibidos] ou [-p]","Use Delete para adicionar [-proibidos] — mostra SOMENTE vendas com itens proibidos");
+    add("[a,~b,=c]","Exclui termos da lista: a=token, ~b=contém (substring), =c=exato. Separe por vírgula. Ex: [granel,~entrega,=pix]");
+
+    sep("Filtro por valor numérico");
+    add("> ou >=","Maior que / Maior ou igual. Ex: >100  Ex com exclusão: >100-pix-debito");
+    add("< ou <=","Menor que / Menor ou igual. Ex: <150  Ex com exclusão: <150-granel");
+    add("100-200","Intervalo de valores (de 100 até 200, inclusive)");
+    add("=151 ou =151*5","Combinação de vendas que somam até 151. Com tolerância: =151*5 (±5)");
+
+    sep("Coringas numéricos (parte inteira)");
+    add("*","1+ dígitos e/ou vírgula — casa do começo do valor. Ex: 15* → 15,00 / 150,00 / 1500,00");
+    add("/","1+ dígitos antes da vírgula — busca dentro da parte inteira. Ex: /15/ → 115,90 / 2150,00");
+    add("?","Exatamente 1 dígito na parte inteira. Ex: 1?0 → 100 / 110 / 190 (dentro do inteiro)");
+
+    sep("Coringas textuais — NOVO");
+    add("palavra*","Começa com — ex: RACAO* encontra RACAO PREMIUM, RACAO GATO etc.");
+    add("*palavra","Termina com — ex: *GATO encontra RACAO GATO, ALIMENTO GATO etc.");
+    add("*palavra*","Contém (equivalente a ~palavra) — ex: *RACAO* encontra qualquer item com RACAO");
+    add("p*lavra","Glob livre — * casa qualquer sequência. Ex: R*CAO encontra RACAO, RAÇÃO, RAT CAO etc.");
+
+    sep("OR entre termos — NOVO");
+    add("A|B","Mostra vendas que contenham A OU B. Ex: dinheiro|pix  Ex: >100+debito|credito");
+    add("A|B|C","Mais de dois. Ex: granel|entrega|desconto  (funciona em inclusão e em exclusão)");
+
+    sep("Campo específico — NOVO");
+    add("vendedor:NOME","Filtra pelo vendedor exato (ou glob). Ex: vendedor:MARIA  vend:JOAO*");
+    add("item:PRODUTO","Filtra por item comprado. Ex: item:*RACAO*  item:GRANEL");
+    add("caixa:001","Filtra pelo caixa. Aliases: cx:1  caixa:001");
+    add("numero:123","Filtra pelo número do cupom/NF. Alias: num:123");
+    add("cliente:NOME","Filtra pelo nome do cliente. Alias: cli:MARIA*");
+    add("hora:14","Filtra pelo horário. Ex: hora:14*  hora:08  (compara no campo hora)");
+    add("pag:PIX","Filtra pela forma de pagamento. Aliases: pagamento:DINHEIRO  forma:CREDITO");
+    add("nat:VENDA","Filtra pela natureza da operação. Alias: natureza:*VENDA*");
+    add("tipo:ger","Filtra pelo tipo de documento. Valores: ger / nfce / nfe");
+
+    sep("Frase exata — NOVO");
+    add('"ração gato"',"Busca a frase inteira no texto da venda (vendedor, itens, pagamento etc.)");
+    add('"ND CAES"+>50',"Combina frase exata com outros filtros via +");
+
+    sep("Combinações (AND via +)");
+    add("+ (opcional)","Múltiplos filtros: todos devem satisfazer (AND). Ex: >50+dinheiro+-entrega");
+    add("A-B-C","Inclusão A com exclusões B e C (sem +). Ex: carto-credito-debito");
+    add("> ou < + exclusão","Ex: >100-pix-credito  <200-granel-gerencia-cartao");
+    add("Rádio ao lado da busca","Escolha Todos, Gerencial, NFC-e ou NF-e para restringir a pesquisa ao tipo");
     qs("#ov").classList.add("on"); qs("#ov").setAttribute("aria-hidden","false");
 };
 
@@ -2502,15 +3318,40 @@ const abrirAcoes=()=>{ const ov=qs("#ovAcoes"); if(ov){ov.classList.add("on"); o
 const fecharAcoes=()=>{ const ov=qs("#ovAcoes"); if(ov){ov.classList.remove("on"); ov.setAttribute("aria-hidden","true");} };
 
 const abrirEditorProibidos=()=>{
-    qs("#ovProib")?.remove();
-    const bg=document.createElement("div"); bg.className="ov on"; bg.id="ovProib"; bg.setAttribute("aria-hidden","false");
+    // BUG MÉDIO CORRIGIDO: faltava esta guarda (os outros 2 modais dinâmicos,
+    // __abrirModalPeriodo e __abrirModalConfig, já tinham). Sem ela, clicar no
+    // botão várias vezes antes de fechar o modal anterior registrava um NOVO
+    // listener "keydown" (Escape) no document a cada vez — como esse listener
+    // só é removido quando a tecla Escape é pressionada, cliques repetidos
+    // sem nunca apertar Escape acumulavam listeners indefinidamente (vazamento
+    // de memória progressivo).
+    if (document.getElementById("ovProib")) return;
+    const bg=document.createElement("div"); bg.className="ov"; bg.id="ovProib"; bg.setAttribute("aria-hidden","false");
     bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Salvo no servidor (config.json).</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
     document.body.appendChild(bg);
+    // Fix de transição: className precisa entrar no DOM SEM "on" e ganhar a
+    // classe depois (com reflow forçado no meio) — se "on" já vier junto no
+    // className, o navegador nunca chega a pintar o estado opacity:0, então
+    // não há "de onde" a transição partir e o overlay aparece sem fade (pop
+    // instantâneo). Mesmo princípio já usado em _mostrar() para o .reveal.
+    void bg.offsetWidth;
+    bg.classList.add("on");
     const ta=qs("#prTa",bg);
     // Mostra entradas originais (não normalizadas) para preservar capitalização e filtros de valor
     ta.value=valoresProibidos.join("\n");
     const msg=qs("#prMsg",bg);
-    const fechar=()=>bg.remove();
+    // BUG FIX (auditoria v2.5.0 — LEAK): "fechar" só removia o elemento do DOM
+    // (bg.remove()) mas NUNCA removia o listener "keydown" de Escape — esse
+    // listener só se auto-removia quando a tecla Escape era efetivamente
+    // pressionada. Fechar o modal por QUALQUER outro caminho (botão "Fechar",
+    // "Salvar", ou clique fora do modal) deixava o listener permanentemente
+    // registrado em document, retendo na memória a closure inteira do modal
+    // (inclusive o nó "bg" já removido do DOM, que assim nunca podia ser
+    // coletado pelo GC) — um vazamento a cada abertura/fechamento por esses
+    // caminhos. Agora "fechar" remove o listener explicitamente, e é chamado
+    // também a partir do Escape (em vez de duplicar a lógica de remoção).
+    function escKey(e){ if(e.key==="Escape") fechar(); }
+    const fechar=()=>{ document.removeEventListener("keydown",escKey); _fecharOverlayAnimado(bg); };
     qs("#prFechar",bg).addEventListener("click",fechar);
     qs("#prCancelar",bg).addEventListener("click",()=>{
         setProibidosUser(proibidosPadrao);
@@ -2532,15 +3373,15 @@ const abrirEditorProibidos=()=>{
         toast("Proibidos","Lista atualizada.");
     });
     bg.addEventListener("click",e=>{if(e.target===bg)fechar();});
-    document.addEventListener("keydown",function escKey(e){if(e.key==="Escape"){document.removeEventListener("keydown",escKey);fechar();}});
+    document.addEventListener("keydown",escKey);
 };
 
 const _salvarProibidosServidor=(lista, cb)=>{
-    fetch('/api/proibidos',{
+    _fetchJSON('/api/proibidos',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify(lista)
-    }).then(r=>r.json()).then(d=>{if(cb)cb(d);}).catch(e=>{console.error("Erro ao salvar proibidos no servidor:",e);if(cb)cb(null);});
+    }).then(d=>{if(cb)cb(d);}).catch(e=>{console.error("Erro ao salvar proibidos no servidor:",e);if(cb)cb(null);});
 };
 
 // Exibe elemento com animação reveal (1 segundo)
@@ -2627,6 +3468,7 @@ qs("#q").addEventListener("input",e=>{
     const delay = n > 2000 ? 450 : n > 500 ? 300 : n > 200 ? 200 : 100;
     debounceBusca = setTimeout(() => {
         qAtual=String(e.target.value||"").trim();
+        _invalidarCtxCache();
         const p=parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc);
         calcSomaSel();
         renderTabela();
@@ -2635,13 +3477,14 @@ qs("#q").addEventListener("input",e=>{
 
 document.querySelectorAll('input[name="tipoBusca"]').forEach(el=>el.addEventListener("change",e=>{
     tipoBusca=String(e.target&&e.target.value||"todos");
+    _invalidarCtxCache();
     // Se o vendedor selecionado não existe no novo tipo, limpa a seleção
     if(tipoBusca!=="todos"&&vendAtual&&!DADOS.vendas.some(x=>tipoLinhaOk(x)&&x.vendedor===vendAtual)){
-        vendAtual=""; atualizarSelecaoVendedores();
+        vendAtual=""; _invalidarCtxCache(); atualizarSelecaoVendedores();
     }
     calcSomaSel(); renderTabela();
 }));
-const _fnLimpar=()=>{vendAtual="";qAtual="";qInc="";qIgn=[];qValor=false;tipoBusca="todos";qs("#q").value="";const rb=qs('input[name="tipoBusca"][value="todos"]');if(rb)rb.checked=true;calcSomaSel();renderTabela();atualizarSelecaoVendedores();_atualizarXLimpar();toast("Filtro limpo","Mostrando todos.");};
+const _fnLimpar=()=>{vendAtual="";qAtual="";qInc="";qIgn=[];qValor=false;tipoBusca="todos";_invalidarCtxCache();qs("#q").value="";const rb=qs('input[name="tipoBusca"][value="todos"]');if(rb)rb.checked=true;calcSomaSel();renderTabela();atualizarSelecaoVendedores();_atualizarXLimpar();toast("Filtro limpo","Mostrando todos.");};
 qs("#limpar").addEventListener("click",_fnLimpar);
 const _btnLimTab=qs("#limparTabela");if(_btnLimTab)_btnLimTab.addEventListener("click",_fnLimpar);
 
@@ -2658,7 +3501,7 @@ qs("#q").addEventListener("input", _atualizarXLimpar);
 // Estado inicial (pode haver valor pré-preenchido)
 _atualizarXLimpar();
 qs("#ajuda").addEventListener("click",abrirAjuda);
-const btnPro=qs("#proibidos");if(btnPro)btnPro.addEventListener("click",()=>{const inp=qs("#q");if(!inp)return;let v=String(inp.value||"");if(v.toLowerCase().indexOf("[proibidos]")<0)v=(v+" [proibidos]").trim();inp.value=v;qAtual=v.trim();const p=parseBusca(qAtual);qInc=p.inc;qIgn=p.ign;qValor=consultaPareceValor(qInc);calcSomaSel();renderTabela();_atualizarXLimpar();toast("Filtro","Aplicado [proibidos].");});
+const btnPro=qs("#proibidos");if(btnPro)btnPro.addEventListener("click",()=>{const inp=qs("#q");if(!inp)return;let v=String(inp.value||"");if(v.toLowerCase().indexOf("[proibidos]")<0)v=(v+" [proibidos]").trim();inp.value=v;qAtual=v.trim();_invalidarCtxCache();const p=parseBusca(qAtual);qInc=p.inc;qIgn=p.ign;qValor=consultaPareceValor(qInc);calcSomaSel();renderTabela();_atualizarXLimpar();toast("Filtro","Aplicado [proibidos].");});
 
 qs("#copiarTudo").addEventListener("click",()=>{copiarTexto(montarTextoCopia(false,false));toast("Copiado","Conteúdo completo (com dinheiro).");});
 qs("#copiarTudoItens").addEventListener("click",()=>{copiarTexto(montarTextoCopiaItens(false,false));toast("Copiado","Conteúdo completo + itens.");});
@@ -2742,6 +3585,83 @@ document.addEventListener("keydown",e=>{
     }
 });
 
+// ── AÇÕES VINCULÁVEIS A TECLAS DE ATALHO ──────────────────────────────
+const ACOES_DISPONIVEIS = [
+    { value: "",                          label: "(nenhuma — só executa o comando)" },
+    { value: "click:#aCopiarTudo",        label: "\u25b8 Copiar tudo" },
+    { value: "click:#aCopiarTudoItens",   label: "\u25b8 Copiar tudo + itens" },
+    { value: "click:#aCopiarSemDinheiro", label: "\u25b8 Copiar sem dinheiro" },
+    { value: "click:#aCopiarGerencial",   label: "\u25b8 Copiar só gerencial" },
+    { value: "click:#aProibidos",         label: "\u25b8 Editar proibidos" },
+    { value: "click:#aVendedores",        label: "\u25b8 Filtrar por vendedor" },
+    { value: "click:#aAjuda",             label: "\u25b8 Ajuda de coringas" },
+    { value: "click:#aLimpar",            label: "\u25b8 Limpar filtros" },
+    { value: "click:#btnTema",            label: "\u25b8 Alternar tema" },
+    { value: "click:#btnModalPeriodo",    label: "\u25b8 Gerar por período" },
+    { value: "radio:tipoBusca:todos",     label: "\u25cf Tipo: Todos" },
+    { value: "radio:tipoBusca:gerencial", label: "\u25cf Tipo: Gerencial" },
+    { value: "radio:tipoBusca:nfce",      label: "\u25cf Tipo: NFC-e" },
+    { value: "radio:tipoBusca:nfe",       label: "\u25cf Tipo: NF-e" }
+];
+const _executarAcao = (v) => {
+    v = String(v || "").trim(); if (!v) return;
+    const sep = v.indexOf(":"); if (sep < 0) return;
+    const tipo = v.slice(0, sep), resto = v.slice(sep + 1);
+    // try/catch defensivo: "acao" normalmente só vem do <select> controlado
+    // (ACOES_DISPONIVEIS), mas também é lido de config.json — que pode ser
+    // editado manualmente no servidor. Um valor malformado aqui não deve
+    // derrubar o handler global de keydown (que trataria TODAS as teclas
+    // de atalho personalizadas, não só esta).
+    try {
+        if (tipo === "click") { const el = qs(resto); if (el) el.click(); }
+        else if (tipo === "radio") {
+            const pts = resto.split(":"); if (pts.length < 2) return;
+            const el = document.querySelector('input[name="' + pts[0] + '"][value="' + pts[1] + '"]');
+            if (el) { el.checked = true; el.dispatchEvent(new Event("change", {bubbles:true})); }
+        } else if (tipo === "checkbox") {
+            const el = qs(resto);
+            if (el && el.type === "checkbox") { el.checked = !el.checked; el.dispatchEvent(new Event("change", {bubbles:true})); }
+        }
+    } catch (e) {
+        console.warn("[teclas personalizadas] falha ao executar ação \"" + v + "\":", e && e.message);
+    }
+};
+
+// ── Teclas de atalho personalizadas ──────────────────────────────────────────
+// Cada entrada em window.__teclasPersonalizadas: { tecla: "F2", comando: "[-proibidos]>150" }
+// A tecla pode ser qualquer e.key (F1-F12, Insert, Delete, Home, End, PageUp, PageDown, etc.)
+// ou combinação Ctrl+tecla / Alt+tecla (ex: "Ctrl+F2", "Alt+Delete").
+// O comando é inserido integralmente na caixa de busca e executado.
+document.addEventListener("keydown", function _tpHandler(e) {
+    var _tp = window.__teclasPersonalizadas;
+    if (!Array.isArray(_tp) || !_tp.length) return;
+    // Não dispara se o foco está em input/textarea que NÃO seja a caixa de busca
+    var _ae = document.activeElement;
+    if (_ae && _ae.id !== "q" && (_ae.tagName === "INPUT" || _ae.tagName === "TEXTAREA" || _ae.isContentEditable)) return;
+    // Monta string da tecla pressionada com modificadores
+    var _k = String(e.key || "");
+    var _teclaAtual = (_k.startsWith("F") && /^F\d+$/.test(_k)) || ["Insert","Delete","Home","End","PageUp","PageDown"].indexOf(_k)>=0
+        ? (e.ctrlKey?"Ctrl+":"") + (e.altKey?"Alt+":"") + _k
+        : (e.ctrlKey && !e.altKey ? "Ctrl+" + _k : (e.altKey && !e.ctrlKey ? "Alt+" + _k : null));
+    if (!_teclaAtual) return;
+    var _entrada = null;
+    for (var _i=0; _i<_tp.length; _i++) {
+        if (String(_tp[_i].tecla||"").trim().toLowerCase() === _teclaAtual.toLowerCase()) { _entrada=_tp[_i]; break; }
+    }
+    if (!_entrada) return;
+    e.preventDefault();
+    var inp = qs("#q"); if (!inp) return;
+    _executarAcao(_entrada.acao);
+    var _cmd = String(_entrada.comando || "").trim();
+    inp.value = _cmd;
+    qAtual = _cmd;
+    _invalidarCtxCache();
+    var p = parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc);
+    calcSomaSel(); renderTabela(); _atualizarXLimpar();
+    var _temAcao = !!String(_entrada.acao || "").trim();
+    toast("Atalho " + String(_entrada.tecla||""), _cmd || (_temAcao ? "Ação executada." : "Busca limpa."));
+});
+
 qs("#atualizar")?.addEventListener("click", () => {
     window.location.href = "/atualizar";
 });
@@ -2756,7 +3676,7 @@ var __abrirModalPeriodo = function() {
     var _p = function(n) { return String(n).padStart(2, "0"); };
     var _hojeISO = _hoje.getFullYear() + "-" + _p(_hoje.getMonth()+1) + "-" + _p(_hoje.getDate());
     var _bg = document.createElement("div");
-    _bg.className = "ov on sheet";
+    _bg.className = "ov sheet";
     _bg.id = "ovPeriodo";
     _bg.setAttribute("aria-hidden", "false");
     _bg.innerHTML =
@@ -2782,12 +3702,19 @@ var __abrirModalPeriodo = function() {
           '</div>' +
         '</div>';
     document.body.appendChild(_bg);
-    var _fechar = function() { _bg.remove(); };
+    // Fix de transição (mesmo princípio do modal Proibidos): "on" só depois
+    // do reflow, senão o overlay aparece sem fade.
+    void _bg.offsetWidth;
+    _bg.classList.add("on");
+    // BUG FIX (auditoria v2.5.0 — LEAK): mesma classe de vazamento corrigida no
+    // modal Proibidos — ver comentário detalhado em abrirEditorProibidos().
+    // _fechar agora remove o listener "keydown" de Escape explicitamente, em
+    // vez de depender de o usuário pressionar Escape para isso acontecer.
+    function _escPer(e) { if (e.key === "Escape") _fechar(); }
+    var _fechar = function() { document.removeEventListener("keydown", _escPer); _fecharOverlayAnimado(_bg); };
     document.getElementById("perFechar").addEventListener("click", _fechar);
     _bg.addEventListener("click", function(e) { if (e.target === _bg) _fechar(); });
-    document.addEventListener("keydown", function _escPer(e) {
-        if (e.key === "Escape") { document.removeEventListener("keydown", _escPer); _fechar(); }
-    });
+    document.addEventListener("keydown", _escPer);
     document.getElementById("perGerar").addEventListener("click", function() {
         var inicio = document.getElementById("perInicio").value;
         var fim    = document.getElementById("perFim").value;
@@ -2805,18 +3732,24 @@ var __abrirModalPeriodo = function() {
 var __abrirModalConfig = function() {
     if (document.getElementById("ovConfig")) return;
     var _bg = document.createElement("div");
-    _bg.className = "ov on sheet";
+    _bg.className = "ov sheet";
     _bg.id = "ovConfig";
     _bg.setAttribute("aria-hidden", "false");
 
+    // BUG FIX (auditoria v2.5.0 — LEAK): mesma classe de vazamento corrigida nos
+    // modais Proibidos e Período — ver comentário detalhado em
+    // abrirEditorProibidos(). Aqui o listener de Escape só é criado dentro do
+    // .then() assíncrono (depois que /api/config responde), então guardamos a
+    // referência numa variável do escopo externo para que _fechar (definido
+    // antes disso) consiga removê-lo também.
+    var _escCfgHandler = null;
     var _fechar = function() {
-        var el = document.getElementById("ovConfig");
-        if (el) el.remove();
+        if (_escCfgHandler) { document.removeEventListener("keydown", _escCfgHandler); _escCfgHandler = null; }
+        _fecharOverlayAnimado(document.getElementById("ovConfig"));
     };
 
     // Carrega valores atuais do servidor antes de montar o HTML
-    fetch("/api/config", {cache: "no-store"})
-    .then(function(r){ return r.json(); })
+    _fetchJSON("/api/config", {cache: "no-store"})
     .catch(function(){ return {}; })
     .then(function(cfg) {
         var _pn  = String(cfg.appName      || "").replace(/"/g, "&quot;");
@@ -2873,6 +3806,12 @@ var __abrirModalConfig = function() {
                 '<div class="k">Termos proibidos <span style="font-weight:400;text-transform:none;letter-spacing:0">(um por linha — oculta vendas com esses produtos)</span></div>' +
                 '<textarea id="cfgProibidos" spellcheck="false" style="width:100%;min-height:130px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg-app);color:var(--text-main);padding:10px 12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;transition:border-color .15s"></textarea>' +
               '</div>' +
+              '<div class="kv" style="flex-direction:column;gap:8px">' +
+                '<div class="k">Teclas de atalho <span style="font-weight:400;text-transform:none;letter-spacing:0">(tecla → executa comando na caixa de busca)</span></div>' +
+                '<div style="font-size:11px;color:var(--text-muted);padding-left:2px;line-height:1.5">Suporta F1–F12, Insert, Delete, Home, End, PageUp, PageDown e combinações Ctrl+ / Alt+.<br>Clique em "Gravar tecla" e pressione a tecla desejada. O comando aceita todos os coringas.</div>' +
+                '<div id="cfgTeclasLista" style="display:flex;flex-direction:column;gap:8px"></div>' +
+                '<button class="btn" type="button" id="cfgAddTecla" style="align-self:flex-start"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Adicionar atalho</button>' +
+              '</div>' +
               '<div id="cfgStatus" style="display:none;text-align:center;padding:8px 0;font-size:13px;color:var(--text-muted)">Salvando...</div>' +
               '<button class="btn" id="cfgSalvar" type="button" style="width:100%;min-height:48px;height:auto;padding:12px 18px;font-size:15px;font-weight:700;white-space:normal;line-height:1.3;gap:10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar configurações</button>' +
             '</div>' +
@@ -2888,6 +3827,157 @@ var __abrirModalConfig = function() {
         _ta.addEventListener("focus", function(){ _ta.style.borderColor = "var(--accent)"; });
         _ta.addEventListener("blur",  function(){ _ta.style.borderColor = "var(--border)"; });
 
+        // ── Teclas de atalho ──────────────────────────────────────────────────
+        var _teclasArr = Array.isArray(cfg.teclasPersonalizadas)
+            ? cfg.teclasPersonalizadas.map(function(t){ return {tecla:String(t.tecla||""),comando:String(t.comando||""),acao:String(t.acao||"")}; })
+            : (Array.isArray(window.__teclasPersonalizadas) ? window.__teclasPersonalizadas.map(function(t){ return {tecla:String(t.tecla||""),comando:String(t.comando||""),acao:String(t.acao||"")}; }) : []);
+
+        var _escAttr = function(s){ return String(s||"").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;"); };
+
+        var _teclaValida = function(k, ctrl, alt) {
+            if (!k) return false;
+            var fn = /^F\d+$/.test(k);
+            var esp = ["Insert","Delete","Home","End","PageUp","PageDown"].indexOf(k) >= 0;
+            if (fn || esp) return true;
+            // Ctrl ou Alt com qualquer tecla imprimível (1 char) ou Enter/Tab/Space etc.
+            if (ctrl || alt) return k.length >= 1;
+            return false;
+        };
+
+        var _renderTeclaRow = function(i) {
+            var t = _teclasArr[i];
+            var row = document.createElement("div");
+            row.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap";
+            row.setAttribute("data-tecla-idx", i);
+
+            var inpTecla = document.createElement("input");
+            inpTecla.className = "input";
+            inpTecla.readOnly = true;
+            inpTecla.placeholder = "Clique → pressione";
+            inpTecla.value = t.tecla || "";
+            inpTecla.style.cssText = "width:140px;min-width:100px;cursor:pointer;font-family:ui-monospace,Consolas,monospace;font-size:12px";
+            inpTecla.title = "Clique aqui e pressione a tecla de atalho";
+
+            var btnGravar = document.createElement("button");
+            btnGravar.className = "btn";
+            btnGravar.type = "button";
+            btnGravar.textContent = "Gravar tecla";
+            btnGravar.style.cssText = "white-space:nowrap;font-size:12px";
+
+            var inpCmd = document.createElement("input");
+            inpCmd.className = "input";
+            inpCmd.placeholder = "ex: [-proibidos,dinheiro]>150";
+            inpCmd.value = t.comando || "";
+            inpCmd.style.cssText = "flex:1;min-width:120px;font-family:ui-monospace,Consolas,monospace;font-size:12px";
+            inpCmd.title = "Comando executado na caixa de busca ao pressionar a tecla (opcional se houver ação)";
+
+            var selAcao = document.createElement("select");
+            selAcao.className = "input";
+            selAcao.style.cssText = "min-width:170px;max-width:220px;font-size:12px;cursor:pointer";
+            selAcao.title = "Ação opcional disparada antes do comando";
+            ACOES_DISPONIVEIS.forEach(function(a) {
+                var opt = document.createElement("option");
+                opt.value = a.value; opt.textContent = a.label;
+                if ((t.acao || "") === a.value) opt.selected = true;
+                selAcao.appendChild(opt);
+            });
+            selAcao.addEventListener("change", function() {
+                if (_teclasArr[i]) _teclasArr[i].acao = selAcao.value;
+            });
+
+            var btnRem = document.createElement("button");
+            btnRem.className = "btn";
+            btnRem.type = "button";
+            btnRem.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+            btnRem.title = "Remover este atalho";
+            btnRem.style.cssText = "flex-shrink:0";
+
+            // Atualiza teclasArr ao editar comando
+            inpCmd.addEventListener("input", function() {
+                if (_teclasArr[i]) _teclasArr[i].comando = inpCmd.value;
+            });
+
+            // Captura tecla pressionada
+            var _capturando = false;
+            var _stopCapture = function(cancel) {
+                _capturando = false;
+                btnGravar.textContent = "Gravar tecla";
+                btnGravar.style.background = "";
+                inpTecla.style.borderColor = "var(--border)";
+                if (cancel && _teclasArr[i]) inpTecla.value = _teclasArr[i].tecla || "";
+            };
+            var _onKey = function(ev) {
+                // Ignora modificadores sozinhos
+                if (["Control","Alt","Shift","Meta"].indexOf(ev.key) >= 0) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                var _k = String(ev.key || "");
+                var _ctrl = ev.ctrlKey; var _alt = ev.altKey;
+                if (!_teclaValida(_k, _ctrl, _alt)) {
+                    toast("Tecla inválida", "Use F1–F12, Ins, Del, Home, End, PgUp, PgDn ou Ctrl/Alt+tecla.");
+                    _stopCapture(true);
+                    document.removeEventListener("keydown", _onKey, true);
+                    return;
+                }
+                var _teclaStr = (_ctrl?"Ctrl+":"") + (_alt?"Alt+":"") + _k;
+                // Verifica duplicata
+                var _dup = false;
+                for (var _d=0; _d<_teclasArr.length; _d++) {
+                    if (_d !== i && String(_teclasArr[_d].tecla||"").toLowerCase() === _teclaStr.toLowerCase()) { _dup=true; break; }
+                }
+                if (_dup) { toast("Tecla já usada", _teclaStr + " já está atribuída a outro atalho."); _stopCapture(true); document.removeEventListener("keydown",_onKey,true); return; }
+                inpTecla.value = _teclaStr;
+                if (_teclasArr[i]) _teclasArr[i].tecla = _teclaStr;
+                _stopCapture(false);
+                document.removeEventListener("keydown", _onKey, true);
+            };
+
+            btnGravar.addEventListener("click", function() {
+                if (_capturando) { _stopCapture(true); document.removeEventListener("keydown",_onKey,true); return; }
+                _capturando = true;
+                btnGravar.textContent = "Aguardando...";
+                btnGravar.style.background = "var(--accent)";
+                inpTecla.style.borderColor = "var(--accent)";
+                inpTecla.value = "";
+                document.addEventListener("keydown", _onKey, true);
+                // Cancela se clicar fora
+                setTimeout(function(){ if(_capturando){ _stopCapture(true); document.removeEventListener("keydown",_onKey,true); } }, 8000);
+            });
+
+            btnRem.addEventListener("click", function() {
+                _teclasArr.splice(i, 1);
+                _renderTeclaLista();
+            });
+
+            row.appendChild(inpTecla);
+            row.appendChild(btnGravar);
+            row.appendChild(inpCmd);
+            row.appendChild(selAcao);
+            row.appendChild(btnRem);
+            return row;
+        };
+
+        var _renderTeclaLista = function() {
+            var lista = document.getElementById("cfgTeclasLista");
+            if (!lista) return;
+            lista.innerHTML = "";
+            for (var _ti=0; _ti<_teclasArr.length; _ti++) {
+                lista.appendChild(_renderTeclaRow(_ti));
+            }
+        };
+        _renderTeclaLista();
+
+        document.getElementById("cfgAddTecla").addEventListener("click", function() {
+            _teclasArr.push({tecla:"", comando:"", acao:""});
+            _renderTeclaLista();
+            // Foca o botão gravar da linha recém-adicionada
+            var lista = document.getElementById("cfgTeclasLista");
+            if (lista) {
+                var btns = lista.querySelectorAll("button");
+                if (btns.length >= 2) btns[btns.length-2].click();
+            }
+        });
+
         // Botão restaurar padrão do toast
         document.getElementById("cfgToastReset").addEventListener("click", function() {
             document.getElementById("cfgToastDuracao").value = 5000;
@@ -2896,11 +3986,11 @@ var __abrirModalConfig = function() {
         // Botão fechar
         document.getElementById("cfgFechar").addEventListener("click", _fechar);
         _bg.addEventListener("click", function(e){ if (e.target === _bg) _fechar(); });
-        document.addEventListener("keydown", function _escCfg(e){
-            if (e.key === "Escape"){ document.removeEventListener("keydown", _escCfg); _fechar(); }
-        });
+        _escCfgHandler = function(e){ if (e.key === "Escape") _fechar(); };
+        document.addEventListener("keydown", _escCfgHandler);
 
         // File picker de favicon
+        var MAX_FAVICON_BYTES = 2 * 1024 * 1024; // 2MB — favicon não precisa ser maior que isso
         var _fileInp = document.getElementById("cfgFaviconFile");
         document.getElementById("cfgFaviconPick").addEventListener("click", function(){
             _fileInp.click();
@@ -2909,6 +3999,14 @@ var __abrirModalConfig = function() {
             var f = _fileInp.files && _fileInp.files[0];
             if (!f) return;
             var _info = document.getElementById("cfgFaviconInfo");
+            // Validação de tamanho ANTES de ler o arquivo — evita travar a aba
+            // lendo um ArrayBuffer enorme e sobrecarregar o upload sem necessidade.
+            if (f.size > MAX_FAVICON_BYTES) {
+                _fileInp.value = "";
+                if (_info) _info.textContent = "Arquivo muito grande (" + Math.round(f.size/1024) + " KB) — máximo permitido: " + Math.round(MAX_FAVICON_BYTES/1024) + " KB.";
+                toast("Ícone muito grande", "Escolha um arquivo de até " + Math.round(MAX_FAVICON_BYTES/1024) + " KB.");
+                return;
+            }
             if (_info) _info.textContent = "Arquivo selecionado: " + f.name + " (" + Math.round(f.size/1024) + " KB) — será enviado ao salvar.";
             document.getElementById("cfgFaviconPath").value = "";
         });
@@ -2935,18 +4033,19 @@ var __abrirModalConfig = function() {
             if (_st) _st.style.display = "block";
 
             var _doSave = function() {
-                fetch("/api/config", {
+                _fetchJSON("/api/config", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, proibidos: pr})
+                    body: JSON.stringify({appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, proibidos: pr, teclasPersonalizadas: _teclasArr})
                 })
-                .then(function(r){ return r.json(); })
                 .then(function(d){
                     if (_st) _st.style.display = "none";
                     _btn.disabled = false; _btn.textContent = "Salvar configurações";
                     if (d.ok) {
                         // Aplica duração imediatamente
                         window.__TOAST_MS = Math.max(500, td);
+                        // Aplica teclas de atalho imediatamente (sem recarregar)
+                        window.__teclasPersonalizadas = _teclasArr.filter(function(t){ return t.tecla && (t.comando || t.acao); });
                         toast("Configurações salvas", "O relatório será atualizado em breve.");
                         _fechar();
                     } else {
@@ -2964,12 +4063,11 @@ var __abrirModalConfig = function() {
                 var _reader = new FileReader();
                 _reader.onload = function(ev) {
                     var ab = ev.target.result;
-                    fetch("/api/upload-favicon", {
+                    _fetchJSON("/api/upload-favicon", {
                         method: "POST",
                         headers: {"Content-Type": "application/octet-stream"},
                         body: ab
                     })
-                    .then(function(r){ return r.json(); })
                     .then(function(d){
                         if (d.ok) {
                             fv = "";
@@ -2993,6 +4091,12 @@ var __abrirModalConfig = function() {
     // Mostra spinner enquanto carrega
     _bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:480px;min-height:200px;align-items:center;justify-content:center;display:flex"><div class="msub" style="text-align:center;padding:40px">Carregando configurações...</div></div>';
     document.body.appendChild(_bg);
+    // Fix de transição (mesmo princípio dos modais Proibidos e Por período):
+    // "on" só depois do reflow, senão o overlay aparece sem fade — aqui é
+    // ainda mais perceptível porque é a PRIMEIRA coisa que o usuário vê
+    // (o spinner "Carregando configurações...").
+    void _bg.offsetWidth;
+    _bg.classList.add("on");
     _bg.addEventListener("click", function(e){ if (e.target === _bg) _fechar(); });
 };
 
@@ -3000,7 +4104,7 @@ const fixHead=()=>{
     const tbl=qs("table"); if(!tbl)return;
     const thead=tbl.querySelector("thead"); if(!thead)return;
     const sync=()=>{const sbw=tbl.offsetWidth-tbl.clientWidth;tbl.style.setProperty("--sbw",(sbw>0?sbw:0)+"px");thead.style.transform="translateX("+(-tbl.scrollLeft)+"px)";};
-    tbl.addEventListener("scroll",sync,{passive:true}); window.addEventListener("resize",sync); sync();
+    tbl.addEventListener("scroll",sync,{passive:true}); window.addEventListener("resize",sync,{passive:true}); sync();
 };
 /**
  * Correção Sequencial Anti-Loop para #bDiaBrk
@@ -3030,7 +4134,27 @@ const fixHead=()=>{
         if (cooldown) return;
 
         const alvo = $("#bDiaBrk");
-        if (!alvo || !estaEscapando(alvo)) return;
+        if (!alvo) return;
+
+        // Layout voltou ao normal (janela alargada) — restaura tudo que foi
+        // ocultado/encolhido nas etapas abaixo. Sem isso, badge e vendBtn
+        // ficavam permanentemente ocultos/colapsados mesmo após alargar a
+        // janela, pois os flags de estado eram um "ratchet" só de ida.
+        if (!estaEscapando(alvo)) {
+            if (estado.bhora) {
+                const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)");
+                if (bh) bh.style.display = "";
+                estado.bhora = false;
+            }
+            if (estado.vb1 || estado.vb2 || estado.vb3) {
+                const vb = $(".vendBtn");
+                if (vb) vb.style.maxWidth = "";
+                const icon = $("span.vendIcon");
+                if (icon) icon.style.transform = "";
+                estado.vb1 = estado.vb2 = estado.vb3 = false;
+            }
+            return;
+        }
 
         // Etapa 1 — oculta badge de hora
         const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)");
@@ -3104,6 +4228,24 @@ const fixHead=()=>{
             requestAnimationFrame(executarVerificacao), 80);
     }, { passive: true });
 
+    // Ao carregar a página: fonts/imagens podem deslocar o layout após o
+    // snapshot inicial. Dispara uma última verificação quando todos os
+    // recursos estiverem prontos, respeitando o cooldown e o guard
+    // estaEscapando() — sem flickering e sem loops.
+    //
+    // O <script> fica no fim do <body>, então roda DEPOIS do HTML parseado.
+    // Se todos os recursos já estiverem em cache (comum ao reabrir o mesmo
+    // relatório), o evento "load" já disparou antes deste listener existir —
+    // anexar cegamente faria a verificação nunca rodar. Checa readyState
+    // primeiro; só anexa o listener se o carregamento ainda estiver em curso.
+    if (document.readyState === "complete") {
+        requestAnimationFrame(executarVerificacao);
+    } else {
+        window.addEventListener("load", () => {
+            requestAnimationFrame(executarVerificacao);
+        }, { passive: true, once: true });
+    }
+
     // NÃO chama iniciar() aqui — renderTudo() ainda não rodou,
     // então div.top não existe no DOM e a chamada seria silenciosa.
     // Expõe a função para ser chamada logo abaixo, após o DOM estar pronto.
@@ -3120,23 +4262,90 @@ if (typeof window.__nc_iniciarResize === "function") {
 }
 </script>
 </body></html>`;
-fs.writeFileSync(saida, html, "utf8");
+// PRECISÃO FIX (v2.6.4): gravação atômica do HTML (arquivo temporário +
+// rename) em vez de writeFileSync direto no destino. Motivo concreto: o
+// fast-poll de servidor-relatorio.js MATA gerações em andamento de propósito
+// (kill-and-restart) sempre que chega venda nova durante uma geração — é o
+// comportamento normal em horário de movimento, não uma exceção rara. Com
+// escrita direta, um kill que caísse no meio do writeFileSync deixava o
+// arquivo de destino truncado no disco. O rename é atômico no nível do
+// sistema de arquivos, então o destino nunca existe pela metade: ou é o
+// HTML anterior (íntegro), ou o novo (íntegro). O tmp leva o PID no nome
+// para nunca colidir com outra geração rodando em paralelo (relatórios de
+// período são gerados em processos separados e simultâneos).
+try {
+    const _tmpSaida = saida + ".tmp" + process.pid;
+    try {
+        fs.writeFileSync(_tmpSaida, html, "utf8");
+        fs.renameSync(_tmpSaida, saida);
+    } catch (eAtomico) {
+        // Fallback: se o rename falhar (destino travado por antivírus/indexador
+        // do Windows, ou tmp e destino em volumes diferentes), grava direto —
+        // melhor um relatório gravado de forma não-atômica que nenhum.
+        try { if (fs.existsSync(_tmpSaida)) fs.unlinkSync(_tmpSaida); } catch(_) {}
+        fs.writeFileSync(saida, html, "utf8");
+    }
+} catch (eWrite) {
+    clearTimeout(_globalTimeout); _dbRef = null;
+    try { db.detach(); } catch(_) {}
+    console.log("ERRO ao gravar '" + saida + "': " + eWrite.message);
+    process.exit(1);
+}
     tick("arquivo gravado");
 
     // Persiste cache de horas fixadas somente quando houve nova entrada,
     // evitando escrita desnecessária em disco a cada execução.
     if (_horaCacheDirty) {
         try {
-            fs.writeFileSync(_horaCacheFile, JSON.stringify(_horaCache, null, 2), "utf8");
+            // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de gravar — nfc-e,
+            // depois nf-e, depois gerencial; ascendente por hora dentro de cada
+            // grupo. Ver comentário completo em _ordenarHoraCache, acima.
+            _horaCache = _ordenarHoraCache(_horaCache);
+            // PRECISÃO FIX (v2.6.4): gravação atômica (tmp + rename), igualando o
+            // cuidado que servidor-relatorio.js já tem com ESTE MESMO arquivo (lá
+            // via _gravarArquivoAtomico). A assimetria era perigosa: é justamente
+            // este processo que leva kill do fast-poll (kill-and-restart quando
+            // chega venda nova durante a geração). Um kill no meio da escrita
+            // deixava hora-fixada-cache.json truncado — JSON inválido, que os
+            // DOIS processos descartam ao ler, perdendo TODAS as horas fixadas do
+            // dia de uma vez. O efeito visível seria as vendas voltando a
+            // "flutuar" de posição a cada atualização: exatamente o problema que
+            // este cache existe para resolver.
+            const _tmpCache = _horaCacheFile + ".tmp" + process.pid;
+            try {
+                fs.writeFileSync(_tmpCache, JSON.stringify(_horaCache, null, 2), "utf8");
+                fs.renameSync(_tmpCache, _horaCacheFile);
+            } catch (eAtomicoCache) {
+                try { if (fs.existsSync(_tmpCache)) fs.unlinkSync(_tmpCache); } catch(_) {}
+                fs.writeFileSync(_horaCacheFile, JSON.stringify(_horaCache, null, 2), "utf8");
+            }
         } catch (e) {
             console.warn("Aviso: não foi possível salvar hora-fixada-cache.json —", e.message);
         }
     }
 
     clearTimeout(_globalTimeout);
-    db.detach();
+    _dbRef = null;
+    // PRECISÃO FIX (v2.6.4): detach() sem try/catch AQUI, no caminho de
+    // SUCESSO, era capaz de transformar uma geração bem-sucedida em falha.
+    // Neste ponto o HTML já foi gravado em disco e o cache de hora já foi
+    // salvo — só falta encerrar a conexão. Se detach() lançasse (conexão já
+    // derrubada pelo servidor Firebird, rede caindo no exato momento, etc.),
+    // a exceção subia para o .catch() de rodar(), que imprime "ERRO FATAL" e
+    // faz process.exit(1). Como servidor-relatorio.js detecta falha por
+    // "code !== 0", ele descartava um relatório PERFEITO e mandava regerar,
+    // até 5 vezes (MAX_TENTATIVAS_SPAWN) — desperdício puro, e o usuário
+    // esperando por algo que já estava pronto. Fechar a conexão é
+    // best-effort: o processo encerra logo em seguida e o SO libera o socket
+    // de qualquer forma.
+    try { db.detach(); } catch(_) {}
     console.log("OK: " + saida);
     });
     };
-    rodar();
+    rodar().catch(e => {
+        clearTimeout(_globalTimeout);
+        console.log("ERRO FATAL em rodar(): " + String(e && e.message || e));
+        try { if (_dbRef) { _dbRef.detach(); _dbRef = null; } } catch(_) {}
+        process.exit(1);
+    });
 })();

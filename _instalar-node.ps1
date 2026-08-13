@@ -2,13 +2,43 @@
 # Instala Node.js automaticamente no Windows 10/11 x64.
 # Metodos: winget -> MSI silencioso -> MSI com log detalhado.
 # Auto-eleva para Administrador se necessario.
+#
+# @version 1.2.1
+# @changelog
+#   1.2.1 - 2026-08-07 15:30 - Prevencao (causa raiz encontrada em
+#                              iniciar-tray.ps1, mesma familia de risco):
+#     - Havia um travessao Unicode dentro de um Write-Log real (nao em
+#       comentario) na secao de download do MSI. Windows PowerShell 5.1 nao
+#       assume UTF-8 por padrao para .ps1 sem BOM - pode reinterpretar bytes
+#       multi-byte incorretamente e corromper o parsing do script a partir
+#       dali. Removidos todos os caracteres nao-ASCII do arquivo; agora 100%
+#       ASCII. Ver changelog de iniciar-tray.ps1 v1.2.2 para o caso concreto
+#       que motivou essa checagem em todos os .ps1 do projeto.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# TITULO FIX (ajuste solicitado): nunca derruba o script se falhar (ex:
+# config.json ainda nao existe nesta etapa da instalacao) - titulo e' so'
+# cosmetico, nao pode impedir a instalacao do Node.js.
+try {
+    $__appName = "Relatorios"
+    $__cfgPath = Join-Path $PSScriptRoot "config.json"
+    if (Test-Path $__cfgPath) {
+        $__cfg = Get-Content $__cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        if ($__cfg.appName) { $__appName = $__cfg.appName }
+    }
+    $host.UI.RawUI.WindowTitle = "$__appName - Instalando Node.js"
+} catch {}
+
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
+# NOTA (trade-off consciente): versao fixa em vez de buscar dinamicamente a
+# ultima LTS. Buscar a versao mais recente exigiria uma chamada de rede extra
+# (novo ponto de falha) so' para DESCOBRIR o que baixar, antes mesmo de baixar
+# o instalador. Mantido simples e previsivel - reveja/atualize este numero
+# periodicamente (verifique a LTS atual em https://nodejs.org/en/download).
 $NODE_VERSION = "20.19.0"
 $NODE_URL     = "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-x64.msi"
 $NODE_DIR     = "C:\Program Files\nodejs"
@@ -41,7 +71,18 @@ function Ensure-Admin {
         Write-Log "Nao esta rodando como Administrador. Reiniciando elevado..." "AVISO"
         $script = $MyInvocation.ScriptName
         if (-not $script) { $script = $PSCommandPath }
-        Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -Verb RunAs -Wait
+        # ROBUSTEZ FIX: se o usuario clicar "Nao" no prompt do UAC, Start-Process
+        # -Verb RunAs lanca uma excecao terminante (ErrorActionPreference='Stop'
+        # esta em vigor no escopo do modulo) - sem este try/catch, o script
+        # encerrava com um stack trace .NET cru em vez de uma mensagem clara,
+        # inconsistente com o padrao de log amigavel usado no resto do arquivo.
+        try {
+            Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -Verb RunAs -Wait -ErrorAction Stop
+        } catch {
+            Write-Log "Elevacao para Administrador foi cancelada ou falhou: $($_.Exception.Message)" "ERRO"
+            Write-Log "A instalacao do Node.js requer privilegios de Administrador. Execute novamente e aceite o prompt do UAC." "ERRO"
+            exit 1
+        }
         exit 0
     }
 }
@@ -135,18 +176,46 @@ function Download-Msi {
     }
 
     $limite = 3
+    $TIMEOUT_DOWNLOAD_SEG = 180
     for ($i = 1; $i -le $limite; $i++) {
-        Write-Log "Tentativa de download $i de $limite..."
+        Write-Log "Tentativa de download $i de $limite (timeout: ${TIMEOUT_DOWNLOAD_SEG}s)..."
         try {
             $ErrorActionPreference = 'Stop'
 
-            $usaBits = $null -ne (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue)
-            if ($usaBits) {
-                Start-BitsTransfer -Source $NODE_URL -Destination $TMP_MSI -ErrorAction Stop
+            # TIMEOUT FIX: nem Start-BitsTransfer nem WebClient.DownloadFile tem
+            # timeout de rede embutido. Se a conexao travar em vez de falhar
+            # (ex: firewall descartando pacotes silenciosamente, proxy pendurado),
+            # o download ficava preso PARA SEMPRE - nunca cai no catch, nunca
+            # avanca de tentativa, e a instalacao inteira do Node.js trava sem
+            # nenhuma mensagem de erro. Executa o download num job em segundo
+            # plano com teto rigido de tempo; se estourar, mata o job e trata
+            # como falha desta tentativa (cai no laco normal de retry).
+            $job = Start-Job -ScriptBlock {
+                param($url, $dest)
+                try {
+                    if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
+                        Start-BitsTransfer -Source $url -Destination $dest -ErrorAction Stop
+                    } else {
+                        $wc = New-Object System.Net.WebClient
+                        $wc.DownloadFile($url, $dest)
+                    }
+                    return $true
+                } catch {
+                    return $_.Exception.Message
+                }
+            } -ArgumentList $NODE_URL, $TMP_MSI
+
+            $terminou = Wait-Job -Job $job -Timeout $TIMEOUT_DOWNLOAD_SEG
+            if (-not $terminou) {
+                Write-Log "Download nao respondeu em ${TIMEOUT_DOWNLOAD_SEG}s - abortando esta tentativa." "AVISO"
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
             } else {
-                $wc = New-Object System.Net.WebClient
-                $wc.DownloadFile($NODE_URL, $TMP_MSI)
+                $resultadoJob = Receive-Job -Job $job -ErrorAction SilentlyContinue
+                if ($resultadoJob -ne $true) {
+                    Write-Log "Job de download retornou erro: $resultadoJob" "AVISO"
+                }
             }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 
             if (Test-Path $TMP_MSI) {
                 $tamBytes = (Get-Item $TMP_MSI -ErrorAction Stop).Length

@@ -1,16 +1,25 @@
 @echo off
-title Node-Firebird - Instalador de Modulo
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 chcp 65001 >nul 2>&1
 
 :: =========================================================
-::  node-firebird.bat
+::  node-firebird.bat                                  v1.1.1
 ::  - Verifica / instala Node.js automaticamente
 ::  - Instala o modulo node-firebird via npm
 ::  - Pula instalacao se modulo ja estiver presente
 ::  - Tratamento robusto de erros e atualizacao de PATH
-:: =========================================================
+::
+::  CHANGELOG 1.1.1 - 2026-08-08 05:10 - Quebras de linha convertidas para
+::   CRLF, a convencao correta do Windows. Estes arquivos estavam com LF
+::   puro; funcionavam porque so' usam "goto", mas "call :label" quebra
+::   nesse formato (ver instalar-na-inicializacao.bat v1.8.1). Padronizado
+::   em todo o projeto para evitar a armadilha em edicoes futuras.
+::   Se for editar, use um editor que preserve CRLF.
+
+set "APP_TITULO=Relatorios"
+for /f "usebackq delims=" %%N in (`powershell -NoProfile -Command "try{$n=(Get-Content '%~dp0config.json' -Raw -Encoding UTF8 | ConvertFrom-Json).appName; if($n){$n}else{'Relatorios'}}catch{'Relatorios'}" 2^>nul`) do set "APP_TITULO=%%N"
+title !APP_TITULO! - Instalador Node-Firebird
 
 echo.
 echo  [INFO] Verificando ambiente Node.js...

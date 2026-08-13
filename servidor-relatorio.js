@@ -2,46 +2,126 @@
 
 /**
  * servidor-relatorio.js
- *
- * - Auto-deteccao do FDB no sistema local
- * - Auto-descoberta do IP do servidor Firebird na rede (scan porta 3050)
- * - SSE /api/events: notifica abas abertas quando dados mudam (reload)
- * - /api/navigate/hoje  /api/navigate/periodo/D1/D2: foco de aba pelo tray
- * - /api/sse-clients: quantas abas SSE abertas (usado pelo tray)
- * - /api/status: qt e total do dia para polling do browser
- * - /api/db-status: status da conexao
- * - pollInterval lido do config.json (padrao 1000 ms, minimo 200 ms)
- * - extrairStatusDoHtml le <script id="dados"> para valores corretos
- * - /selecionar-fdb: picker manual do SMALL.FDB quando nao encontrado automaticamente
- * - /api/abrir-picker-fdb: abre dialogo nativo Windows para selecionar .fdb
- * - /api/salvar-fdb: salva caminho FDB no config.json e reinicia conexao
+ * @version 2.8.4
+ * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
+ *              geração em subprocesso.
+ * @changelog
+ *   2.8.4 - 2026-08-08 07:00 - Versões do servidor E do gerador na linha de
+ *                              início do log.
+ *     - A marca de início passa a terminar com "Servidor vX.Y.Z | Gerador
+ *       vX.Y.Z". Os dois arquivos são atualizados juntos com frequência, e
+ *       uma combinação incompatível já causou sintomas confusos antes (o
+ *       marcador "CANCELADA" aparecendo na coluna de hora quando só o
+ *       servidor tinha sido trocado). Ver as duas versões lado a lado na
+ *       abertura do log torna esse desencontro imediato de identificar.
+ *     - A versão do gerador é lida do @version no cabeçalho do próprio
+ *       arquivo (só os primeiros 600 caracteres). Leitura de arquivo em vez
+ *       de require(): o gerador é um script executável que abre conexão com
+ *       o banco ao ser carregado, não um módulo. Se o arquivo faltar ou não
+ *       for legível, registra "ausente" em vez de impedir o boot.
  */
+
+
+// Versão deste arquivo — mantida em sincronia manual com @version no header.
+// Registrada na linha de início do log para que se saiba, ao investigar
+// qualquer ocorrência, qual versão do servidor estava no ar naquele momento
+// (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
+const SERVER_VERSION = "2.8.4";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
 const _util = require('util');
 const _path = require('path');
 const LOG_PATH = _path.join(__dirname, 'relatorio.log');
+
+// ORDEM FIX: padDois é usado dentro de logToFile(). Antes estava declarado ~90
+// linhas abaixo; como `var` é içado sem valor, qualquer log emitido durante o
+// carregamento do módulo caía no catch silencioso de logToFile e era perdido.
+// Declarado aqui, no topo absoluto, o logger passa a funcionar desde a linha 1.
+var padDois = function(n) { return String(n).padStart(2, "0"); };
+
+// Gravação atômica: escreve num arquivo temporário e renomeia por cima.
+// rename() é atômico no mesmo volume, então uma queda de energia ou kill no meio
+// da escrita nunca deixa config.json / hora-fixada-cache.json truncados.
+// Retorna true em sucesso, false em falha (nunca lança).
+var _gravarArquivoAtomico = function(destino, conteudo) {
+    var tmp = destino + ".tmp" + process.pid;
+    try {
+        _fs.writeFileSync(tmp, conteudo, "utf8");
+        _fs.renameSync(tmp, destino);
+        return true;
+    } catch(e) {
+        // Fallback: se o rename falhar (antivírus segurando o handle no Windows,
+        // volume diferente, etc.), tenta a escrita direta antes de desistir.
+        try { _fs.writeFileSync(destino, conteudo, "utf8"); return true; } catch(_) {}
+        try { if (_fs.existsSync(tmp)) _fs.unlinkSync(tmp); } catch(_) {}
+        return false;
+    }
+};
+
 // MAX_LOG_LINES é sobrescrito depois que config.json é carregado (ver abaixo)
 var MAX_LOG_LINES = 1000;
-let _logBuffer = [];
+let _logBuffer = [];       // histórico recente em memória — usado como fallback de leitura, não é mais a fonte de gravação
+let _logPendentes = [];    // linhas ainda não gravadas em disco desde o último flush
 let _logFlushTimer = null;
-// Carrega linhas existentes no buffer ao iniciar
+// Conta linhas ACRESCENTADAS desde a última rotação (ao contrário de
+// _logBuffer, que fica sempre travado em MAX_LOG_LINES e por isso nunca
+// serviria como sinal de "já é hora de rotacionar" — bug encontrado durante
+// os próprios testes desta revisão).
+let _logLinhasDesdeRotacao = 0;
+// Carrega linhas existentes no buffer ao iniciar (só leitura, não afeta o arquivo)
 try {
     const _existing = _fs.readFileSync(LOG_PATH, "utf8");
     _logBuffer = _existing.split("\n").filter(l => l.trim()).slice(-MAX_LOG_LINES);
 } catch(e) {}
+
+// CONCORRÊNCIA FIX (pedido do usuário: consolidar tray.log em relatorio.log):
+// iniciar-tray.ps1 (processo PowerShell independente) também grava neste
+// mesmo arquivo. A versão anterior deste logger REESCREVIA O ARQUIVO INTEIRO
+// a cada flush (writeFileSync com todo o _logBuffer em memória) — qualquer
+// linha que outro processo tivesse acabado de acrescentar seria APAGADA no
+// próximo flush do Node, porque o buffer em memória do Node não sabia que
+// ela existia. Agora _flushLog só ACRESCENTA (appendFileSync) as linhas
+// novas desde o último flush — nunca sobrescreve o arquivo inteiro em uso
+// normal, então dois processos gravando no mesmo arquivo é seguro (cada
+// appendFileSync é uma operação atômica no nível do SO para escritas deste
+// tamanho). A rotação (manter só as últimas MAX_LOG_LINES) roda raramente
+// (só quando já foram acrescentadas MAX_LOG_LINES linhas novas desde a
+// última rotação) e sempre relê o arquivo do disco na hora — nunca a partir
+// de _logBuffer, que não conhece as linhas que outros processos gravaram —
+// usando gravação atômica (tmp + rename) para minimizar a janela de colisão
+// quando de fato acontece.
+function _rotacionarLogSeNecessario() {
+    try {
+        if (_logLinhasDesdeRotacao < MAX_LOG_LINES) return; // ainda longe do limite, nao vale o custo de reler o arquivo
+        const _atual = _fs.readFileSync(LOG_PATH, "utf8");
+        const _linhas = _atual.split("\n").filter(l => l.trim()).slice(-MAX_LOG_LINES);
+        if (_gravarArquivoAtomico(LOG_PATH, _linhas.join("\n") + "\n")) {
+            _logBuffer = _linhas;
+            _logLinhasDesdeRotacao = 0;
+        }
+    } catch(e) {}
+}
 function _flushLog() {
-    try { _fs.writeFileSync(LOG_PATH, _logBuffer.join("\n") + "\n"); } catch(e) {}
+    if (!_logPendentes.length) return;
+    try {
+        _fs.appendFileSync(LOG_PATH, _logPendentes.join("\n") + "\n");
+        _logLinhasDesdeRotacao += _logPendentes.length;
+        _logPendentes = [];
+    } catch(e) {}
+    _rotacionarLogSeNecessario();
 }
 function logToFile(...args) {
     try {
         const msg = args.map(a => typeof a === "string" ? a : _util.inspect(a)).join(" ");
         const d = new Date();
-        const _p2 = function(n) { return String(n).padStart(2,"0"); };
-        const ts = "[" + _p2(d.getDate()) + "-" + _p2(d.getMonth()+1) + "-" + d.getFullYear() + "]";
-        _logBuffer.push(ts + " " + msg);
-        if (_logBuffer.length > MAX_LOG_LINES) _logBuffer = _logBuffer.slice(-MAX_LOG_LINES);
+        const ts = "[" + padDois(d.getDate()) + "-" + padDois(d.getMonth()+1) + "-" + d.getFullYear() + "]";
+        const linha = ts + " " + msg;
+        _logBuffer.push(linha);
+        // PERF FIX: slice() criava novo array a cada push que ultrapassava o limite.
+        // splice(0,1) remove o primeiro elemento in-place — O(1) vs O(n).
+        if (_logBuffer.length > MAX_LOG_LINES) _logBuffer.splice(0, _logBuffer.length - MAX_LOG_LINES);
+        _logPendentes.push(linha);
         clearTimeout(_logFlushTimer);
         _logFlushTimer = setTimeout(_flushLog, 300);
     } catch(e) {}
@@ -65,12 +145,26 @@ process.on("unhandledRejection", function (reason) {
 });
 process.on("exit", function() { clearTimeout(_logFlushTimer); _flushLog(); });
 
-var http     = require("http");
-var net      = require("net");
-var spawn    = require("child_process").spawn;
-var path     = require("path");
-var fs       = require("fs");
-var os       = require("os");
+var http        = require("http");
+var net         = require("net");
+var childProc   = require("child_process"); // usado em spawn, taskkill e _matarTodosFilhos
+var spawn       = childProc.spawn;
+var path        = require("path");
+var fs          = require("fs");
+var os          = require("os");
+var TextDecoder = require("util").TextDecoder;
+
+// Decoder Windows-1252 — constante de módulo: evita recriar a cada request /api/itens-detalhe.
+var _win1252Decoder = new TextDecoder("windows-1252");
+
+// Formatador de quantidade — constante de módulo: converte número para string BR sem recriar a cada request.
+var _fmtQuantidade = function(v) {
+    var n = Number(v || 0);
+    if (!Number.isFinite(n)) return "0";
+    var r = Math.round(n);
+    if (Math.abs(n - r) < 1e-9) return String(r);
+    return String(n).replace(".", ",");
+};
 
 var Firebird = null;
 try { Firebird = require("node-firebird"); } catch(e) {}
@@ -79,12 +173,30 @@ try { Firebird = require("node-firebird"); } catch(e) {}
 // Utilitarios
 // ---------------------------------------------------------------------------
 var logTs = function(msg) {
-    var d=new Date(), p=function(n){return String(n).padStart(2,"0");};
-    console.log("["+p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())+"] "+msg);
+    var d=new Date();
+    console.log("["+padDois(d.getHours())+":"+padDois(d.getMinutes())+":"+padDois(d.getSeconds())+"] "+msg);
 };
+
+// ---------------------------------------------------------------------------
+// NÍVEIS DE LOG (v2.7.3 — "log só com relevâncias do sistema")
+// ---------------------------------------------------------------------------
+// logTs()    → sempre registra. Reservado para o que importa operacionalmente:
+//              início/parada do servidor, estado do banco, erros e avisos,
+//              mudanças de configuração, correções de horário, eventos do tray.
+// logDebug() → só registra quando "logDebug": true está no config.json.
+//              Para ruído de rotina que se repete a cada venda/geração/aba e
+//              que, no volume de uma loja em movimento, empurra a informação
+//              útil para fora do arquivo pela rotação: cronometragem de
+//              queries, "Atualizando DD/MM", caminho do HTML gerado, sincronia
+//              de fuso de cada aba, gerações supersedidas pelo fast-poll.
+// Padrão desligado de propósito: quem abre o relatorio.log quer ver o que
+// aconteceu de relevante, não o batimento cardíaco normal do sistema. Para
+// investigar um problema específico, basta ligar logDebug no config.json.
+var LOG_DEBUG = false; // sobrescrito ao carregar config.json (ver abaixo)
+var logDebug = function(msg) { if (LOG_DEBUG) logTs("[DEBUG] " + msg); };
 var hoje = function() {
-    var d=new Date(), p=function(n){return String(n).padStart(2,"0");};
-    return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate());
+    var d=new Date();
+    return d.getFullYear()+"-"+padDois(d.getMonth()+1)+"-"+padDois(d.getDate());
 };
 var isoParaBR = function(iso) {
     var m=String(iso||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -94,6 +206,9 @@ var escH = function(s) {
     return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
         .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 };
+
+// NOTA: padDois foi movido para o topo do arquivo (acima do logger) na v2.4.1 —
+// logToFile() depende dele e era chamado antes desta linha ser executada.
 
 // ---------------------------------------------------------------------------
 // Argumentos CLI
@@ -109,78 +224,166 @@ var PASS   = pegar("--pass") || "masterkey";
 var SCRIPT = path.join(__dirname,"gerar-relatorio-html.js");
 var FAVICON= path.join(__dirname,"favicon.png");
 var CONFIG = path.join(__dirname,"config.json");
-var TMP    = path.join(os.tmpdir(),"relatorio_srv.html");
-var NO_BROWSER = args.includes("--no-browser");
-var TMP_DIR    = os.tmpdir();
+var NO_BROWSER    = args.includes("--no-browser");
+var TMP_DIR       = os.tmpdir();
+
+// ─── Constantes globais — eliminam magic numbers espalhados no código ────────
+var FIREBIRD_PORT          = 3050;          // porta padrão do Firebird
+var FB_CHARSET             = "UTF8";        // charset padrão do Firebird
+var MAX_TENTATIVAS_SPAWN   = 5;             // máximo de retentativas de gerarEmBackground
+var _SCAN_CONCORRENCIA_MAX = 40;            // máximo de sockets simultâneos no scan de rede
+var _FAVICON_CACHE         = null;          // buffer em memória do favicon (evita readFileSync a cada request)
+var _FAVICON_CACHE_MTIME   = 0;            // mtime do favicon na última leitura — invalida cache se o arquivo mudar
+var TIMEOUT_SSE_HEARTBEAT_MS = 15000;       // ping SSE a cada 15s — mantém proxies/load balancers de conexão aberta
+var INTERVALO_SYNC_HORA_MS   = 30000;       // cliente resincroniza hora/fuso com o servidor a cada 30s
+var POLL_WATCHDOG_MS         = 12000;       // watchdog do pollStatus — libera _pollBusy se travar por mais que este tempo
+var POLL_RETRY_MULTIPLIER    = 5;           // intervalo de retry após falha = POLL_INTERVAL × POLL_RETRY_MULTIPLIER
 var HORA_FIXADA_CACHE = path.join(__dirname, "hora-fixada-cache.json");
+
+// SEGURANÇA FIX (auditoria v2.5.0): sem esta validação, o campo "favicon" de
+// /api/config aceitava QUALQUER caminho de arquivo — inclusive caminhos UNC
+// (\\host\share\arquivo) — e esse valor era depois lido via fs.readFileSync e
+// servido em /favicon.ico. Isso permitia LEITURA ARBITRÁRIA DE ARQUIVO LOCAL
+// (qualquer arquivo legível pelo processo Node, servido como se fosse a
+// imagem do favicon), e no caso de UNC, forçava o Windows a autenticar via
+// SMB contra um host controlado por quem enviou o caminho — vetor de
+// vazamento de hash NTLM. O upload real (/api/upload-favicon, que valida
+// bytes mágicos PNG/ICO/JPEG e sempre grava dentro de __dirname) continua
+// sendo o caminho recomendado para trocar o ícone; este validador restringe
+// o campo de texto livre a arquivos que já estejam DENTRO da pasta do
+// próprio app — cobre o caso legítimo de referenciar um arquivo colocado
+// manualmente ali, sem abrir a porta para ler qualquer arquivo do sistema
+// ou forçar autenticação de rede.
+var _faviconCaminhoSeguro = function(caminhoBruto) {
+    var s = String(caminhoBruto == null ? "" : caminhoBruto).trim();
+    if (!s) return { ok: true, valor: "" }; // vazio = usa favicon.png padrão
+    if (/^\\\\|^\/\//.test(s)) return { ok: false, motivo: "caminhos de rede (UNC) não são permitidos" };
+    var raizApp = path.resolve(__dirname);
+    var resolvido;
+    try { resolvido = path.resolve(raizApp, s); } catch(_e) { return { ok: false, motivo: "caminho inválido" }; }
+    if (resolvido !== raizApp && resolvido.indexOf(raizApp + path.sep) !== 0) {
+        return { ok: false, motivo: "o arquivo precisa estar dentro da pasta do sistema (" + raizApp + ")" };
+    }
+    return { ok: true, valor: resolvido };
+};
 
 // ---------------------------------------------------------------------------
 // Config persistente
 // ---------------------------------------------------------------------------
-var loadConfig=function(){
-    try{
-        var raw=fs.readFileSync(CONFIG,"utf8")
-            .replace(/^\uFEFF/,"")
-            .replace(/:\s*0+(\d+)/g,": $1");
+var loadConfig = function() {
+    var raw = "";
+    try {
+        raw = fs.readFileSync(CONFIG, "utf8").replace(/^\uFEFF/, "");
+    } catch(e) {
+        // Loga apenas se o arquivo já existir — ausência no 1º boot é esperada.
+        try { if (fs.existsSync(CONFIG)) logToFile("WARN loadConfig: falha ao ler config.json — usando padrões. Erro: " + e.message); } catch(_) {}
+        return {};
+    }
+    // BUG FIX: a regex de "remove zero à esquerda" (para tolerar JSON inválido
+    // do tipo "porta": 07734, que JSON.parse rejeita) era aplicada SEMPRE, no
+    // texto bruto INTEIRO, antes até de tentar o parse normal — isso corrompe
+    // qualquer valor de STRING que contenha um padrão ":0" em qualquer lugar
+    // (ex: um campo futuro "hora":"08:00" viraria "08: 0"), mesmo quando o
+    // JSON já era 100% válido. Agora só é usada como reparo de ÚLTIMO RECURSO,
+    // quando o parse direto falha — a grande maioria dos carregamentos nunca
+    // toca nessa regex e nunca corre esse risco.
+    try {
         return JSON.parse(raw);
-    }catch(e){return {};}
+    } catch (eOriginal) {
+        try {
+            var reparado = raw.replace(/:\s*0+(\d+)/g, ": $1");
+            var obj = JSON.parse(reparado);
+            logToFile("WARN loadConfig: config.json tinha número(s) com zero à esquerda inválido para JSON — reparado automaticamente nesta leitura. Corrija o arquivo manualmente para evitar depender deste reparo.");
+            return obj;
+        } catch (eReparo) {
+            try { if (fs.existsSync(CONFIG)) logToFile("WARN loadConfig: config.json inválido mesmo após tentativa de reparo — usando padrões. Erro: " + eOriginal.message); } catch(_) {}
+            return {};
+        }
+    }
 };
-var saveConfig=function(obj){
-    try{
-        var rawAtual="";
-        try{ rawAtual=fs.readFileSync(CONFIG,"utf8").replace(/^\uFEFF/,"").trim(); }catch(e){}
-        var atual={};
-        if(rawAtual){
-            try{ atual=JSON.parse(rawAtual); }
-            catch(e){
-                logToFile("WARN saveConfig: JSON inválido no config.json — gravação abortada para preservar dados. Erro: "+e.message);
-                return;
+// DRY FIX: saveConfig e updateConfigKey compartilhavam ~90% da lógica.
+// _writeConfigMerge(patch, contexto) lê → valida JSON → merge → grava.
+var _writeConfigMerge = function(patch, contexto) {
+    try {
+        var rawAtual = "";
+        try { rawAtual = fs.readFileSync(CONFIG, "utf8").replace(/^\uFEFF/, "").trim(); } catch(e) {}
+        var base = {};
+        if (rawAtual) {
+            try { base = JSON.parse(rawAtual); }
+            catch(e) {
+                logToFile("WARN " + contexto + ": JSON inválido em config.json — gravação abortada. Erro: " + e.message);
+                return false;
             }
         }
-        if(typeof atual!=="object"||Array.isArray(atual)) atual={};
-        var merged=Object.assign({},atual,obj);
-        if(Object.keys(merged).length===0){
-            logToFile("WARN saveConfig: merge resultou em objeto vazio — gravação abortada.");
-            return;
+        if (typeof base !== "object" || Array.isArray(base)) base = {};
+        var merged = Object.assign({}, base, patch);
+        if (Object.keys(merged).length === 0) {
+            logToFile("WARN " + contexto + ": merge resultou em objeto vazio — gravação abortada.");
+            return false;
         }
-        fs.writeFileSync(CONFIG,JSON.stringify(merged,null,2),"utf8");
-    }catch(e){logToFile("WARN saveConfig: "+e.message);}
+        // INTEGRIDADE FIX: writeFileSync direto podia deixar config.json truncado
+        // se o processo caísse no meio da escrita — e um config.json corrompido
+        // faz o servidor perder appName, fbHost, proibidos e maquinaIP de uma vez.
+        if (!_gravarArquivoAtomico(CONFIG, JSON.stringify(merged, null, 2))) {
+            logToFile("WARN " + contexto + ": falha ao gravar config.json.");
+            return false;
+        }
+        return true;
+    } catch(e) { logToFile("WARN " + contexto + ": " + e.message); return false; }
 };
 
-var updateConfigKey=function(key,value){
-    try{
-        var rawAtual="";
-        try{ rawAtual=fs.readFileSync(CONFIG,"utf8").replace(/^\uFEFF/,"").trim(); }catch(e){}
-        var obj={};
-        if(rawAtual){
-            try{ obj=JSON.parse(rawAtual); }
-            catch(e){
-                logToFile("WARN updateConfigKey("+key+"): JSON inválido — abortando para não perder dados. Erro: "+e.message);
-                return;
-            }
-        }
-        if(typeof obj!=="object"||Array.isArray(obj)) obj={};
-        obj[key]=value;
-        fs.writeFileSync(CONFIG,JSON.stringify(obj,null,2),"utf8");
-    }catch(e){logToFile("WARN updateConfigKey("+key+"): "+e.message);}
+var saveConfig = function(obj) {
+    return _writeConfigMerge(obj, "saveConfig");
 };
 
-var appCfg        = loadConfig();
+var updateConfigKey = function(key, value) {
+    var patch = {};
+    patch[key] = value;
+    return _writeConfigMerge(patch, "updateConfigKey(" + key + ")");
+};
+
+// _config é a única leitura de config.json no boot — elimina o segundo loadConfig()
+// que estava em cfg=loadConfig() na linha 267. Ambas as variáveis eram idênticas;
+// manter duas causava inconsistência se o arquivo mudasse entre as duas leituras.
+var _config       = loadConfig();
+// Alias de compatibilidade — mantido para não alterar referências espalhadas no arquivo.
+var appCfg        = _config;
 var APP_NAME      = (appCfg.appName&&appCfg.appName.trim()) ? appCfg.appName.trim() : "Relatorios";
+// BUG FIX (v2.5.0): FAVICON nunca era inicializado a partir de config.json no
+// boot — só era atualizado em memória pelas rotas /api/config e
+// /api/upload-favicon durante a sessão. Resultado: um favicon customizado
+// salvo pelo usuário "sumia" (voltava ao padrão) toda vez que o servidor
+// reiniciava, mesmo com o caminho certinho salvo em config.json — o campo
+// parecia configurado (a tela de configurações mostrava o valor salvo), mas
+// o ícone servido de fato revertia silenciosamente. Revalidado aqui com o
+// mesmo validador de caminho seguro usado em /api/config, por segurança
+// (config.json pode ter sido editado manualmente por alguém com acesso ao
+// disco).
+(function() {
+    var _favBoot = _faviconCaminhoSeguro(appCfg.favicon);
+    if (_favBoot.ok && _favBoot.valor) FAVICON = _favBoot.valor;
+})();
 var POLL_INTERVAL = (appCfg.pollInterval && parseInt(appCfg.pollInterval,10) >= 100)
     ? parseInt(appCfg.pollInterval,10) : 200; // mínimo absoluto de 100ms — previne loop sem pausa
+// CONTRATO FIX: padrão unificado com gerar-relatorio-html.js (ambos usam 5000ms agora).
 var TOAST_DURATION = (appCfg.toastDuration && parseInt(appCfg.toastDuration,10)>=500)
-    ? parseInt(appCfg.toastDuration,10) : 4000; // ms — duração padrão do toast de notificação
+    ? parseInt(appCfg.toastDuration,10) : 5000; // ms — duração padrão do toast de notificação
 // spawnTimeoutMs configurável via config.json.
 // Padrão: 10 s. Mínimo: 5 s. Máximo: 120 s (clamp ampliado — comporta bancos remotos lentos).
 // O clamp anterior (10 s) ignorava silenciosamente valores maiores definidos pelo usuário.
-var _cfgTms = appCfg.spawnTimeoutMs ? parseInt(appCfg.spawnTimeoutMs, 10) : 10000;
-var SPAWN_TIMEOUT_CFG = Math.min(Math.max(isNaN(_cfgTms) ? 10000 : _cfgTms, 5000), 120000);
+// TIMEOUT FIX (contrato servidor↔filho): o filho precisa de no mínimo 90s para
+// conectar ao Firebird e rodar as queries de 1 dia (_tGlobal mínimo = 90000ms).
+// O default anterior de 10s causava kill imediato + 5 tentativas = erro permanente.
+// Novo default: 120s. Para períodos históricos maiores o usuário deve configurar
+// spawnTimeoutMs no config.json (max aceito: 600s para meses inteiros).
+var _cfgTms = appCfg.spawnTimeoutMs ? parseInt(appCfg.spawnTimeoutMs, 10) : 120000;
+var SPAWN_TIMEOUT_CFG = Math.min(Math.max(isNaN(_cfgTms) ? 120000 : _cfgTms, 30000), 600000);
 
+LOG_DEBUG = (appCfg.logDebug === true || String(appCfg.logDebug).toLowerCase() === "true");
 if (appCfg.maxLogLines && parseInt(appCfg.maxLogLines,10) >= 100) {
     MAX_LOG_LINES = parseInt(appCfg.maxLogLines,10);
 }
-if (_logBuffer.length > MAX_LOG_LINES) _logBuffer = _logBuffer.slice(-MAX_LOG_LINES);
+if (_logBuffer.length > MAX_LOG_LINES) _logBuffer.splice(0, _logBuffer.length - MAX_LOG_LINES); // in-place
 
 if (appCfg.porta&&appCfg.porta>0) PORT = parseInt(appCfg.porta,10);
 
@@ -209,7 +412,7 @@ var detectFdbLocal=function(){
                 logTs("FDB local encontrado: "+cands[i]);
                 return cands[i];
             }
-        }catch(e){}
+        }catch(e){ logTs("WARN detectFdbLocal: "+e.message); }
     }
     return null;
 };
@@ -264,7 +467,8 @@ var detectLocalIP = function(fbHostHint) {
     return candidates[0].addr;
 };
 
-var cfg      = loadConfig();
+// cfg reusa _config — sem segundo readFileSync; fdbArg lê do processo.
+var cfg      = _config;
 var fdbArg   = pegar("--fdb");
 
 // ---------------------------------------------------------------------------
@@ -275,8 +479,8 @@ var fdbArg   = pegar("--fdb");
 // ---------------------------------------------------------------------------
 var _logProtSet = new Set();
 var _logProtDia = (function() {
-    var d = new Date(), p = function(n) { return String(n).padStart(2,"0"); };
-    return p(d.getDate()) + "-" + p(d.getMonth()+1) + "-" + d.getFullYear();
+    var d = new Date();
+    return padDois(d.getDate()) + "-" + padDois(d.getMonth()+1) + "-" + d.getFullYear();
 })();
 try {
     var _logFullRaw = _fs.readFileSync(LOG_PATH, "utf8").split("\n");
@@ -313,8 +517,8 @@ try {
             _salvarHoraFixadaCache();
         } catch(_hfc) {}
         _logProtDia = (function() {
-            var d = new Date(), p = function(n) { return String(n).padStart(2,"0"); };
-            return p(d.getDate()) + "-" + p(d.getMonth()+1) + "-" + d.getFullYear();
+            var d = new Date();
+            return padDois(d.getDate()) + "-" + padDois(d.getMonth()+1) + "-" + d.getFullYear();
         })();
         _agendarResetLogProt();
     }, amanha.getTime() - agora.getTime());
@@ -417,9 +621,29 @@ var _descreverMudancaTipo = function(ant, atu) {
     return {mudou: partes.length > 0, descricao: partes.join(" | ")};
 };
 
+// Lê a versão do gerar-relatorio-html.js a partir do @version no cabeçalho dele.
+// Os dois arquivos são atualizados juntos com frequência, e uma combinação
+// incompatível já causou sintomas confusos antes (ex: marcador "CANCELADA"
+// aparecendo na coluna de hora quando só o servidor havia sido trocado).
+// Registrar as duas versões lado a lado na abertura do log torna esse tipo de
+// desencontro imediato de identificar.
+// Lê o arquivo em vez de usar require(): o gerador é um script executável que
+// abre conexão com o banco ao ser carregado, não um módulo. Só o topo é lido.
+var _versaoGerador = function() {
+    try {
+        var _cab = fs.readFileSync(path.join(__dirname, "gerar-relatorio-html.js"), "utf8").slice(0, 600);
+        var _m = _cab.match(/@version\s+([0-9]+\.[0-9]+\.[0-9]+)/);
+        // Prefixo "v" só quando há versão real, para não sair "vausente".
+        return _m ? "v" + _m[1] : "(versao nao identificada)";
+    } catch (e) {
+        return "(arquivo ausente)";
+    }
+};
+
 // Primeira linha protegida — deve aparecer antes de qualquer outro log de inicialização.
 (function() {
-    var _marcaDia = "=== Servidor iniciado " + isoParaBR(hoje()) + " ===";
+    var _marcaDia = "=== Servidor iniciado " + isoParaBR(hoje()) + " === Servidor v" +
+                    SERVER_VERSION + " | Gerador " + _versaoGerador();
     if (!_logProtSet.has(_marcaDia)) {
         _logProtSet.add(_marcaDia);
         logTs(_marcaDia);
@@ -429,8 +653,11 @@ var _descreverMudancaTipo = function(ant, atu) {
 
 var FDB_PATH, FDB_HOST;
 if (fdbArg) {
-    FDB_PATH = parseFdb(fdbArg).dbPath;
-    FDB_HOST = parseFdb(fdbArg).host;
+    // BUG FIX: parseFdb era chamado duas vezes para o mesmo argumento.
+    // Agora guarda o resultado uma única vez.
+    var _fdbParsed = parseFdb(fdbArg);
+    FDB_PATH = _fdbParsed.dbPath;
+    FDB_HOST = _fdbParsed.host;
     logTs("FDB via argumento CLI: "+FDB_HOST+":"+FDB_PATH);
 } else {
     var _fdbLocal = detectFdbLocal();
@@ -439,7 +666,25 @@ if (fdbArg) {
         FDB_HOST = "127.0.0.1";
         logTs("FDB local detectado → conectando em 127.0.0.1");
     } else {
-        FDB_PATH = detectFdbPath();
+        // BUG FIX (v2.6.8 — configurações): "fdbPath" era GRAVADO no
+        // config.json por aplicarNovoFdb() (seletor de banco / rota
+        // /api/salvar-fdb) mas NUNCA era lido de volta no boot — a única
+        // função consultada aqui, detectFdbPath(), procura caminhos locais
+        // conhecidos e, não achando, devolve um caminho padrão fixo. Efeito
+        // prático: o usuário selecionava o .fdb pelo seletor, o servidor
+        // confirmava e salvava, e no reinício seguinte a escolha era
+        // silenciosamente descartada, voltando ao caminho padrão. Como neste
+        // ramo já sabemos que detectFdbLocal() falhou (é a condição do else),
+        // detectFdbPath() só pode devolver o padrão fixo — então preferir o
+        // valor salvo pelo usuário é estritamente melhor e não muda nenhum
+        // outro cenário.
+        var _fdbCfg = (cfg.fdbPath && String(cfg.fdbPath).trim()) ? String(cfg.fdbPath).trim() : null;
+        if (_fdbCfg) {
+            FDB_PATH = _fdbCfg;
+            logTs("FDB do config.json (fdbPath salvo pelo usuário): " + FDB_PATH);
+        } else {
+            FDB_PATH = detectFdbPath();
+        }
         FDB_HOST = (cfg.fbHost && String(cfg.fbHost).trim()) ? String(cfg.fbHost).trim() : "127.0.0.1";
         logTs("FDB não encontrado localmente → tentando host de rede: "+FDB_HOST);
     }
@@ -497,9 +742,47 @@ if (_maquinaIPDetect) {
 var cache       = Object.create(null);
 
 // Fila de notificações de correção de horário — consumida pelo browser via /api/status.
-// O servidor empurra mensagens aqui; o poll do browser esvazia e exibe como toast.
-// Uso de splice(0) garante consume-once: cada mensagem aparece uma única vez.
-var _correcoesPendentes = [];
+// O servidor empurra mensagens aqui; o poll do browser exibe como toast.
+//
+// BUG FIX (auditoria v2.5.0 — ESTADO COMPARTILHADO): antes, a leitura em
+// /api/status fazia splice(0) — um "consume-once" GLOBAL. Em lojas com mais
+// de uma tela/aba abertas ao mesmo tempo (cenário comum, é o próprio motivo
+// de existir um relatório em rede), a primeira aba cujo poll chegasse ao
+// servidor esvaziava a fila inteira; todas as outras telas conectadas
+// simplesmente NUNCA viam o toast de "hora corrigida", sem nenhum erro ou
+// indício de que a notificação existiu. Agora cada entrada carrega um
+// timestamp (ts) e /api/status devolve (sem remover) tudo que for mais
+// recente que _CORRECOES_JANELA_MS — toda tela conectada dentro dessa
+// janela recebe a notificação pelo menos uma vez. Entradas mais antigas que
+// _CORRECOES_TTL_MS são podadas no próprio push, então o array nunca cresce
+// sem limite (também protegido pelo teto de 50 itens já existente).
+var _correcoesPendentes  = [];
+// PRECISÃO FIX (v2.6.5): a janela era fixa em 3000ms, mas POLL_INTERVAL é
+// configurável pelo usuário e só valida um mínimo de 100ms — nada impede
+// alguém de configurar 5000ms na tela de configurações. Nesse caso a
+// notificação expiraria ANTES do próximo poll do browser e o toast seria
+// perdido de vez, silenciosamente (a versão original, com splice(0)
+// consume-once, nunca perdia — só entregava a uma única aba). Agora a
+// janela acompanha o POLL_INTERVAL real: no mínimo 3s, e sempre pelo menos
+// 3 ciclos de poll, garantindo que toda aba conectada tenha chance de ver.
+var _CORRECOES_JANELA_MS = Math.max(3000, POLL_INTERVAL * 3);
+// TTL sempre com folga sobre a janela — entradas só são descartadas bem
+// depois de já terem sido entregues a todas as abas.
+var _CORRECOES_TTL_MS    = _CORRECOES_JANELA_MS + 5000;
+// Contador monotônico — usado pelo cliente para deduplicar (ver _poll no HTML).
+// Não usar apenas 'ts' (Date.now()) para isso: duas correções diferentes (ex:
+// nfce e pagament) podem ser empurradas no mesmo milissegundo dentro do mesmo
+// ciclo de pollStatus, e nesse caso ts sozinho não distingue uma da outra.
+var _correcoesSeq = 0;
+var _pushCorrecao = function(msg, cor) {
+    var agora = Date.now();
+    // Poda oportunista de entradas velhas — evita que o array cresça para sempre
+    // em uma sessão de dias sem nunca reiniciar o servidor.
+    _correcoesPendentes = _correcoesPendentes.filter(function(c) { return (agora - c.ts) < _CORRECOES_TTL_MS; });
+    if (_correcoesPendentes.length < 50) {
+        _correcoesPendentes.push({ msg: msg, cor: cor, reload: true, ts: agora, seq: ++_correcoesSeq });
+    }
+};
 
 // Evict de entradas antigas do cache — mantém no máximo MAX_CACHE_ENTRIES períodos.
 // Entradas de hoje e entradas ainda gerando nunca são removidas.
@@ -535,9 +818,98 @@ var _statusChangeTs = 0;
 var dbStatus    = {ok:false,ip:FDB_HOST,erro:null,scanCompleto:false,scanning:false};
 
 // ---------------------------------------------------------------------------
-// Hora-fixada cache — persiste correções de horário gerencial entre reinicializações.
-// Chave: "YYYY-MM-DD|numero"  Valor: hora corrigida (string).
+// Hora-fixada cache — persiste correções de horário entre execuções.
+// Escrito por este arquivo (gerencial) e por gerar-relatorio-html.js (nfc-e,
+// nf-e e gerencial). Chave: "YYYY-MM-DD|numero". Valor: {tipo, hora}.
+//
+// FORMATO FIX (ajuste solicitado — ordenação + bug de gerenciais ignorados):
+//   1) BUG CONCRETO ENCONTRADO: o valor era antes uma STRING solta ("OK" ou
+//      "HH:MM"/"HH:MM:SS"), sem informação de tipo. Este arquivo gravava a
+//      marca de "dentro da tolerância" como "ok" (minúsculo), mas
+//      gerar-relatorio-html.js comparava com "OK" (maiúsculo, ===). Toda
+//      venda gerencial marcada aqui como tolerável era lida do outro lado
+//      como se "ok" fosse a PRÓPRIA HORA (a comparação falhava, caindo no
+//      branch seguinte, que atribui o valor do cache direto a finalHora) —
+//      corrompendo a hora exibida e, na prática, fazendo a venda nunca mais
+//      ser reavaliada corretamente. HORA_CACHE_OK agora é uma constante
+//      única usada nas duas pontas, e a comparação passou a ser
+//      case-insensitive como defesa adicional (ver _normalizarEntradaHoraCache).
+//   2) Sem informação de tipo não era possível ordenar o arquivo por
+//      categoria. _ordenarHoraCache() (chamada sempre antes de salvar)
+//      reordena as chaves: nfc-e primeiro, depois nf-e, depois gerencial —
+//      ascendente por hora dentro de cada grupo. Como JSON.stringify
+//      preserva a ordem de inserção das chaves do objeto, o arquivo em disco
+//      reflete sempre essa ordem, independentemente da ordem em que as
+//      correções foram descobertas ao longo do dia (poll não garante ordem).
+//   3) Valores de hora agora são sempre gravados como "HH:MM" (sem
+//      segundos) — antes este arquivo gravava "HH:MM:SS" enquanto
+//      gerar-relatorio-html.js gravava "HH:MM", uma inconsistência de
+//      formato entre vendas do mesmo horário.
+// Compatibilidade: entradas antigas (string solta, de antes desta versão)
+// continuam sendo lidas corretamente por _normalizarEntradaHoraCache — não é
+// necessário migrar o arquivo manualmente, ele se reescreve sozinho no novo
+// formato à medida que cada entrada é reprocessada.
 // ---------------------------------------------------------------------------
+var HORA_CACHE_OK = "OK";
+// Marcadores de gerenciais que NÃO recebem hora fixada (v2.7.1). Existem para
+// que essas vendas apareçam no cache e a numeração não fique com buracos,
+// deixando claro no próprio arquivo POR QUE aquele número não tem horário.
+// Importante: são MARCADORES, não horários — quem lê o cache precisa tratar
+// como "não use isto como hora" (ver a checagem de formato HH:MM no
+// gerar-relatorio-html.js, que aceita apenas HH:MM e ignora o resto).
+var HORA_CACHE_CANCELADA  = "CANCELADA";   // cancelado = 'S'
+var HORA_CACHE_CONVERTIDA = "CONVERTIDA";  // cancelado = 'T' — virou NFC-e ou NF-e
+var HORA_CACHE_SEM_VALOR  = "SEM VALOR";   // total <= 0 (não cancelada nem convertida)
+
+// Aceita tanto o formato antigo (string solta) quanto o novo ({tipo,hora}) —
+// nunca lança, entrada inesperada vira tipo "desconhecido" em vez de
+// derrubar o poll. "OK" é sempre normalizado para a grafia exata de
+// HORA_CACHE_OK, não-sensível a maiúsculas/minúsculas.
+var _normalizarEntradaHoraCache = function(bruto) {
+    if (bruto && typeof bruto === "object" && !Array.isArray(bruto)) {
+        var horaObj = String(bruto.hora == null ? "" : bruto.hora).trim();
+        return {
+            tipo: String(bruto.tipo || "desconhecido"),
+            hora: horaObj.toUpperCase() === HORA_CACHE_OK ? HORA_CACHE_OK : horaObj
+        };
+    }
+    var s = String(bruto == null ? "" : bruto).trim();
+    return { tipo: "desconhecido", hora: s.toUpperCase() === HORA_CACHE_OK ? HORA_CACHE_OK : s };
+};
+
+// Ordem pedida (v2.6.9): gerencial primeiro, depois nfc-e, por último nf-e.
+var _HORA_CACHE_TIPO_RANK = { gerencial: 0, nfce: 1, nfe: 2 };
+
+// Extrai o número do documento a partir da chave "YYYY-MM-DD|numero".
+// Retorna null se não conseguir parsear como inteiro (chave em formato
+// inesperado) — nesse caso o desempate final por string cuida do resto.
+var _numeroDaChaveHoraCache = function(chave) {
+    var partes = String(chave).split("|");
+    var n = parseInt(partes.length > 1 ? partes[1] : chave, 10);
+    return isNaN(n) ? null : n;
+};
+
+var _ordenarHoraCache = function(cacheObj) {
+    var chaves = Object.keys(cacheObj);
+    chaves.sort(function(a, b) {
+        var ea = _normalizarEntradaHoraCache(cacheObj[a]);
+        var eb = _normalizarEntradaHoraCache(cacheObj[b]);
+        var ra = _HORA_CACHE_TIPO_RANK.hasOwnProperty(ea.tipo) ? _HORA_CACHE_TIPO_RANK[ea.tipo] : 99;
+        var rb = _HORA_CACHE_TIPO_RANK.hasOwnProperty(eb.tipo) ? _HORA_CACHE_TIPO_RANK[eb.tipo] : 99;
+        if (ra !== rb) return ra - rb;
+        // AJUSTE (v2.6.9): dentro do mesmo tipo, ordem DECRESCENTE por número do
+        // documento (do maior para o menor) — o mais recente primeiro, já que o
+        // número é sequencial por natureza.
+        var na = _numeroDaChaveHoraCache(a);
+        var nb = _numeroDaChaveHoraCache(b);
+        if (na !== null && nb !== null && na !== nb) return nb - na;
+        return a < b ? 1 : (a > b ? -1 : 0); // desempate final determinístico (também decrescente)
+    });
+    var ordenado = {};
+    chaves.forEach(function(k) { ordenado[k] = cacheObj[k]; });
+    return ordenado;
+};
+
 var _horaFixadaCache = (function() {
     try {
         var raw = fs.readFileSync(HORA_FIXADA_CACHE, "utf8").replace(/^\uFEFF/, "");
@@ -547,18 +919,30 @@ var _horaFixadaCache = (function() {
     return {};
 })();
 
+// _salvarHoraFixadaCache() → debounce de 500 ms (uso normal).
+// _salvarHoraFixadaCache.flush() → grava imediatamente (usado no exit).
+// PERDA FIX: sem o flush, correções gravadas nos últimos 500 ms antes de um
+// restart eram perdidas e as mesmas notas voltavam a ser "corrigidas" no boot.
 var _salvarHoraFixadaCache = (function() {
     var _timer = null;
-    return function() {
-        clearTimeout(_timer);
-        _timer = setTimeout(function() {
-            try {
-                fs.writeFileSync(HORA_FIXADA_CACHE, JSON.stringify(_horaFixadaCache, null, 2), "utf8");
-            } catch(e) {
-                logTs("WARN _salvarHoraFixadaCache: " + e.message);
+    var _gravar = function() {
+        try {
+            // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de cada gravação —
+            // ver comentário completo acima de _ordenarHoraCache.
+            _horaFixadaCache = _ordenarHoraCache(_horaFixadaCache);
+            if (!_gravarArquivoAtomico(HORA_FIXADA_CACHE, JSON.stringify(_horaFixadaCache, null, 2))) {
+                logTs("WARN _salvarHoraFixadaCache: falha ao gravar o cache de hora fixada.");
             }
-        }, 500);
+        } catch(e) {
+            logTs("WARN _salvarHoraFixadaCache: " + e.message);
+        }
     };
+    var api = function() {
+        clearTimeout(_timer);
+        _timer = setTimeout(_gravar, 500);
+    };
+    api.flush = function() { clearTimeout(_timer); _gravar(); };
+    return api;
 })();
 
 // ---------------------------------------------------------------------------
@@ -577,14 +961,27 @@ var broadcastSSE = function(data) {
     var msg  = "data: "+JSON.stringify(data)+"\n\n";
     var vivos = [];
     sseClients.forEach(function(c){
+        var ok = false;
         try {
-            c.res.write(msg);
-            try { if (c.res.socket) { c.res.socket.uncork && c.res.socket.uncork(); } } catch(_f) {}
+            // res.destroyed cobre o caso em que o socket caiu mas req.on("close")
+            // ainda não rodou — write() nesse estado não lança, só falha silenciosa.
+            if (!c.res.destroyed && c.res.writable !== false) {
+                c.res.write(msg);
+                try { if (c.res.socket) { c.res.socket.uncork && c.res.socket.uncork(); } } catch(_f) {}
+                ok = true;
+            }
+        } catch(e) { ok = false; }
+        if (ok) {
             vivos.push(c);
-        } catch(e) {}
+        } else {
+            // LEAK FIX: cliente descartado aqui nunca passava por req.on("close"),
+            // então o setInterval de heartbeat continuava rodando para sempre.
+            try { if (c.hb) clearInterval(c.hb); } catch(_h) {}
+            try { c.res.end(); } catch(_e) {}
+        }
     });
     sseClients = vivos;
-    /*if (vivos.length > 0) logTs("SSE enviado para "+vivos.length+" cliente(s).");*/
+
     return vivos.length;
 };
 
@@ -679,8 +1076,8 @@ var detectSubnet=function(){
 };
 
 var scanFirebird=function(subnet,callback){
-    logTs("Escaneando "+subnet+".1-254 na porta 3050...");
-    var found=[],total=254,done=0,active=0,MAX=40,queue=[];
+    logTs("Escaneando "+subnet+".1-254 na porta "+FIREBIRD_PORT+"...");
+    var found=[],total=254,done=0,active=0,MAX=_SCAN_CONCORRENCIA_MAX,queue=[];
     for(var i=1;i<=254;i++)queue.push(subnet+"."+i);
     var checkFim=function(){if(done===total)callback(found);else launch();};
     var launch=function(){
@@ -698,7 +1095,7 @@ var scanFirebird=function(subnet,callback){
                 sock.on("connect",function(){finish(true);});
                 sock.on("error",  function(){finish(false);});
                 sock.on("timeout",function(){finish(false);});
-                try{sock.connect(3050,ip);}catch(e){finish(false);}
+                try{sock.connect(FIREBIRD_PORT,ip);}catch(e){finish(false);}
             })(queue.shift());
         }
     };
@@ -707,8 +1104,8 @@ var scanFirebird=function(subnet,callback){
 
 var testarFdb=function(host,dbPath,cb){
     if(!Firebird){cb(false,"node-firebird nao disponivel");return;}
-    var opts={host:host,port:3050,database:dbPath,user:USER,password:PASS,
-              role:null,charset:"UTF8",pageSize:4096};
+    var opts={host:host,port:FIREBIRD_PORT,database:dbPath,user:USER,password:PASS,
+              role:null,charset:FB_CHARSET};
     // _done previne double-callback: se timeout disparar E attach responder depois,
     // apenas o primeiro vencedor chama cb; o segundo é descartado (e db.detach() é feito).
     var _done=false;
@@ -725,7 +1122,18 @@ var testarFdb=function(host,dbPath,cb){
         _done=true;
         clearTimeout(t);
         if(err){cb(false,String(err.message||err));return;}
-        db.detach();cb(true,null);
+        // PRECISÃO FIX (v2.6.7): detach() sem try/catch aqui era um HANG.
+        // Se ele lançasse, cb(true,null) nunca era chamado — e testarFdb é
+        // usado por encontrarIPFirebird(), que varre os IPs candidatos em
+        // cadeia: sem a callback, a varredura para no meio para sempre, o
+        // banco nunca é dado como encontrado, dbStatus.ok nunca vira true e
+        // o fast-poll nunca inicia. O servidor ficaria de pé, respondendo
+        // HTTP, e simplesmente nunca detectaria venda nenhuma. Repare que a
+        // linha equivalente logo acima (caminho do timeout) já tinha essa
+        // proteção — esta passou despercebida. A conexão de teste já cumpriu
+        // seu papel: fechá-la é best-effort e nunca deve impedir a resposta.
+        try { db.detach(); } catch(_) {}
+        cb(true,null);
     });
 };
 
@@ -750,9 +1158,9 @@ var descobrirIPFirebird=function(onPronto){
             onPronto(false);return;
         }
         scanFirebird(subnet,function(found){
-            logTs("Hosts com porta 3050: "+(found.length?found.join(", "):"nenhum"));
+            logTs("Hosts com porta "+FIREBIRD_PORT+": "+(found.length?found.join(", "):"nenhum"));
             if(found.length===0){
-                dbStatus={ok:false,ip:null,erro:"Nenhum servidor Firebird em "+subnet+".x:3050.",scanCompleto:true,scanning:false};
+                dbStatus={ok:false,ip:null,erro:"Nenhum servidor Firebird em "+subnet+".x:"+FIREBIRD_PORT+".",scanCompleto:true,scanning:false};
                 onPronto(false);return;
             }
             encontrarIPFirebird(found.slice(),function(ipOk){
@@ -765,7 +1173,7 @@ var descobrirIPFirebird=function(onPronto){
                 } else {
                     var ip1=found[0];
                     FDB_HOST=ip1; FDB=ip1+":"+FDB_PATH;
-                    dbStatus={ok:false,ip:ip1,erro:"Porta 3050 em "+ip1+" mas FDB nao respondeu.",scanCompleto:true,scanning:false};
+                    dbStatus={ok:false,ip:ip1,erro:"Porta "+FIREBIRD_PORT+" em "+ip1+" mas FDB nao respondeu.",scanCompleto:true,scanning:false};
                     onPronto(false);
                 }
             });
@@ -798,21 +1206,61 @@ var extrairStatusDoHtml = function(html) {
         } catch(e) {}
     }
 
-    var mVendas = html.match(/"vendas"\s*:\s*(\[[\s\S]{0,400000}?\])\s*[,}]/);
-    if (mVendas) {
-        try {
-            var arr = JSON.parse(mVendas[1]);
-            qt = arr.length;
-            for (var j = 0; j < arr.length; j++) {
-                var x = arr[j];
-                tot += Number(x.total_nfce || x.total_pag || x.gerencial || x.total || 0);
+    // SEGURANÇA FIX (ReDoS): a regex anterior /\[[\s\S]{0,400000}?\]/ ainda sofre
+    // backtracking quadrático em HTMLs grandes com múltiplos "]" antes do fechamento
+    // real do array (comum em JSON de vendas com itens aninhados). Um HTML hostil ou
+    // corrompido de ~400 KB podia bloquear o event loop por segundos.
+    // _extrairArrayBalanceado faz scan sequencial O(n) contando profundidade de
+    // colchetes/chaves, ignorando os que estão dentro de strings — sem backtracking.
+    var idxVendas = html.indexOf('"vendas"');
+    if (idxVendas !== -1) {
+        var idxAbre = html.indexOf("[", idxVendas);
+        if (idxAbre !== -1) {
+            var trechoArr = _extrairArrayBalanceado(html, idxAbre);
+            if (trechoArr) {
+                try {
+                    var arr = JSON.parse(trechoArr);
+                    qt = arr.length;
+                    for (var j = 0; j < arr.length; j++) {
+                        var x = arr[j];
+                        // CONTRATO FIX: x.gerencial não existe em dados.vendas.
+                        // Filho exporta cada venda com { total, total_nfce, total_pag }.
+                        // A ordem correta é: total_nfce (NFC-e/NF-e) → total_pag (gerencial) → total (consolidado).
+                        tot += Number(x.total_nfce || x.total_pag || x.total || 0);
+                    }
+                } catch(e) {
+                    var n = html.match(/"numero"\s*:/g);
+                    if (n) qt = n.length;
+                }
             }
-        } catch(e) {
-            var n = html.match(/"numero"\s*:/g);
-            if (n) qt = n.length;
         }
     }
     return { qt: qt, tot: tot };
+};
+
+// Extrai um array JSON balanceado a partir do índice do "[" de abertura — O(n),
+// sem backtracking. Respeita strings (ignora colchetes dentro de "...") e escapes.
+// Retorna a substring "[...]" completa ou null se o array não fechar dentro do html.
+var _extrairArrayBalanceado = function(html, idxAbre) {
+    var profundidade = 0;
+    var dentroDeString = false;
+    var escapando = false;
+    for (var i = idxAbre; i < html.length; i++) {
+        var ch = html[i];
+        if (escapando) { escapando = false; continue; }
+        if (dentroDeString) {
+            if (ch === "\\") { escapando = true; }
+            else if (ch === '"') { dentroDeString = false; }
+            continue;
+        }
+        if (ch === '"') { dentroDeString = true; continue; }
+        if (ch === "[") { profundidade++; }
+        else if (ch === "]") {
+            profundidade--;
+            if (profundidade === 0) return html.slice(idxAbre, i + 1);
+        }
+    }
+    return null; // array não fechou — HTML truncado/corrompido
 };
 
 // ---------------------------------------------------------------------------
@@ -869,26 +1317,42 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // Controle de tentativas — incrementa ANTES de escrever no cache
     _gerarTentativas[chave] = (_gerarTentativas[chave] || 0) + 1;
     var _tentativa = _gerarTentativas[chave];
-    var MAX_TENTATIVAS = 5;
+    // MAX_TENTATIVAS_SPAWN definido como constante global no topo do arquivo
+    var MAX_TENTATIVAS = MAX_TENTATIVAS_SPAWN;
 
     cache[chave]={html:null,gerando:true,erro:null,qt:0,tot:0,tentativa:_tentativa};
 
     var label=(inicio===fim)?isoParaBR(inicio):(isoParaBR(inicio)+" a "+isoParaBR(fim));
-    /*if (_tentativa === 1) {
-        logTs("Gerando "+label+"...");
-    } else {
-        logTs("Gerando "+label+"... (tentativa "+_tentativa+"/"+MAX_TENTATIVAS+") — timeout: "+(_SPAWN_TIMEOUT_MS/1000)+"s");
-    }*/
+    // Geração iniciada — logs de progresso controlados por _queryLogsHoje.
 
     var _tmpSafe = String(chave).replace(/[^a-zA-Z0-9_\-]/g,"_").slice(0,80);
     var _tmpFile = path.join(TMP_DIR, "relatorio_srv_" + _tmpSafe + ".html");
 
+    // Passa o timeout configurado para o filho via --timeout.
+    // Filho usa este valor para calibrar _tGlobal e _tQuery em vez de calcular sozinho.
     var nArgs=[SCRIPT,"--fdb",FDB,"--data-inicio",inicio,"--data-fim",fim,
-               "--saida",_tmpFile,"--user",USER,"--pass",PASS];
-    var proc=spawn(process.execPath,nArgs,{stdio:["ignore","pipe","pipe"]});
+               "--saida",_tmpFile,"--user",USER,"--pass",PASS,
+               "--timeout",String(_SPAWN_TIMEOUT_MS)];
+    // Repassa o nível de log ao filho: sem "--debug" ele omite a cronometragem
+    // por etapa (7 linhas por geração), que é ruído no uso normal.
+    if (LOG_DEBUG) nArgs.push("--debug");
+    // CRASH FIX: spawn() pode lançar de forma SÍNCRONA (EMFILE por esgotamento de
+    // descritores, ENOMEM, execPath inválido). Como gerarEmBackground é chamado
+    // direto de dentro do handler HTTP (rotas / e /periodo), a exceção subia até
+    // o handler e derrubava a request — pior: cache[chave] ficava travado em
+    // {gerando:true} para sempre, deixando a página presa no paginaLoading.
+    var proc = null;
+    try {
+        proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"]});
+    } catch(spawnErr) {
+        logTs("ERRO spawn síncrono ("+label+"): "+(spawnErr && spawnErr.message || spawnErr));
+        cache[chave] = {html:null, gerando:false, erro:"Falha ao iniciar o gerador: "+(spawnErr && spawnErr.message || String(spawnErr))};
+        _gerarTentativas[chave] = 0;
+        delete _gerandoKill[chave];
+        return;
+    }
     if (proc.pid) {
         _spawnedPids.push(proc.pid);
-        /*logTs("Spawn PID "+proc.pid+" | timeout: "+(_SPAWN_TIMEOUT_MS/1000)+"s | "+label);*/
     } else {
         logTs("WARN: spawn sem PID para "+label+" — processo pode ter falhado ao iniciar.");
     }
@@ -909,7 +1373,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
                 if (onKilled) onKilled();
             }, 5000);
             try {
-                var tkProc = require("child_process").spawn(
+                var tkProc = childProc.spawn(
                     "taskkill", ["/F", "/T", "/PID", String(proc.pid)],
                     {stdio: "ignore"}
                 );
@@ -942,6 +1406,15 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // para matar esta geração imediatamente e iniciar nova com dados frescos.
     _gerandoKill[chave] = _matarProcessoFilho;
 
+    // RACE FIX (v2.4.1): remove de _gerandoKill APENAS se o slot ainda apontar
+    // para esta geração. Antes, o close handler de uma geração supersedida fazia
+    // `delete _gerandoKill[chave]` cego e apagava a função kill da geração NOVA
+    // que o fast-poll acabara de registrar — desarmando o kill-and-restart e
+    // fazendo a próxima venda esperar o timeout inteiro para ser detectada.
+    var _liberarKillProprio = function() {
+        if (_gerandoKill[chave] === _matarProcessoFilho) delete _gerandoKill[chave];
+    };
+
     // Flag para evitar que o close handler execute após timeout
     var _procEncerrado = false;
 
@@ -972,27 +1445,28 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
                 logTs("ERRO: "+MAX_TENTATIVAS+" tentativas falharam para "+label+". Abortando.");
                 cache[chave] = {html:null, gerando:false, erro:"Geração falhou após "+MAX_TENTATIVAS+" tentativas (timeout de "+(_SPAWN_TIMEOUT_MS/1000)+"s cada)."};
                 _gerarTentativas[chave] = 0;
+                // LEAK/BUG FIX: sem isso a função kill deste processo (já morto)
+                // permanecia registrada. Se o SO reciclasse o PID, um kill futuro
+                // do fast-poll executaria taskkill /F /T contra processo alheio.
+                _liberarKillProprio();
             }
         });
     }, _SPAWN_TIMEOUT_MS);
 
-    // Roteia stdout/stderr do filho pelo console.log do servidor
+    // Roteia stdout/stderr do filho pelo console.log do servidor.
+    // ROBUSTEZ FIX: proc.stdout/proc.stderr podem ser null se o SO recusar a
+    // criação dos pipes — acessar .on() nesse caso lançava TypeError dentro do
+    // handler HTTP. Os blocos abaixo só são instalados se os streams existirem.
     var _stdoutBuf = "";
-    proc.stdout.on("data", function(d) {
+    if (proc.stdout) proc.stdout.on("data", function(d) {
         _stdoutBuf += d.toString();
         var lines = _stdoutBuf.split("\n");
         _stdoutBuf = lines.pop(); // guarda linha incompleta
         lines.forEach(function(l) {
             var t = l.trim();
             if (!t) return;
-            // ">> arquivo gravado:" sempre logado — indica duração total acumulada da consulta.
-            // CORREÇÃO: antes, isSempreMostrar caia no `else { /*logTs*/ }` (comentado),
-            // fazendo com que essas linhas NUNCA fossem logadas apesar do comentário dizer o contrário.
-            /*var isSempreMostrar = t.indexOf(">> arquivo gravado:") === 0;
-            if (isSempreMostrar) {
-                logTs(t); // sempre loga — sem condição de primeira-vez
-                return;
-            }*/
+            // Linhas ">> arquivo gravado:" eram tratadas por um bloco removido
+            // que causava confusão — agora caem no filtro isPrimeiraVez abaixo.
             // Linhas de conexão e progresso somente na 1ª geração do dia
             var isPrimeiraVez =
                 t.charAt(0) === ">" ||
@@ -1000,17 +1474,19 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
                 t.indexOf("Conectando em:") === 0 ||
                 t.indexOf("Conectado!") === 0;
             if (isPrimeiraVez) {
-                if (!_queryLogsHoje) logTs(t);
+                // Cronometragem de queries e caminho do HTML gerado sao rotina —
+                // relevantes so quando se investiga desempenho (ver logDebug).
+                if (!_queryLogsHoje) logDebug(t);
             }
         });
     });
     // CORREÇÃO: stderr do filho passava direto para process.stderr sem ser gravado no
     // relatorio.log — erros do gerar-relatorio-html.js (ex: query timeout interno,
     // unhandledRejection) ficavam invisíveis no log. Agora passam por logToFile().
-    proc.stderr.on("data", function(d) {
+    if (proc.stderr) proc.stderr.on("data", function(d) {
         var msg = d.toString().trim();
         if (msg) logTs("[filho stderr] " + msg);
-        process.stderr.write(d);
+        try { process.stderr.write(d); } catch(_) {}
     });
 
 
@@ -1021,6 +1497,9 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         logTs("ERRO spawn: "+e.message);
         cache[chave]={html:null,gerando:false,erro:"Falha ao iniciar node: "+e.message};
         _gerarTentativas[chave] = 0;
+        // Remove o PID da lista e libera a referência de kill desta geração.
+        if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
+        _liberarKillProprio();
     });
     proc.on("close",function(code){
         if (_procEncerrado) return; // timeout já tratou este processo
@@ -1035,12 +1514,12 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         // _fpPoll pode ter iniciado uma geração mais nova (kill-and-restart) enquanto
         // este processo rodava — nesse caso o resultado aqui é obsoleto: descarta.
         if (_gerarIdCounter[chave] !== _meuId) {
-            logTs("Geração " + chave + " #" + _meuId + " superada por #" + _gerarIdCounter[chave] + " — descartando.");
-            delete _gerandoKill[chave];
+            logDebug("Geração " + chave + " #" + _meuId + " superada por #" + _gerarIdCounter[chave] + " — descartando.");
+            _liberarKillProprio(); // NUNCA remove a função kill da geração nova
             try { if (fs.existsSync(_tmpFile)) fs.unlinkSync(_tmpFile); } catch(_) {}
             return;
         }
-        delete _gerandoKill[chave]; // limpa referência — geração concluída
+        _liberarKillProprio(); // limpa referência — geração concluída
 
         _gerarTentativas[chave] = 0; // sucesso ou erro definitivo — zera contador
         try {
@@ -1136,6 +1615,15 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "_conn();" +
             // Poll HTTP (fallback — detecta mesmo sem SSE)
             "var _pollErros=0;" +
+            // DEDUP FIX (auditoria v2.5.0): /api/status agora devolve 'correcoes' por
+            // JANELA DE TEMPO (não-destrutivo — ver _pushCorrecao/_CORRECOES_JANELA_MS
+            // no servidor), então a MESMA correção aparece em várias respostas seguidas
+            // de poll. Sem este controle de 'já vista', o mesmo toast reapareceria a
+            // cada ciclo de poll (a cada "+pollMs+"ms) enquanto durar a janela. Usa 'seq'
+            // (contador monotônico do servidor) em vez de 'ts' para o rastreio: duas
+            // correções diferentes podem compartilhar o mesmo milissegundo, mas nunca
+            // o mesmo seq.
+            "var _ultimaCorrecaoSeq=0;" +
             "var _poll=function(){" +
             "fetch('/api/status',{cache:'no-store'})" +
             ".then(function(r){return r.ok?r.json():Promise.reject(r.status);})" +
@@ -1144,6 +1632,8 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "if(d.correcoes&&d.correcoes.length){" +
             "var _deveReload=false;" +
             "d.correcoes.forEach(function(c){" +
+            "if(c.seq&&c.seq<=_ultimaCorrecaoSeq)return;" + // já exibida nesta aba — pula
+            "if(c.seq&&c.seq>_ultimaCorrecaoSeq)_ultimaCorrecaoSeq=c.seq;" +
             "try{" +
             "var _tw=document.getElementById('__srv_tw')||" +
             "(function(){var e=document.createElement('div');e.id='__srv_tw';" +
@@ -1186,7 +1676,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "body:JSON.stringify({ts:Date.now()," +
             "tzOffsetMs:new Date().getTimezoneOffset()*60000})," +
             "cache:'no-store'}).catch(function(){});}catch(_){}};" +
-            "_syncHo();setInterval(_syncHo,30000);" +
+            "_syncHo();setInterval(_syncHo,"+INTERVALO_SYNC_HORA_MS+");" +
             "})();" + SC;
 
         var serverModeSnip =
@@ -1224,9 +1714,6 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         } catch(injErr) {
             logTs("ERRO na injecao HTML: " + (injErr && injErr.stack || injErr));
         }
-
-        var nClientesAoGerar = sseClients.length;
-        /*logTs("Pronto: "+label+" ("+Math.round(html.length/1024)+" KB, "+qt+" vendas, R$"+tot.toFixed(2)+") | _statusChanged="+_statusChanged+" | sseClients="+nClientesAoGerar);*/
 
         // Detecta se _fpPoll ou pollStatus gravaram statusAtual DURANTE esta geração
         // COM dados diferentes dos que nosso HTML produziu.
@@ -1309,40 +1796,109 @@ var _fpConectando    = false; // evita tentativas de attach paralelas
 var _fpBusy          = false; // evita ciclos sobrepostos
 var _fpUltimoQt      = -1;    // última contagem vista (-1 = sem baseline ainda)
 var _fpUltimoTot     = -1;    // último total visto
+var _fpUltimoPend    = -1;    // últimas NFC-e pendentes de autorização vistas
+var _fpUltimoSvend   = -1;    // últimas vendas sem vendedor vistas
+var _fpUltimoSforma  = -1;    // últimos pagamentos sem forma definida vistos
 var _fpDhAtual       = null;  // data do último ciclo — detecta virada de dia e reseta baseline
 var _fpIntervalId    = null;
+// _fpGen: token de geração do fast-poll. Incrementado por _iniciarFastPoll().
+// RACE FIX (v2.4.1): se _iniciarFastPoll() era chamado enquanto um Firebird.attach
+// estava em voo (ex.: reconfiguração manual do FDB durante a reconexão), a callback
+// tardia gravava a conexão ANTIGA em _fpDb — que aponta para o banco anterior.
+// Comparando o token, a callback obsoleta apenas descarta a conexão.
+var _fpGen           = 0;
 
 // SQL mínima: COUNT+SUM sem IIF/tipo breakdown.
 // Mais rápida que a query completa do pollStatus — ideal para detecção contínua.
 // Inclui nfce (cancelado filtrado) e pagament (formas ignoradas: 00/13).
-var _FP_SQL =
-    "SELECT COALESCE(SUM(qt),0) AS FP_QT, COALESCE(SUM(tot),0) AS FP_TOT" +
-    " FROM (" +
-    "  SELECT 1 AS qt, total AS tot" +
-    "  FROM nfce" +
-    "  WHERE data >= ? AND data < ? + 1" +
-    "  AND COALESCE(cancelado,'N') NOT IN ('S','T')" +
-    "  AND total > 0" +
-    "  UNION ALL" +
-    "  SELECT 1 AS qt, valor AS tot" +
-    "  FROM pagament" +
-    "  WHERE data >= ? AND data < ? + 1" +
-    "  AND valor > 0" +
-    "  AND SUBSTRING(forma FROM 1 FOR 2) NOT IN ('00','13')" +
-    " ) t";
+// FP_PEND (v2.7.4): conta as NFC-e AINDA NAO AUTORIZADAS (total vazio).
+// Sem essa terceira medida, o fast-poll so' enxerga qt/total — e o momento em
+// que a SEFAZ autoriza a nota, preenchendo VENDEDOR/HORA/NATUREZA, nao muda
+// necessariamente nenhum dos dois (o valor ja estava sendo contado pelo
+// PAGAMENT). O usuario ficava olhando "(aguardando autorizacao)" na tela e
+// precisava apertar atualizar na mao. Com FP_PEND, a transicao
+// pendente -> autorizada e' detectada explicitamente e dispara a regeneracao
+// + reload automatico como qualquer outra mudanca.
+// FP_SVEND (v2.7.6): conta as vendas do dia SEM VENDEDOR definido. Fecha a
+// ultima lacuna de deteccao: quando alguem atribui o vendedor a uma venda que
+// ja estava contabilizada, qt e total NAO mudam — e a tela continuaria
+// mostrando "(sem vendedor)" ate' alguem apertar atualizar na mao. As demais
+// situacoes de "nao identificado" ja eram cobertas indiretamente: a forma de
+// pagamento so' fica vazia enquanto nao ha linha em PAGAMENT, e a chegada
+// dessa linha ja altera qt/total.
+// So' e' incluida quando a coluna nfce.VENDEDOR existe de fato (ver sondagem
+// em _fpConectar) — referenciar coluna inexistente derrubaria toda a consulta
+// e mataria a deteccao de vendas.
+var _montarFpSql = function(temVendedor) {
+    var _selVend = temVendedor
+        ? "  SELECT 0 AS qt, 0 AS tot, 0 AS pend, 1 AS svend, 0 AS sforma" +
+          "  FROM nfce" +
+          "  WHERE data >= ? AND data < ? + 1" +
+          "  AND COALESCE(cancelado,'N') NOT IN ('S','T')" +
+          "  AND total > 0" +
+          "  AND (VENDEDOR IS NULL OR TRIM(VENDEDOR) = '')" +
+          "  UNION ALL"
+        : "";
+    return "SELECT COALESCE(SUM(qt),0) AS FP_QT, COALESCE(SUM(tot),0) AS FP_TOT," +
+           " COALESCE(SUM(pend),0) AS FP_PEND, COALESCE(SUM(svend),0) AS FP_SVEND," +
+           " COALESCE(SUM(sforma),0) AS FP_SFORMA" +
+           " FROM (" +
+           _selVend +
+           "  SELECT 1 AS qt, total AS tot, 0 AS pend, 0 AS svend, 0 AS sforma" +
+           "  FROM nfce" +
+           "  WHERE data >= ? AND data < ? + 1" +
+           "  AND COALESCE(cancelado,'N') NOT IN ('S','T')" +
+           "  AND total > 0" +
+           "  UNION ALL" +
+           "  SELECT 0 AS qt, 0 AS tot, 1 AS pend, 0 AS svend, 0 AS sforma" +
+           "  FROM nfce" +
+           "  WHERE data >= ? AND data < ? + 1" +
+           "  AND COALESCE(cancelado,'N') NOT IN ('S','T')" +
+           "  AND COALESCE(total,0) <= 0" +
+           // ESCOPO: so' documento fiscal aguarda autorizacao da SEFAZ. Sem este
+           // filtro, toda gerencial ABERTA (venda em andamento no caixa, total
+           // ainda vazio) entrava na contagem de "pendentes" — e cada item
+           // lancado no cupom mudava esse numero, disparando regeneracao do
+           // relatorio sem que nada relevante tivesse mudado.
+           "  AND COALESCE(modelo,65) IN (65,55)" +
+           "  UNION ALL" +
+           "  SELECT 1 AS qt, valor AS tot, 0 AS pend, 0 AS svend, 0 AS sforma" +
+           "  FROM pagament" +
+           "  WHERE data >= ? AND data < ? + 1" +
+           "  AND valor > 0" +
+           "  AND SUBSTRING(forma FROM 1 FOR 2) NOT IN ('00','13')" +
+           "  UNION ALL" +
+           // FP_SFORMA (v2.7.7): pagamentos do dia cuja FORMA ainda esta em
+           // branco. Fecha a lacuna do "nao identificado" que sobrava: quando um
+           // pagamento JA EXISTE mas sem forma definida, e alguem preenche a
+           // forma depois, nem a quantidade nem o valor mudam — o fast-poll nao
+           // via nada e a tela ficava em "nao identificado" ate' alguem apertar
+           // atualizar. (O caso de um pagamento NOVO chegando ja era detectado,
+           // porque a linha nova altera qt/total.)
+           "  SELECT 0 AS qt, 0 AS tot, 0 AS pend, 0 AS svend, 1 AS sforma" +
+           "  FROM pagament" +
+           "  WHERE data >= ? AND data < ? + 1" +
+           "  AND (forma IS NULL OR TRIM(forma) = '')" +
+           " ) t";
+};
+// Numero de pares (data,data) que a consulta espera, para montar os parametros.
+var _fpNumBlocos = function(temVendedor) { return temVendedor ? 5 : 4; };
+var _fpTemVendedor = null;  // null = ainda nao sondado; true/false = resultado do esquema
+var _FP_SQL = _montarFpSql(false); // substituido apos a sondagem em _fpConectar
 
 // Conecta (ou reconecta) a conexão persistente do fast-poll.
 // _done flag previne double-callback (timeout + attach concorrentes).
 var _fpConectar = function(cb) {
     if (_fpConectando) { cb(false); return; }
     _fpConectando = true;
-    var opts = {host:FDB_HOST, port:3050, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:"UTF8", pageSize:4096, lowercase_keys:false};
+    var _minhaGen = _fpGen; // token no momento do attach
+    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                role:null, charset:FB_CHARSET, lowercase_keys:false};
     var _done = false;
     var _t = setTimeout(function() {
         if (_done) return; _done = true;
         _fpConectando = false;
-        _fpDb = null;
+        if (_minhaGen === _fpGen) _fpDb = null;
         cb(false);
     }, 3000);
     try {
@@ -1351,13 +1907,72 @@ var _fpConectar = function(cb) {
             _done = true;
             clearTimeout(_t);
             _fpConectando = false;
+            // Geração obsoleta: o fast-poll foi reiniciado durante o attach.
+            // Descarta esta conexão sem tocar em _fpDb (que já é da nova geração).
+            if (_minhaGen !== _fpGen) {
+                if (!err && db) { try { _matarConexao(db); } catch(_) {} }
+                cb(false);
+                return;
+            }
             if (err || !db) { _fpDb = null; cb(false); return; }
             _fpDb = db;
-            cb(true);
+            // Sonda se a tabela nfce tem a coluna VENDEDOR. Necessario porque
+            // _FP_SQL e' montado a partir desta checagem: referenciar coluna
+            // inexistente faria TODA consulta do fast-poll falhar, e a deteccao
+            // de vendas pararia por completo.
+            //
+            // BUG FIX (v2.7.9): a sondagem rodava — e LOGAVA — a cada reconexao.
+            // Num ambiente com Firebird remoto instavel, o fast-poll reconecta
+            // varias vezes por segundo; no log real do usuario isso gerou 6987
+            // de 7000 linhas (99,8%), ~17 por segundo, apagando todo o resto
+            // pela rotacao do arquivo. Alem do ruido, era uma query extra por
+            // reconexao contra um banco ja sobrecarregado, o que so' piorava a
+            // instabilidade que causava as reconexoes.
+            // O resultado e' propriedade do ESQUEMA do banco: nao muda entre
+            // reconexoes. Agora e' sondado UMA vez (estado nulo = ainda
+            // desconhecido) e reaproveitado; o log sai so' quando o valor e'
+            // determinado ou de fato muda (ex: troca do arquivo .fdb).
+            if (_fpTemVendedor !== null) { cb(true); return; }
+            db.query(
+                "SELECT COUNT(*) AS TEM FROM RDB$RELATION_FIELDS " +
+                "WHERE TRIM(RDB$RELATION_NAME) = 'NFCE' AND TRIM(RDB$FIELD_NAME) = 'VENDEDOR'",
+                [],
+                function(errV, rowsV) {
+                    if (errV) {
+                        // Falha na sondagem: NAO fixa o estado (segue null) para
+                        // tentar de novo na proxima conexao, e mantem a variante
+                        // sem VENDEDOR, que funciona em qualquer esquema.
+                        cb(true);
+                        return;
+                    }
+                    var _tem = 0;
+                    try {
+                        if (rowsV && rowsV[0]) {
+                            var r0 = rowsV[0];
+                            _tem = Number(r0.TEM || r0.tem || 0);
+                        }
+                    } catch(_) {}
+                    var _novo = _tem > 0;
+                    if (_fpTemVendedor !== _novo) {
+                        _fpTemVendedor = _novo;
+                        _FP_SQL = _montarFpSql(_fpTemVendedor);
+                        // logDebug: é informação de ESQUEMA do banco, não evento
+                        // operacional. Numa base sem a coluna a mensagem se repetia a
+                        // cada reinício do servidor sem nunca mudar de conteúdo.
+                        logDebug("FastPoll: coluna nfce.VENDEDOR " + (_fpTemVendedor ? "detectada" : "ausente") +
+                              " — monitoramento de vendedor " + (_fpTemVendedor ? "ativo" : "desativado") + ".");
+                    }
+                    cb(true);
+                }
+            );
         });
     } catch(syncErr) {
         // Firebird.attach nunca deveria lançar sincronamente, mas por segurança:
-        if (!_done) { _done = true; clearTimeout(_t); _fpConectando = false; _fpDb = null; cb(false); }
+        if (!_done) {
+            _done = true; clearTimeout(_t); _fpConectando = false;
+            if (_minhaGen === _fpGen) _fpDb = null;
+            cb(false);
+        }
     }
 };
 
@@ -1370,8 +1985,11 @@ var _fpPoll = function() {
 
     // Virada de dia: reseta baseline para não comparar hoje com ontem
     if (_fpDhAtual && _fpDhAtual !== dh) {
-        _fpUltimoQt  = -1;
-        _fpUltimoTot = -1;
+        _fpUltimoQt    = -1;
+        _fpUltimoTot   = -1;
+        _fpUltimoPend  = -1;
+        _fpUltimoSvend  = -1;
+        _fpUltimoSforma = -1;
         logTs("FastPoll: virada de dia (" + _fpDhAtual + " → " + dh + ") — baseline resetado.");
     }
     _fpDhAtual = dh;
@@ -1386,7 +2004,9 @@ var _fpPoll = function() {
             _fpBusy = false;
         }, 2000);
 
-        _fpDb.query(_FP_SQL, [dh, dh, dh, dh], function(err, rows) {
+        var _fpParams = [];
+        for (var _b = 0; _b < _fpNumBlocos(_fpTemVendedor); _b++) { _fpParams.push(dh, dh); }
+        _fpDb.query(_FP_SQL, _fpParams, function(err, rows) {
             clearTimeout(_wdFp);
             // Se watchdog já disparou, descarta callback para evitar duplo processamento
             if (_wdFired) return;
@@ -1399,13 +2019,26 @@ var _fpPoll = function() {
             }
             var r   = rows[0];
             var n   = function(k) { return Number(r[k] || r[k.toLowerCase()] || 0); };
-            var qt  = n("FP_QT");
-            var tot = n("FP_TOT");
+            var qt    = n("FP_QT");
+            var tot   = n("FP_TOT");
+            var pend  = n("FP_PEND");
+            var svend  = n("FP_SVEND");
+            var sforma = n("FP_SFORMA");
 
+            // pend != anterior cobre a autorização de uma NFC-e convertida: o valor
+            // já estava sendo contado pelo PAGAMENT, então qt/tot podem não mudar —
+            // mas VENDEDOR/HORA/NATUREZA acabaram de ser preenchidos e a tela
+            // precisa recarregar para sair de "(aguardando autorização)".
             if (_fpUltimoQt >= 0 &&
-                (qt !== _fpUltimoQt || Math.abs(tot - _fpUltimoTot) > 0.005)) {
+                (qt !== _fpUltimoQt || Math.abs(tot - _fpUltimoTot) > 0.005 ||
+                 pend !== _fpUltimoPend || svend !== _fpUltimoSvend ||
+                 sforma !== _fpUltimoSforma)) {
 
-                logTs("FastPoll: " + _descreverMudanca(_fpUltimoQt, qt, _fpUltimoTot, tot) + " → regerando.");
+                logTs("FastPoll: " + _descreverMudanca(_fpUltimoQt, qt, _fpUltimoTot, tot) +
+                      (pend !== _fpUltimoPend ? " | NFC-e aguardando autorização: " + _fpUltimoPend + " → " + pend : "") +
+                      (svend !== _fpUltimoSvend ? " | vendas sem vendedor: " + _fpUltimoSvend + " → " + svend : "") +
+                      (sforma !== _fpUltimoSforma ? " | pagamentos sem forma: " + _fpUltimoSforma + " → " + sforma : "") +
+                      " → regerando.");
                 // NÃO atualiza statusAtual nem dispara SSE aqui.
                 // Ambos ocorrem em gerarEmBackground proc.on("close") quando HTML está pronto,
                 // garantindo que o browser recarregue direto para a página final sem paginaLoading.
@@ -1424,8 +2057,11 @@ var _fpPoll = function() {
                 }
             }
 
-            _fpUltimoQt  = qt;
-            _fpUltimoTot = tot;
+            _fpUltimoQt    = qt;
+            _fpUltimoTot   = tot;
+            _fpUltimoPend  = pend;
+            _fpUltimoSvend  = svend;
+            _fpUltimoSforma = sforma;
             _fpBusy = false;
         });
     };
@@ -1444,9 +2080,11 @@ var _fpPoll = function() {
 // Chamada sempre que o banco é configurado ou reconectado.
 var _iniciarFastPoll = function() {
     if (_fpIntervalId) clearInterval(_fpIntervalId);
-    _fpUltimoQt = _fpUltimoTot = -1;
+    _fpGen++;               // invalida qualquer attach em voo da geração anterior
+    _fpUltimoQt = _fpUltimoTot = _fpUltimoPend = _fpUltimoSvend = _fpUltimoSforma = -1;
     _fpDhAtual  = null;
     _fpBusy     = false;
+    _fpConectando = false;  // libera o flag caso um attach anterior tenha ficado preso
     if (_fpDb) { try { _matarConexao(_fpDb); } catch(_) {} _fpDb = null; }
     _fpIntervalId = setInterval(_fpPoll, _FP_INTERVAL_MS);
     logTs("Fast-poll iniciado (" + _FP_INTERVAL_MS + " ms) — detecção de vendas em tempo real.");
@@ -1464,8 +2102,13 @@ var _iniciarFastPoll = function() {
 var _pollBusy = false;
 var _pollIntervalId = null; // guarda o ID do setInterval ativo — evita acúmulo de loops
 var _QUERY_TIMEOUT_MS = 5000;   // 5 segundos — cancela e refaz se exceder
-var _HORA_VELHA_MS    = 1 * 60 * 1000; // 1 minuto — corrige horário de venda stale
-var _HORA_GERENCIAL_VELHA_MS = 1 * 60 * 1000; // 1 minuto — corrige gerencial futuro ou stale
+var _HORA_VELHA_MS               =  1 * 60 * 1000; // 1 minuto  — corrige horário de venda stale (NFC-e/NF-e)
+// REGRA DE HORA FIXA (v2.7.7) — janela ampliada de 30 min para 1 HORA a
+// pedido do usuário. Define até quando olhar para trás procurando vendas
+// com horário a corrigir. Vendas mais antigas que isso são deixadas em paz
+// (assume-se que o horário delas é o correto, não um relógio adiantado).
+var _HORA_GERENCIAL_JANELA_MS    = 60 * 60 * 1000; // 1 hora — janela de verificação retroativa para gerenciais
+var _HORA_GERENCIAL_TOLERANCIA_MS =  3 * 60 * 1000; // 3 minutos  — notas com hora dentro desse intervalo passam sem ajuste
 
 // Throttle das funções de correção de horário.
 // Elas abrem conexão Firebird própria — chamá-las a cada poll (200ms) gera
@@ -1492,8 +2135,7 @@ var _corriGerencialEmAndamento = false; // true = _corrigirHorariosGerencial rod
 // horaAtual e horaLimite com getHours() do seu próprio fuso, enquanto o banco
 // gravava os horários no fuso local do usuário.
 // ---------------------------------------------------------------------------
-var _clientTzOffsetMs    = 0;   // atualizado via /api/hora-usuario
-var _ultimaSincHoraUsuario = 0;
+var _clientTzOffsetMs = 0; // atualizado via /api/hora-usuario
 
 var agoraAjustado = function() {
     // Date deslocado: getUTCHours() == hora local do usuário
@@ -1534,7 +2176,7 @@ var _matarTodosFilhos = function() {
     pids.forEach(function(pid) {
         if (process.platform === "win32") {
             // spawn (não-bloqueante) evita travar o event loop até 3s/pid
-            try { require("child_process").spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {stdio:"ignore", detached:true}); } catch(_) {}
+            try { childProc.spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {stdio:"ignore", detached:true}); } catch(_) {}
         } else {
             try { process.kill(pid, "SIGKILL"); } catch(_) {}
         }
@@ -1551,9 +2193,19 @@ var _executarConsultaPoll = function(db, sql, params, cb) {
     var timer = setTimeout(function() {
         if (encerrado) return;
         encerrado = true;
-        logTs("Poll: query passou de " + (_QUERY_TIMEOUT_MS/1000) + "s — cortando socket, matando filhos e refazendo.");
+        logTs("Poll: query passou de " + (_QUERY_TIMEOUT_MS/1000) + "s — cortando socket e refazendo.");
+        // BUG FIX (auditoria v2.5.0 — CONCORRÊNCIA/DANO COLATERAL): esta função
+        // chamava _matarTodosFilhos(), que mata TODA geração de relatório em
+        // andamento no processo — inclusive relatórios por período/intervalo
+        // que podem estar rodando há vários minutos de forma totalmente
+        // legítima (ver SPAWN_TIMEOUT_CFG, que aceita até 600s) e SEM NENHUMA
+        // relação com esta query de poll específica travar. Um soluço
+        // passageiro de rede/disco no poll (5s) não deveria derrubar um
+        // relatório de meses que um usuário está esperando pacientemente.
+        // O poll já se recupera sozinho apenas cortando a SUA PRÓPRIA conexão
+        // (_matarConexao(db), abaixo) — não precisa (e não deve) matar
+        // subprocessos de terceiros para isso.
         _matarConexao(db);
-        _matarTodosFilhos();
         cb(null, null);
     }, _QUERY_TIMEOUT_MS);
 
@@ -1593,10 +2245,9 @@ var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
     var _nowMs    = Date.now();
     var _agoraD   = new Date(_nowMs);
     var _threshD  = new Date(_nowMs - _HORA_VELHA_MS);
-    var p         = function(n) { return String(n).padStart(2, "0"); };
     // getHours()/getMinutes()/getSeconds() = hora LOCAL do servidor (mesmo fuso do Firebird)
-    var horaAtual = p(_agoraD.getHours()) + ":" + p(_agoraD.getMinutes()) + ":" + p(_agoraD.getSeconds());
-    var horaLimite= p(_threshD.getHours()) + ":" + p(_threshD.getMinutes()) + ":" + p(_threshD.getSeconds());
+    var horaAtual = padDois(_agoraD.getHours()) + ":" + padDois(_agoraD.getMinutes()) + ":" + padDois(_agoraD.getSeconds());
+    var horaLimite= padDois(_threshD.getHours()) + ":" + padDois(_threshD.getMinutes()) + ":" + padDois(_threshD.getSeconds());
 
     // Guard meia-noite: nos primeiros _HORA_VELHA_MS ms do dia, threshold cruza a
     // meia-noite LOCAL e horaLimite fica "23:5x:xx" (ontem). A comparação SQL de
@@ -1604,8 +2255,8 @@ var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
     // vendas do dia novo indevidamente. Aguarda o próximo ciclo de poll.
     // Bug anterior: usava floor(getTime()/86400000) = dia UTC, não dia LOCAL —
     // o guard disparava na hora errada em máquinas com fuso diferente de UTC.
-    var _agoraDiaStr  = _agoraD.getFullYear() + "-" + p(_agoraD.getMonth()+1) + "-" + p(_agoraD.getDate());
-    var _threshDiaStr = _threshD.getFullYear() + "-" + p(_threshD.getMonth()+1) + "-" + p(_threshD.getDate());
+    var _agoraDiaStr  = _agoraD.getFullYear() + "-" + padDois(_agoraD.getMonth()+1) + "-" + padDois(_agoraD.getDate());
+    var _threshDiaStr = _threshD.getFullYear() + "-" + padDois(_threshD.getMonth()+1) + "-" + padDois(_threshD.getDate());
     if (_threshDiaStr < _agoraDiaStr) {
         // guard meia-noite — silencioso para não inundar o log
         _corriVelhosEmAndamento = false;
@@ -1624,8 +2275,8 @@ var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
         if (--_pend <= 0) _corriVelhosEmAndamento = false;
     };
 
-    var opts = {host:FDB_HOST, port:3050, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:"UTF8", pageSize:4096, lowercase_keys:false};
+    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                role:null, charset:FB_CHARSET, lowercase_keys:false};
 
     // Timeout global para a conexão nfce — impede que conexão pendurada vaze
     // para sempre se o Firebird travar após o poll principal já ter liberado.
@@ -1698,11 +2349,10 @@ var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
                 } else {
                     logTs("Poll: " + novos.length + " venda(s) nfce corrigida(s) para " + horaAtual +
                           " (campo " + campo + ", numero(s): " + novos.join(",") + ").");
-                    _correcoesPendentes.push({
-                        msg: "🕐 " + novos.length + " venda(s) NFC-e com hora antiga corrigida(s) para " + horaAtual,
-                        cor: "rgba(251,191,36,.45)",
-                        reload: true  // browser recarrega ~800ms após exibir o toast
-                    });
+                    _pushCorrecao(
+                        "🕐 " + novos.length + " venda(s) NFC-e com hora antiga corrigida(s) para " + horaAtual,
+                        "rgba(251,191,36,.45)"
+                    );
                     // Regenera para que o HTML com hora corrigida esteja pronto quando o browser recarregar.
                     var _dhNfce = dh;
                     try {
@@ -1734,8 +2384,8 @@ var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
     // Incrementa _pend ANTES de abrir a conexão — garante que _liberar() do ramo nfce
     // não zere o contador antes de pagament ser registrado.
     _pend++; // agora _pend = 2 (nfce ainda em andamento + pagament iniciando)
-    var opts2 = {host:FDB_HOST, port:3050, database:FDB_PATH, user:USER, password:PASS,
-                 role:null, charset:"UTF8", pageSize:4096, lowercase_keys:false};
+    var opts2 = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                 role:null, charset:FB_CHARSET, lowercase_keys:false};
     // Timeout global para a conexão pagament — mesma proteção da conexão nfce acima.
     var _cv2Db = null, _cv2Encerrado = false;
     var _cv2Timer = setTimeout(function() {
@@ -1784,11 +2434,10 @@ var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
                 } else {
                     logTs("Poll: " + novosP.length + " pagamento(s) corrigido(s) para " + horaAtual +
                           " (numero(s): " + novosP.join(",") + ").");
-                    _correcoesPendentes.push({
-                        msg: "🕐 " + novosP.length + " pagamento(s) com hora antiga corrigido(s) para " + horaAtual,
-                        cor: "rgba(251,191,36,.45)",
-                        reload: true  // browser recarrega ~800ms após exibir o toast
-                    });
+                    _pushCorrecao(
+                        "🕐 " + novosP.length + " pagamento(s) com hora antiga corrigido(s) para " + horaAtual,
+                        "rgba(251,191,36,.45)"
+                    );
                     // Regenera para que o HTML com hora corrigida esteja pronto quando o browser recarregar.
                     var _dhPag = dh;
                     try {
@@ -1824,15 +2473,16 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
     // Bug anterior: usava agoraAjustado() com _clientTzOffsetMs=0 → hora UTC errada.
     var _nowMs    = Date.now();
     var _agoraD   = new Date(_nowMs);
-    var _threshD  = new Date(_nowMs - _HORA_GERENCIAL_VELHA_MS);
-    var p         = function(n) { return String(n).padStart(2, "0"); };
-    var horaAtual = p(_agoraD.getHours()) + ":" + p(_agoraD.getMinutes()) + ":" + p(_agoraD.getSeconds());
-    var horaLimite= p(_threshD.getHours()) + ":" + p(_threshD.getMinutes()) + ":" + p(_threshD.getSeconds());
+    var _threshD30 = new Date(_nowMs - _HORA_GERENCIAL_JANELA_MS);    // 30 min atrás — limite da janela
+    var _threshD3  = new Date(_nowMs - _HORA_GERENCIAL_TOLERANCIA_MS); //  3 min atrás — limite da tolerância
+    var horaAtual   = padDois(_agoraD.getHours())    + ":" + padDois(_agoraD.getMinutes())    + ":" + padDois(_agoraD.getSeconds());
+    var horaLimite30 = padDois(_threshD30.getHours()) + ":" + padDois(_threshD30.getMinutes()) + ":" + padDois(_threshD30.getSeconds());
+    var horaLimite3  = padDois(_threshD3.getHours())  + ":" + padDois(_threshD3.getMinutes())  + ":" + padDois(_threshD3.getSeconds());
 
-    // Guard meia-noite: mesma lógica de _corrigirHorariosVelhos.
-    // Bug anterior: usava floor(getTime()/86400000) = dia UTC, não dia LOCAL.
-    var _agoraDiaStr  = _agoraD.getFullYear() + "-" + p(_agoraD.getMonth()+1) + "-" + p(_agoraD.getDate());
-    var _threshDiaStr = _threshD.getFullYear() + "-" + p(_threshD.getMonth()+1) + "-" + p(_threshD.getDate());
+    // Guard meia-noite: usa _threshD30 (mais conservador dos dois) para detectar
+    // cruzamento do dia local. Idêntico à lógica de _corrigirHorariosVelhos.
+    var _agoraDiaStr  = _agoraD.getFullYear() + "-" + padDois(_agoraD.getMonth()+1) + "-" + padDois(_agoraD.getDate());
+    var _threshDiaStr = _threshD30.getFullYear() + "-" + padDois(_threshD30.getMonth()+1) + "-" + padDois(_threshD30.getDate());
     if (_threshDiaStr < _agoraDiaStr) {
         // guard meia-noite — silencioso para não inundar o log
         _corriGerencialEmAndamento = false;
@@ -1842,8 +2492,8 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
     // NÃO loga no início — chamado a cada poll (200ms).
     // Logs apenas quando efetivamente corrige ou ocorre erro.
 
-    var opts = {host:FDB_HOST, port:3050, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:"UTF8", pageSize:4096, lowercase_keys:false};
+    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                role:null, charset:FB_CHARSET, lowercase_keys:false};
 
     // Timeout global para a conexão gerencial — mesma proteção de _corrigirHorariosVelhos:
     // impede que conexão pendurada vaze para sempre se o Firebird travar após o poll.
@@ -1869,41 +2519,111 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
         };
 
     var _corrigirComCampo = function(campo) {
-        // Busca gerenciais de hoje com hora fora do intervalo aceitável:
+        // Busca gerenciais de hoje fora do intervalo aceitável:
         //   hora futura → campo > horaAtual
-        //   hora velha  → campo < horaLimite (> 1 min atrás)
+        //   hora dentro da janela de 30 min (inclui zona de tolerância de 3 min) → campo >= horaLimite30 AND campo < horaAtual
+        // Notas com campo > horaAtual (futuro) e campo < horaLimite30 (> 30 min atrás) são ignoradas — fora da janela.
         // BUG FIX: (modelo = 99 OR modelo IS NULL) captura gerenciais com campo NULL.
-        // O SmallSoft às vezes grava modelo=NULL para vendas "NAO E DOCUMENTO FISCAL".
+        //
+        // AJUSTE (v2.7.0 — "não pule as numerações"): os filtros
+        // "COALESCE(cancelado,'N') NOT IN ('S','T')" e "total > 0" foram
+        // REMOVIDOS daqui. Eram eles que abriam buracos na numeração do
+        // hora-fixada-cache.json: uma gerencial cancelada ou convertida
+        // simplesmente nunca entrava no cache, então a sequência ficava
+        // 54891, 54890, 54889, 54886... sem explicação visível no arquivo.
+        // Agora essas vendas TAMBÉM entram no cache — mas apenas como
+        // registro (marcadas com HORA_CACHE_CANCELADA); elas nunca entram
+        // no UPDATE, porque reescrever a hora de uma venda cancelada no
+        // banco seria alterar um registro que não deve mais mudar. As
+        // colunas cancelado/total passam a ser lidas para permitir essa
+        // classificação.
         var sqlSel =
-            "SELECT numero FROM nfce " +
+            "SELECT numero, " + campo + " AS HORA_VAL, " +
+            "COALESCE(cancelado,'N') AS CANC, COALESCE(total,0) AS TOT FROM nfce " +
             "WHERE data >= ? AND data < ? + 1 " +
             "AND (modelo = 99 OR modelo IS NULL) " +
             "AND " + campo + " IS NOT NULL " +
-            "AND COALESCE(cancelado,'N') NOT IN ('S','T') " +
-            "AND total > 0 " +
-            "AND (" + campo + " > ? OR " + campo + " < ?)";
+            "AND (" + campo + " > ? OR (" + campo + " >= ? AND " + campo + " < ?))";
+        //  params: dh, dh, horaAtual (futuro), horaLimite30 (janela início), horaAtual (janela fim)
 
-        db.query(sqlSel, [dh, dh, horaAtual, horaLimite], function(errS, rows) {
+        db.query(sqlSel, [dh, dh, horaAtual, horaLimite30, horaAtual], function(errS, rows) {
             if (errS) { logTs("Correção gerencial."+campo+": erro na query — "+errS.message); _fechar(); return; }
             if (!rows || !rows.length) { _fechar(); return; } // nenhum para corrigir — silencioso
 
-            // Filtra apenas os que ainda não foram corrigidos (cache persistente)
-            var novos = rows
-                .map(function(r) { return String(r.NUMERO || r.numero || ""); })
-                .filter(function(id) {
-                    if (!id) return false;
-                    return !_horaFixadaCache[dh + "|" + id];
+            // Separa em três grupos — filtrados pelo cache persistente:
+            //   novosSemHora:    cancelada/convertida/sem valor → só registra no cache (não altera o banco)
+            //   novosParaFixar:  hora futura OU dentro da janela mas fora da tolerância (> 3 min atrás)
+            //   novosParaMarcar: hora dentro da tolerância (≤ 3 min atrás) — passa sem ajuste, apenas marca no cache
+            var novosParaFixar  = [];
+            var novosParaMarcar = [];
+            var novosSemHora    = []; // [{id, marcador}]
+
+            rows.forEach(function(r) {
+                var id = String(r.NUMERO || r.numero || "").trim();
+                if (!id) return;
+                if (_horaFixadaCache[dh + "|" + id]) return; // já processado (fixado ou marcado ok)
+                var canc = String(r.CANC || r.canc || "N").trim().toUpperCase();
+                var tot  = parseFloat(r.TOT !== undefined ? r.TOT : r.tot);
+                // AJUSTE (v2.7.1): 'S' e 'T' agora são distinguidos no cache em vez de
+                // caírem os dois em "CANCELADA" — no Small Commerce, 'T' significa que
+                // a gerencial foi CONVERTIDA em documento fiscal (NFC-e ou NF-e), que é
+                // um desfecho bem diferente de um cancelamento e merece aparecer como tal.
+                if (canc === "S") { novosSemHora.push({id:id, marcador:HORA_CACHE_CANCELADA});  return; }
+                if (canc === "T") { novosSemHora.push({id:id, marcador:HORA_CACHE_CONVERTIDA}); return; }
+                if (!(tot > 0))   { novosSemHora.push({id:id, marcador:HORA_CACHE_SEM_VALOR});  return; }
+                var hv = String(r.HORA_VAL || "").trim().substring(0, 8);
+                if (hv > horaAtual) {
+                    // hora futura → sempre fixar
+                    novosParaFixar.push(id);
+                } else if (hv >= horaLimite3) {
+                    // dentro da tolerância de 3 min → passou sem ajuste, marca no cache
+                    novosParaMarcar.push(id);
+                } else {
+                    // mais de 3 min atrás mas dentro da janela de 30 min → fixar
+                    novosParaFixar.push(id);
+                }
+            });
+
+            // ── Registro de canceladas/convertidas/sem valor (sem tocar no banco) ──
+            if (novosSemHora.length) {
+                novosSemHora.forEach(function(item) {
+                    _horaFixadaCache[dh + "|" + item.id] = { tipo: "gerencial", hora: item.marcador };
                 });
+                _salvarHoraFixadaCache();
+                var _resumo = {};
+                novosSemHora.forEach(function(item){ _resumo[item.marcador] = (_resumo[item.marcador]||0) + 1; });
+                logTs("Poll: " + novosSemHora.length + " gerencial(is) registrada(s) no cache sem hora fixada (numeração sem buracos; banco não alterado) — " +
+                      Object.keys(_resumo).map(function(k){ return _resumo[k] + "x " + k; }).join(", ") + ".");
+            }
 
-            if (!novos.length) { _fechar(); return; } // todos já fixados — silencioso
+            // ── Marcação sem ajuste (tolerância) ─────────────────────────────
+            // Grava HORA_CACHE_OK no cache para que essas notas não entrem mais
+            // na janela de 30 min. BUG FIX: gravava "ok" minúsculo antes — ver
+            // comentário completo na declaração de HORA_CACHE_OK.
+            if (novosParaMarcar.length) {
+                novosParaMarcar.forEach(function(id) {
+                    _horaFixadaCache[dh + "|" + id] = { tipo: "gerencial", hora: HORA_CACHE_OK };
+                });
+                _salvarHoraFixadaCache();
+                logTs("Poll: " + novosParaMarcar.length + " gerencial(is) dentro da tolerância (≤3 min) — marcado(s) sem ajuste.");
+            }
 
-            // Marca no cache ANTES do UPDATE — evita dupla correção em paralelo
-            novos.forEach(function(id) {
-                _horaFixadaCache[dh + "|" + id] = horaAtual;
+            if (!novosParaFixar.length) { _fechar(); return; } // só havia notas na tolerância
+
+            // ── Fixação ───────────────────────────────────────────────────────
+            // Marca no cache ANTES do UPDATE — evita dupla correção em paralelo.
+            // FORMATO FIX: grava "HH:MM" (sem segundos) — horaAtual tem segundos
+            // (precisão necessária para a comparação SQL acima), mas o valor
+            // persistido no cache precisa bater com o formato "HH:MM" que
+            // gerar-relatorio-html.js grava e exibe, senão os dois lados
+            // comparam formatos diferentes para o mesmo horário.
+            var horaAtualCache = horaAtual.substring(0, 5);
+            novosParaFixar.forEach(function(id) {
+                _horaFixadaCache[dh + "|" + id] = { tipo: "gerencial", hora: horaAtualCache };
             });
             _salvarHoraFixadaCache();
 
-            var placeholders = novos.map(function() { return "?"; }).join(",");
+            var placeholders = novosParaFixar.map(function() { return "?"; }).join(",");
             // BUG FIX: UPDATE também usa (modelo = 99 OR modelo IS NULL)
             // para garantir que a mesma venda encontrada pelo SELECT seja atualizada.
             var sqlUpd =
@@ -1911,20 +2631,19 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
                 "WHERE numero IN (" + placeholders + ") " +
                 "AND (modelo = 99 OR modelo IS NULL)";
 
-            db.query(sqlUpd, [horaAtual].concat(novos), function(errU) {
+            db.query(sqlUpd, [horaAtual].concat(novosParaFixar), function(errU) {
                 if (errU) {
                     // Reverte entradas do cache — poderá tentar novamente depois
-                    novos.forEach(function(id) { delete _horaFixadaCache[dh + "|" + id]; });
+                    novosParaFixar.forEach(function(id) { delete _horaFixadaCache[dh + "|" + id]; });
                     _salvarHoraFixadaCache();
                     logTs("Poll: ERRO ao corrigir gerencial." + campo + ": " + errU.message);
                 } else {
-                    logTs("Poll: " + novos.length + " gerencial(is) corrigido(s) para " + horaAtual +
-                          " (campo " + campo + ", numero(s): " + novos.join(",") + ").");
-                    _correcoesPendentes.push({
-                        msg: "🕐 " + novos.length + " gerencial(is) com hora corrigido(s) para " + horaAtual,
-                        cor: "rgba(167,139,250,.45)",
-                        reload: true  // browser recarrega ~800ms após exibir o toast
-                    });
+                    logTs("Poll: " + novosParaFixar.length + " gerencial(is) corrigido(s) para " + horaAtual +
+                          " (campo " + campo + ", numero(s): " + novosParaFixar.join(",") + ").");
+                    _pushCorrecao(
+                        "🕐 " + novosParaFixar.length + " gerencial(is) com hora corrigido(s) para " + horaAtual,
+                        "rgba(167,139,250,.45)"
+                    );
                     // Regenera para que o HTML com hora corrigida esteja pronto quando o browser recarregar.
                     var _dhGer = dh;
                     try {
@@ -1960,45 +2679,57 @@ var pollStatus = function() {
     if (!Firebird || _pollBusy || !dbStatus.ok) return;
     _pollBusy = true;
     var dh   = hoje();
-    var opts = {host:FDB_HOST, port:3050, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:"UTF8", pageSize:4096, lowercase_keys:false};
+    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                role:null, charset:FB_CHARSET, lowercase_keys:false};
+
+    // RACE FIX (v2.4.1): antes, o watchdog liberava _pollBusy sem marcar o ciclo
+    // como encerrado. Se o attach/query respondesse depois, o ciclo velho seguia
+    // até o fim e chamava _liberar(db) — zerando o _pollBusy de um ciclo NOVO já
+    // em andamento e permitindo dois pollStatus simultâneos sobre o mesmo banco
+    // (duas conexões, dois _corrigirHorarios*, statusAtual escrito fora de ordem).
+    // _cicloFim garante que apenas o primeiro desfecho encerre o ciclo.
+    var _cicloFim = false;
 
     // Libera recursos e _pollBusy após qualquer desfecho
-    var _liberar = function(db) {
+    var _liberar = function(db, reagendar) {
+        if (_cicloFim) { if (db) { try { _matarConexao(db); } catch(_) {} } return; }
+        _cicloFim = true;
         clearTimeout(_watchdog);
-        if (db) _matarConexao(db);
+        clearTimeout(_attachTimer);
+        if (db) { try { _matarConexao(db); } catch(_) {} }
         _pollBusy = false;
+        if (reagendar) setTimeout(pollStatus, 500);
     };
 
     // Watchdog de segurança — impede _pollBusy travado para sempre
     var _watchdog = setTimeout(function() {
-        logTs("Poll: watchdog geral de 12 s disparado — liberando _pollBusy.");
-        if (_dbRef) { try { _matarConexao(_dbRef); } catch(_) {} }
-        _matarTodosFilhos();
-        _pollBusy = false;
-    }, 12000);
+        if (_cicloFim) return;
+        logTs("Poll: watchdog geral de "+(POLL_WATCHDOG_MS/1000)+"s disparado — liberando _pollBusy.");
+        // BUG FIX (auditoria v2.5.0): não mata mais subprocessos de geração de
+        // relatório aqui — ver justificativa detalhada em _executarConsultaPoll.
+        _liberar(_dbRef, false);
+    }, POLL_WATCHDOG_MS);
 
     // --- Timeout no próprio attach (banco pode demorar a aceitar conexão) ---
     var _dbRef       = null;
     var _attachFeito = false;
     var _attachTimer = setTimeout(function() {
-        if (_attachFeito) return;
+        if (_attachFeito || _cicloFim) return;
         _attachFeito = true;
         logTs("Poll: attach passou de " + (_QUERY_TIMEOUT_MS/1000) + "s — abortando e refazendo.");
-        if (_dbRef) _matarConexao(_dbRef);
-        _matarTodosFilhos();
-        clearTimeout(_watchdog);
-        _pollBusy = false;
-        setTimeout(pollStatus, 500);
+        // BUG FIX (auditoria v2.5.0): não mata mais subprocessos de geração de
+        // relatório aqui — ver justificativa detalhada em _executarConsultaPoll.
+        _liberar(_dbRef, true);
     }, _QUERY_TIMEOUT_MS);
 
     Firebird.attach(opts, function(err, db) {
-        if (_attachFeito) { if (db) _matarConexao(db); return; } // timeout já disparou
+        // Ciclo já encerrado (timeout de attach ou watchdog): descarta a conexão.
+        if (_attachFeito || _cicloFim) { if (db) { try { _matarConexao(db); } catch(_) {} } return; }
         _attachFeito = true;
         clearTimeout(_attachTimer);
         _dbRef = db;
 
-        if (err) { clearTimeout(_watchdog); _pollBusy = false; return; }
+        if (err) { _liberar(db, false); return; }
 
         // SQL única com IIF por tipo: gerencial(99), NFC-e(65), NF-e(55) e pagamentos.
         // Detecta > e < para cada tipo a cada POLL_INTERVAL (config.json).
@@ -2030,13 +2761,15 @@ var pollStatus = function() {
         _executarConsultaPoll(db, sql, [dh, dh, dh, dh], function(e, rows) {
             // rows===null && e===null → timeout do socket — _matarConexao já foi chamado
             if (rows === null && e === null) {
-                clearTimeout(_watchdog);
-                _pollBusy = false;
-                setTimeout(pollStatus, 500); // refaz após 500 ms
+                _liberar(null, true); // refaz após 500 ms
                 return;
             }
 
-            if (e || !rows || !rows.length) { _liberar(db); return; }
+            if (e || !rows || !rows.length) { _liberar(db, false); return; }
+
+            // Se o watchdog disparou enquanto a query rodava, este ciclo já foi
+            // encerrado e um novo pode estar ativo — não escreve statusAtual.
+            if (_cicloFim) { try { _matarConexao(db); } catch(_) {} return; }
 
             var r = rows[0];
             // Suporte a casing variável retornado pelo node-firebird
@@ -2094,7 +2827,7 @@ var pollStatus = function() {
                 nfc: {qt: qtNFC, tot: totNFC},
                 nf:  {qt: qtNF,  tot: totNF}
             });
-            _liberar(db);
+            _liberar(db, false);
         });
     });
 };
@@ -2113,15 +2846,29 @@ var pollStatus = function() {
 // Resultado: loop infinito em paginaLoading mesmo com o HTML já gerado.
 // O cooldown precisa ser maior que: SPAWN_TIMEOUT_CFG + 600ms de animação + margem.
 // Bug do loop em paginaLoading foi eliminado (SSE só dispara após HTML pronto).
-// Cooldown pode ser reduzido para ~3 s — apenas > tempo de geração (~1-2 s).
+//
+// REVERTIDO PARA 500ms (v2.6.4) — a auditoria v2.5.0 tinha elevado este valor
+// para 5 min tratando agendarRegen como "regeneração desnecessária", mas isso
+// causou uma REGRESSÃO REAL na detecção de vendas, relatada pelo usuário
+// ("fast-poll não detecta imediatamente"). O motivo: o fast-poll detecta a
+// venda em 50ms e chama gerarEmBackground corretamente — mas gerarEmBackground
+// não é a única coisa que precisa acontecer. Quando o cache do dia acabou de
+// ser regravado (ent.geradoEm recente), este cooldown de 5 min BLOQUEAVA a
+// próxima regeneração do agendarRegen por 5 minutos inteiros; qualquer venda
+// cuja regeneração falhasse ou fosse superada (kill-and-restart do fast-poll,
+// spawn que estourou timeout, erro transitório do Firebird) só voltava a ser
+// refletida na tela na próxima janela de 5 min, em vez de nos ~200ms
+// seguintes. O custo que a auditoria quis eliminar existe, mas é o preço
+// dessa rede de segurança funcionar de fato: 500ms é o valor original,
+// validado em produção pelo autor, e a latência percebida de venda na tela
+// vale muito mais que o custo de CPU ocioso.
 var _REGEN_COOLDOWN_MS = 500;  // ent.gerando já bloqueia concorrência — cooldown só evita thrash
 
 // Intervalo de verificação da regeneração periódica — INDEPENDENTE do POLL_INTERVAL.
-// Antes usava POLL_INTERVAL (200ms): checava 5× por segundo se devia regererar,
-// sobrecarregando o event loop sem benefício (a geração real é limitada pelo cooldown).
-// Agora usa intervalo fixo de 30s — suficiente, pois mudanças reais chegam via pollStatus.
-// Fallback quando fast-poll/pollStatus falham — checa a cada 3 s em vez de 30 s.
-var _REGEN_CHECK_MS = 200;  // checa a cada 200ms — fallback detecta em ≤2s
+// BUG FIX: comentário anterior dizia "30s" mas a variável estava em 200ms — contradição
+// que causava confusão sobre o comportamento real. O valor correto é 200ms (fallback rápido).
+// Mudanças reais chegam via fast-poll/pollStatus; agendarRegen é apenas safety net.
+var _REGEN_CHECK_MS = 200;  // checa a cada 200ms — se fast-poll falhar, detecta em ≤2s
 
 var agendarRegen = function() {
     setTimeout(function() {
@@ -2235,9 +2982,12 @@ var paginaLoading=function(titulo,sub,chavePoll,urlDest){
         "if(!d||typeof d!=='object'){setTimeout(_poll,300);return;}" +
         "var seg=Math.floor((Date.now()-_t0)/1000);" +
         // Erro definitivo → substitui a página inteira
+        // XSS FIX: d.erro pode conter e.message com < > & (ex: path do SO, args do spawn).
+        // Sanitiza com replace antes de inserir em innerHTML.
+        "var _esc=function(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};" +
         "if(d.erro){document.body.innerHTML='<div style=\"padding:40px;font-family:monospace\">" +
         "<h2 style=\"color:#f87171\">Erro</h2>" +
-        "<pre style=\"color:#f87171;white-space:pre-wrap\">'+d.erro+'<\\/pre>" +
+        "<pre style=\"color:#f87171;white-space:pre-wrap\">'+_esc(d.erro)+'<\\/pre>" +
         "<p><a href=\"/\" style=\"color:#0ea5e9\">Tentar novamente<\\/a><\\/p><\\/div>';return;}" +
         // Pronto → mostra estado verde por 100ms antes de redirecionar (era 600ms)
         "if(d.pronto){" +
@@ -2325,11 +3075,11 @@ var paginaFormPeriodo=function(dHoje){
 //   1) Dialogo nativo Windows (OpenFileDialog via PowerShell — botao Procurar)
 //   2) Campo de texto (colar o caminho manualmente)
 // ---------------------------------------------------------------------------
-var paginaEscolherFdb = function(erroAnterior) {
+// CLEAN FIX: parâmetro erroAnterior removido — a função era chamada sempre sem argumento.
+// O campo de erro (#err) começa oculto e é exibido via JS quando o fetch de /api/salvar-fdb falha.
+var paginaEscolherFdb = function() {
     var SC4 = "</" + "script>";
-    var msgErro = erroAnterior
-        ? "<div id=\"err\" style=\"display:block;color:#f87171;font-size:13px;margin-bottom:16px;padding:10px 14px;background:rgba(248,113,113,.1);border-radius:8px\">"+escH(erroAnterior)+"</div>"
-        : "<div id=\"err\" style=\"display:none\"></div>";
+    var msgErro = "<div id=\"err\" style=\"display:none\"></div>";
 
     return "<!doctype html><html lang=\"pt-br\"><head><meta charset=\"utf-8\">" + htmlFavicon +
         "<title>Selecionar Banco de Dados</title>" +
@@ -2461,6 +3211,15 @@ var paginaEscolherFdb = function(erroAnterior) {
 // Retorna { ok, caminho } | { ok:false, erro } | { cancelado:true }.
 // ---------------------------------------------------------------------------
 var abrirPickerFdbWindows = function(cb) {
+    // ROBUSTEZ FIX (v2.4.1): o diálogo só existe no Windows (System.Windows.Forms).
+    // Em qualquer outra plataforma o powershell.exe simplesmente não existe e o
+    // spawn cairia no proc.on("error") — mas é mais claro e mais rápido recusar
+    // antes de tentar.
+    if (process.platform !== "win32") {
+        cb({ ok: false, erro: "Seletor de arquivos nativo disponível apenas no Windows." });
+        return;
+    }
+
     // Escapa aspas simples para PowerShell (single-quoted strings: ' → '')
     var psNome  = APP_NAME.replace(/'/g, "''");
     var psIcone = FAVICON.replace(/'/g, "''"); // backslashes são literais em PS single-quoted
@@ -2484,23 +3243,56 @@ var abrirPickerFdbWindows = function(cb) {
         "$f.Close()"
     ].join(" ");
 
-    var resultado = "";
-    var proc = spawn("powershell.exe", [
-        "-NoProfile", "-NonInteractive", "-Command", ps
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    // CRASH FIX (v2.4.1): proc.on("error") e proc.on("close") podiam disparar os
+    // DOIS para o mesmo processo (ex.: ENOENT do powershell.exe emite "error" e,
+    // dependendo da versão do Node, ainda emite "close" com code=null) — cb() era
+    // chamada duas vezes, e a segunda resposta na mesma request HTTP derrubava o
+    // processo inteiro com ERR_HTTP_HEADERS_SENT.
+    var _cbFeito = false;
+    var _chamarCb = function(resultado) {
+        if (_cbFeito) return;
+        _cbFeito = true;
+        clearTimeout(_pkTimer);
+        cb(resultado);
+    };
 
-    proc.stdout.on("data", function(d) { resultado += d.toString(); });
+    var resultado = "";
+    var proc;
+    try {
+        proc = spawn("powershell.exe", [
+            "-NoProfile", "-NonInteractive", "-Command", ps
+        ], { stdio: ["ignore", "pipe", "pipe"] });
+    } catch(spawnErr) {
+        _chamarCb({ ok: false, erro: "Falha ao iniciar o PowerShell: " + (spawnErr && spawnErr.message || spawnErr) });
+        return;
+    }
+
+    // Timeout de segurança: o diálogo fica aberto indefinidamente esperando o
+    // usuário. 5 minutos é generoso o bastante para não incomodar, mas garante
+    // que um PowerShell travado (ex.: pop-up de erro do .NET escondido atrás de
+    // outra janela) não deixe o processo pendurado para sempre — mata o processo
+    // e libera o botão "Procurar" no browser.
+    var _pkTimer = setTimeout(function() {
+        try { proc.kill(); } catch(_) {}
+        if (process.platform === "win32" && proc.pid) {
+            try { childProc.spawn("taskkill", ["/F", "/T", "/PID", String(proc.pid)], {stdio:"ignore"}); } catch(_) {}
+        }
+        _chamarCb({ ok: false, erro: "Seletor de arquivos não respondeu a tempo (5 min)." });
+    }, 5 * 60 * 1000);
+
+    if (proc.stdout) proc.stdout.on("data", function(d) { resultado += d.toString(); });
+    if (proc.stderr) proc.stderr.on("data", function(){}); // drena para não travar o pipe
 
     proc.on("error", function(e) {
-        cb({ ok: false, erro: "PowerShell não disponível: " + e.message });
+        _chamarCb({ ok: false, erro: "PowerShell não disponível: " + e.message });
     });
 
     proc.on("close", function(code) {
         var caminho = resultado.trim().replace(/\r?\n[\s\S]*$/, "").trim();
         if (!caminho || caminho === "__CANCELADO__") {
-            cb({ ok: false, cancelado: true });
+            _chamarCb({ ok: false, cancelado: true });
         } else {
-            cb({ ok: true, caminho: caminho });
+            _chamarCb({ ok: true, caminho: caminho });
         }
     });
 };
@@ -2571,7 +3363,7 @@ var aplicarNovoFdb = function(caminhoBruto, cb) {
                 // pollStatus usa attach/detach por ciclo — rodar em excesso sobrecarrega
                 // o Firebird desnecessariamente. Mínimo 2s independente de POLL_INTERVAL.
                 if (_pollIntervalId) clearInterval(_pollIntervalId);
-                _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * 5, 2000));
+                _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
                 _iniciarFastPoll(); // detecção em tempo real via conexão persistente
             }, 3000);
         }
@@ -2587,8 +3379,19 @@ var server=http.createServer(function(req,res){
     
     if(/^\/(favicon\.(ico|png)|apple-touch-icon\.png)/.test(req.url)){
         if(fs.existsSync(FAVICON)){
-            try{res.writeHead(200,{"Content-Type":"image/png","Cache-Control":"public,max-age=86400"});res.end(fs.readFileSync(FAVICON));}
-            catch(e){res.writeHead(204);res.end();}
+            try{
+                // PERF FIX: favicon em memória — evita readFileSync a cada request.
+                // Cache invalidado quando mtime muda (upload de novo favicon).
+                var _fMtime = 0;
+                try { _fMtime = fs.statSync(FAVICON).mtimeMs; } catch(_sm) {}
+                if (!_FAVICON_CACHE || _fMtime !== _FAVICON_CACHE_MTIME) {
+                    _FAVICON_CACHE = fs.readFileSync(FAVICON);
+                    _FAVICON_CACHE_MTIME = _fMtime;
+                }
+                res.writeHead(200,{"Content-Type":"image/png","Cache-Control":"public,max-age=86400"});
+                res.end(_FAVICON_CACHE);
+            }
+            catch(e){ logTs("WARN favicon read: "+e.message); res.writeHead(204);res.end();}
         }else{res.writeHead(204);res.end();}
         return;
     }
@@ -2597,6 +3400,42 @@ var server=http.createServer(function(req,res){
     try{parsed=new URL(req.url,"http://localhost");}
     catch(_){res.writeHead(400);res.end("URL invalida.");return;}
     var rota=parsed.pathname||"/";
+
+    // LOG DE API (v2.8.0): registra toda chamada a /api/* com origem, para
+    // saber DE QUAL máquina veio cada comando — pedido do usuário e essencial
+    // quando algo é alterado remotamente (proibidos, config, restart) e é
+    // preciso descobrir quem fez.
+    // Fica de fora: /api/status, /api/pronto e /api/events, que são o
+    // batimento normal do relatório (várias chamadas por segundo, por aba) e
+    // afogariam o log — o mesmo erro que a sondagem do fast-poll cometeu.
+    // O nome do computador vem do cabeçalho X-Cliente que o api.ps1 envia;
+    // navegador não envia, então nesses casos registra só o IP.
+    // Rotas de POLLING não entram no log: são chamadas em intervalo fixo pelo
+    // relatório e pelo tray (db-status a cada 10s, hora-usuario a cada 30s,
+    // status/pronto/events várias vezes por segundo). Registrá-las enche o
+    // arquivo de linhas idênticas e empurra o que importa para fora pela
+    // rotação — foi o que aconteceu no log real do usuário.
+    var _ROTAS_SEM_LOG = ["/api/status","/api/pronto","/api/events","/api/db-status","/api/hora-usuario"];
+    if (rota.indexOf("/api/") === 0 && _ROTAS_SEM_LOG.indexOf(rota) === -1) {
+        var _ipOrigem = ((req.socket && req.socket.remoteAddress) || "?").replace(/^::ffff:/, "");
+        // Só registra chamadas vindas de OUTRO computador (v2.8.2). Requisição da
+        // própria máquina é o funcionamento interno normal — o relatório aberto
+        // aqui, o tray, o api.ps1 local — e enchia o log de linhas sem
+        // informação. O valor do registro está em saber quando outra máquina da
+        // rede age sobre este servidor: aí sim importa o que foi feito, quando e
+        // por quem.
+        // "Própria máquina" = loopback (127.x / ::1) ou o IP de rede deste
+        // servidor (_maquinaIP): o SO entrega tráfego auto-endereçado das duas
+        // formas, dependendo de como o cliente montou a URL — o api.ps1, por
+        // exemplo, usa o IP de rede mesmo rodando localmente.
+        var _ehLoopback   = /^127\./.test(_ipOrigem) || _ipOrigem === "::1";
+        var _ehEstaMaquina = _ehLoopback || (_maquinaIP && _ipOrigem === _maquinaIP);
+        if (!_ehEstaMaquina) {
+            var _cliente = String(req.headers["x-cliente"] || "").trim().slice(0, 40);
+            logTs("API: " + req.method + " " + rota + " de " + _ipOrigem +
+                  (_cliente ? " (" + _cliente + ")" : ""));
+        }
+    }
 
     var sendJson = function(obj, code) {
         res.writeHead(code||200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
@@ -2619,8 +3458,14 @@ var server=http.createServer(function(req,res){
 
     // /api/status
     if(rota==="/api/status"){
-        // correcoes: consume-once — entregadas ao browser e limpas em seguida
-        var _corr = _correcoesPendentes.splice(0);
+        // BUG FIX (auditoria v2.5.0): splice(0) era "consume-once" GLOBAL — só a
+        // primeira aba/tela a chamar /api/status via de fato a notificação; as
+        // demais, mesmo conectadas e pollando normalmente, nunca a recebiam
+        // (ver _pushCorrecao acima para o detalhe completo). Agora é uma leitura
+        // NÃO destrutiva por janela de tempo: toda tela que fizer poll dentro de
+        // _CORRECOES_JANELA_MS após o evento recebe a notificação.
+        var _agoraStatus = Date.now();
+        var _corr = _correcoesPendentes.filter(function(c) { return (_agoraStatus - c.ts) < _CORRECOES_JANELA_MS; });
         var _statusPayload = Object.assign({}, statusAtual,
             {changeTs: _statusChangeTs},
             _corr.length ? {correcoes: _corr} : {});
@@ -2630,23 +3475,49 @@ var server=http.createServer(function(req,res){
 
     // /api/restart
     if(rota==="/api/restart"){
+        // SEGURANÇA: /api/restart só aceita requisições do próprio localhost.
+        // Sem isso, qualquer host na rede local pode desligar o servidor.
+        // BUG FIX (usuário reportou 403 usando api.ps1 NA PRÓPRIA máquina do
+        // servidor): a checagem só reconhecia 127.0.0.1/::1 como "local" —
+        // mas api.ps1 monta a URL a partir do IP de rede da máquina
+        // (maquinaIP, ex: 192.168.1.33), não de localhost, mesmo quando
+        // roda no mesmo computador. O SO frequentemente entrega esse
+        // tráfego "auto-endereçado" com o IP de rede como remoteAddress em
+        // vez de 127.0.0.1, fazendo a própria máquina do servidor ser
+        // barrada como se fosse outro computador da rede. Corrigido para
+        // também aceitar quando o IP de origem é EXATAMENTE o IP que este
+        // servidor já reconhece como o seu próprio (_maquinaIP) — isso
+        // continua bloqueando qualquer OUTRA máquina da rede (cujo IP de
+        // origem seria o dela mesma, nunca igual a _maquinaIP), preservando
+        // a intenção original de segurança.
+        // ESCOPO (v2.7.8): passou a aceitar também a REDE LOCAL, além de
+        // localhost e da própria máquina do servidor. Motivo: reiniciar o
+        // servidor pelo api.ps1 a partir de outro PC da loja é justamente o
+        // uso previsto da ferramenta — e era bloqueado com 403, sem alternativa
+        // prática (o restart pela própria máquina exige ir até ela). Todo o
+        // resto do sistema (relatório, /api/config, proibidos, upload de
+        // favicon) já é aberto à rede local por design; manter só o restart
+        // fechado protegia pouco e atrapalhava muito.
+        // Endereços FORA da rede local continuam bloqueados: nenhuma máquina
+        // de outra rede consegue derrubar o servidor.
+        var _remoteIp = (req.socket && req.socket.remoteAddress) || "";
+        var _remoteIpLimpo = _remoteIp.replace(/^::ffff:/, ""); // normaliza IPv4-mapeado-em-IPv6
+        var _ehRedeLocal = /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(_remoteIpLimpo)
+            || _remoteIp === "::1";
+        if (!_ehRedeLocal && _maquinaIP && BIND_ADDR === "0.0.0.0") {
+            res.writeHead(403, {"Content-Type":"application/json; charset=utf-8"});
+            res.end(JSON.stringify({ok:false,erro:"Acesso negado — restart disponível apenas a partir da rede local."}));
+            return;
+        }
         logTs("Reinicialização solicitada via API ("
             + (req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "local")
             + "). Encerrando em 1s...");
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
         res.end(JSON.stringify({ok:true,msg:"Servidor encerrando. O tray reiniciará em ~10s."}));
         setTimeout(function(){
-            // Mata todos os processos filhos (gerar-relatorio-html.js) pendentes
-            for (var _ri = 0; _ri < _spawnedPids.length; _ri++) {
-                try {
-                    if (process.platform === "win32") {
-                        require("child_process").spawn("taskkill",["/F","/PID",String(_spawnedPids[_ri])],{stdio:"ignore"});
-                    } else {
-                        process.kill(_spawnedPids[_ri]);
-                    }
-                } catch(_) {}
-            }
-            _spawnedPids = [];
+            // BUG FIX: usava loop inline sem /T (kill tree) no Windows, diferente de
+            // _matarTodosFilhos que usa /F /T. Agora reutiliza a função centralizada.
+            _matarTodosFilhos();
             setTimeout(function(){ process.exit(0); }, 400);
         }, 1000);
         return;
@@ -2660,9 +3531,11 @@ var server=http.createServer(function(req,res){
 
     // /api/proibidos GET
     if(rota==="/api/proibidos" && req.method === "GET"){
-        var cp = loadConfig();
+        // PERF FIX: usa _config em memória — /api/proibidos é chamado pelo poll do browser
+        // a cada POLL_INTERVAL; loadConfig() a cada request causava readFileSync excessivo.
+        // _config é atualizado via /api/config POST quando o usuário salva configurações.
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-cache,no-store"});
-        res.end(JSON.stringify({proibidos: cp.proibidos || []}));
+        res.end(JSON.stringify({proibidos: _config.proibidos || []}));
         return;
     }
 
@@ -2689,87 +3562,144 @@ var server=http.createServer(function(req,res){
             return;
         }
 
-        var _idOpts = {host:FDB_HOST,port:3050,database:FDB_PATH,user:USER,password:PASS,
-                       role:null,charset:"UTF8",pageSize:4096};
-        var _idEncerrado = false;
+        var _idOpts = {host:FDB_HOST,port:FIREBIRD_PORT,database:FDB_PATH,user:USER,password:PASS,
+                       role:null,charset:FB_CHARSET};
+
+        // CRASH FIX (v2.4.1): antes existia apenas _idEncerrado, usado ao mesmo tempo
+        // como "já respondi" e como "já fechei a conexão". Quando o timeout de 8 s
+        // disparava, ele respondia 504 e marcava _idEncerrado=true; a callback tardia
+        // da query então chamava _idFechar() (que retornava sem fazer nada, vazando a
+        // conexão) e seguia para res.writeHead(200/500) — segunda resposta na mesma
+        // request → ERR_HTTP_HEADERS_SENT → uncaughtException no processo inteiro.
+        // Agora são dois estados independentes e uma referência externa da conexão.
+        var _idRespondido = false;   // resposta HTTP já enviada
+        var _idFechado    = false;   // conexão Firebird já encerrada
+        var _idDbRef      = null;    // referência acessível pelo timeout
+
+        var _idFechar = function(){
+            if (_idFechado) return;
+            _idFechado = true;
+            clearTimeout(_idTimer);
+            if (_idDbRef) { try { _idDbRef.detach(); } catch(_) { try { _matarConexao(_idDbRef); } catch(__) {} } }
+            _idDbRef = null;
+        };
+        var _idResponder = function(code, payload){
+            if (_idRespondido || res.headersSent) return;
+            _idRespondido = true;
+            try {
+                res.writeHead(code,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-cache,no-store"});
+                res.end(JSON.stringify(payload));
+            } catch(e) { logTs("WARN /api/itens-detalhe resposta: "+e.message); }
+        };
+
         var _idTimer = setTimeout(function(){
-            if (_idEncerrado) return;
-            _idEncerrado = true;
-            res.writeHead(504,{"Content-Type":"application/json; charset=utf-8"});
-            res.end(JSON.stringify({ok:false,erro:"Timeout ao consultar itens.",itens:[]}));
+            _idResponder(504, {ok:false,erro:"Timeout ao consultar itens.",itens:[]});
+            _idFechar(); // fecha a conexão que ficou pendurada — antes vazava
         }, 8000);
 
+        // Se o cliente abandonar a request, encerra a conexão sem tentar responder.
+        req.on("close", function(){ _idRespondido = true; _idFechar(); });
+
         Firebird.attach(_idOpts, function(errConn, idDb){
-            if (_idEncerrado) { if (idDb) try{idDb.detach();}catch(_){} return; }
+            if (_idFechado || _idRespondido) { if (idDb) { try{idDb.detach();}catch(_){} } return; }
             if (errConn || !idDb) {
-                clearTimeout(_idTimer); _idEncerrado = true;
-                res.writeHead(503,{"Content-Type":"application/json; charset=utf-8"});
-                res.end(JSON.stringify({ok:false,erro:"Falha ao conectar ao banco.",itens:[]}));
+                _idFechar();
+                _idResponder(503, {ok:false,erro:"Falha ao conectar ao banco.",itens:[]});
                 return;
             }
+            _idDbRef = idDb;
 
-            var _idFechar = function(){ if(_idEncerrado)return; _idEncerrado=true; clearTimeout(_idTimer); try{idDb.detach();}catch(_){} };
-
-            // Detecta colunas disponíveis no ALTERACA para este ambiente
-            idDb.query("SELECT FIRST 1 TOTAL FROM ALTERACA WHERE 1=2", [], function(errTotal){
-                var _temTotal = !errTotal;
-                idDb.query("SELECT FIRST 1 PRECO FROM ALTERACA WHERE 1=2", [], function(errPreco){
-                    var _temPreco = !errPreco;
-                    var _colTotal = _temTotal
-                        ? "cast(TOTAL as double precision)"
-                        : (_temPreco ? "cast(PRECO as double precision) * cast(coalesce(QUANTIDADE,1) as double precision)" : "cast(null as double precision)");
-
-                    // Normaliza o pedido: tenta com zeros e sem zeros para cobrir ambos os formatos
-                    var _pedidos = [_idChave];
-                    var _stripped = _idChave.replace(/^0+/, "") || _idChave;
-                    if (_stripped !== _idChave) _pedidos.push(_stripped);
-                    var _ph = _pedidos.map(function(){ return "?"; }).join(",");
-
-                    var _sqlAlt =
-                        "SELECT cast(DESCRICAO as varchar(120)) as DESC_A," +
-                        "       cast(coalesce(QUANTIDADE,1) as double precision) as QTD_A," +
-                        "       " + _colTotal + " as TOT_A " +
-                        "FROM ALTERACA " +
-                        "WHERE DATA >= cast(? as date) AND DATA < cast(? as date) + 1 " +
-                        "  AND cast(PEDIDO as varchar(60)) IN (" + _ph + ") " +
-                        "ORDER BY ITEM";
-
-                    idDb.query(_sqlAlt, [_idData, _idData].concat(_pedidos), function(errQ, rows){
-                        if (errQ || !rows) {
-                            _idFechar();
-                            res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"});
-                            res.end(JSON.stringify({ok:false,erro:"Erro na consulta: "+(errQ&&errQ.message||"desconhecido"),itens:[]}));
-                            return;
-                        }
-
-                        var _decoder = new (require("util").TextDecoder)("windows-1252");
-                        var _fmtQ = function(v){ var n=Number(v||0); if(!Number.isFinite(n))return"0"; var r=Math.round(n); if(Math.abs(n-r)<1e-9)return String(r); return String(n).replace(".",","); };
-
-                        var itens = [];
-                        for (var ri = 0; ri < rows.length; ri++) {
-                            var row = rows[ri];
-                            // Decodifica campos Buffer que possam vir como Windows-1252
-                            for (var k in row) {
-                                if (Buffer.isBuffer(row[k])) row[k] = _decoder.decode(row[k]);
-                            }
-                            var desc   = String(row.DESC_A || row.desc_a || "").trim();
-                            if (!desc) continue;
-                            var isCancelado = /cancelad/i.test(desc) || desc === "<CANCELADO>";
-                            if (isCancelado) continue;
-                            var qtd    = _fmtQ(row.QTD_A || row.qtd_a || 1);
-                            var totVal = (row.TOT_A !== null && row.TOT_A !== undefined) ? Number(row.TOT_A || row.tot_a || null) : null;
-                            itens.push({
-                                desc: desc,
-                                qtd: qtd,
-                                total: (totVal !== null && Number.isFinite(totVal)) ? totVal : null,
-                                cancelado: false
-                            });
-                        }
-
-                        _idFechar();
-                        res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-cache,no-store"});
-                        res.end(JSON.stringify({ok:true, itens:itens}));
+            // DADO ERRADO FIX (v2.4.1): o probe anterior era
+            //   SELECT FIRST 1 TOTAL, PRECO FROM ALTERACA WHERE 1=2
+            // "WHERE 1=2" nunca retorna linhas, então probeRows era [] e
+            // `"TOTAL" in rows[0]` avaliava sobre um objeto vazio → SEMPRE false.
+            // Resultado: _colTotal caía sempre em "cast(null as double precision)"
+            // e TODO item do modal de detalhes vinha com total = null.
+            // (A premissa do comentário antigo também estava errada: o Firebird
+            //  aborta a instrução inteira ao encontrar coluna inexistente, não
+            //  devolve o campo como null.)
+            // Correção: ler o catálogo do sistema — determinístico, 1 query, sem
+            // depender de existir linha na tabela.
+            idDb.query(
+                "SELECT TRIM(RDB$FIELD_NAME) AS COLUNA FROM RDB$RELATION_FIELDS " +
+                "WHERE TRIM(RDB$RELATION_NAME) = 'ALTERACA'",
+                [],
+                function(errProbe, probeRows){
+                var _cols = {};
+                if (!errProbe && Array.isArray(probeRows)) {
+                    probeRows.forEach(function(pr){
+                        if (!pr) return;
+                        var nome = pr.COLUNA || pr.coluna;
+                        if (Buffer.isBuffer(nome)) { try { nome = _win1252Decoder.decode(nome); } catch(_) { nome = ""; } }
+                        nome = String(nome || "").trim().toUpperCase();
+                        if (nome) _cols[nome] = true;
                     });
+                }
+                var _temTotal = !!_cols.TOTAL;
+                var _temPreco = !!_cols.PRECO;
+                var _temQtd   = !!_cols.QUANTIDADE;
+                var _colQtd   = _temQtd ? "coalesce(QUANTIDADE,1)" : "1";
+                var _colTotal = _temTotal
+                    ? "cast(TOTAL as double precision)"
+                    : (_temPreco ? "cast(PRECO as double precision) * cast(" + _colQtd + " as double precision)" : "cast(null as double precision)");
+                if (errProbe) {
+                    logTs("WARN /api/itens-detalhe: falha ao ler colunas de ALTERACA (" + errProbe.message + ") — total virá nulo.");
+                }
+
+                // Normaliza o pedido: tenta com zeros e sem zeros para cobrir ambos os formatos
+                var _pedidos = [_idChave];
+                var _stripped = _idChave.replace(/^0+/, "") || _idChave;
+                if (_stripped !== _idChave) _pedidos.push(_stripped);
+                var _ph = _pedidos.map(function(){ return "?"; }).join(",");
+
+                // ROBUSTEZ: QUANTIDADE e ITEM só entram na SQL se existirem no
+                // catálogo — em bases antigas do Small Commerce a ausência de uma
+                // delas fazia a query inteira falhar com "column unknown".
+                var _sqlAlt =
+                    "SELECT cast(DESCRICAO as varchar(120)) as DESC_A," +
+                    "       cast(" + _colQtd + " as double precision) as QTD_A," +
+                    "       " + _colTotal + " as TOT_A " +
+                    "FROM ALTERACA " +
+                    "WHERE DATA >= cast(? as date) AND DATA < cast(? as date) + 1 " +
+                    "  AND cast(PEDIDO as varchar(60)) IN (" + _ph + ") " +
+                    (_cols.ITEM ? "ORDER BY ITEM" : "");
+
+                idDb.query(_sqlAlt, [_idData, _idData].concat(_pedidos), function(errQ, rows){
+                    // O cliente pode ter desconectado ou o timeout de 8s já pode ter
+                    // respondido enquanto esta query rodava — não processa nem responde de novo.
+                    if (_idRespondido) { _idFechar(); return; }
+
+                    if (errQ || !rows) {
+                        _idFechar();
+                        _idResponder(500, {ok:false,erro:"Erro na consulta: "+(errQ&&errQ.message||"desconhecido"),itens:[]});
+                        return;
+                    }
+
+                    // _win1252Decoder e _fmtQuantidade são constantes de módulo (topo do arquivo).
+                    // Evitam recriar TextDecoder e a função de formatação a cada request.
+                    var itens = [];
+                    for (var ri = 0; ri < rows.length; ri++) {
+                        var row = rows[ri];
+                        // Decodifica campos Buffer que possam vir como Windows-1252
+                        for (var k in row) {
+                            if (Buffer.isBuffer(row[k])) row[k] = _win1252Decoder.decode(row[k]);
+                        }
+                        var desc = String(row.DESC_A || row.desc_a || "").trim();
+                        if (!desc) continue;
+                        var isCancelado = /cancelad/i.test(desc) || desc === "<CANCELADO>";
+                        if (isCancelado) continue;
+                        var qtd    = _fmtQuantidade(row.QTD_A || row.qtd_a || 1);
+                        var totVal = (row.TOT_A !== null && row.TOT_A !== undefined) ? Number(row.TOT_A || row.tot_a || null) : null;
+                        itens.push({
+                            desc: desc,
+                            qtd: qtd,
+                            total: (totVal !== null && Number.isFinite(totVal)) ? totVal : null,
+                            cancelado: false
+                        });
+                    }
+
+                    _idFechar();
+                    _idResponder(200, {ok:true, itens:itens});
                 });
             });
         });
@@ -2782,31 +3712,46 @@ var server=http.createServer(function(req,res){
             if (err) { res.writeHead(413, {"Content-Type":"application/json; charset=utf-8"}); res.end(JSON.stringify({ok:false,erro:err.message})); return; }
             try {
                 var payload = JSON.parse(body);
-                updateConfigKey("proibidos", payload);
-                appCfg.proibidos = payload;
+                // VALIDAÇÃO FIX: aceita apenas arrays de strings — evita salvar tipos inválidos
+                // como [1, {}, null] que poderiam corromper config.json ou crashar o filtro de relatório.
+                if (!Array.isArray(payload)) {
+                    res.writeHead(400,{"Content-Type":"application/json; charset=utf-8"});
+                    res.end(JSON.stringify({ok:false,erro:"Payload deve ser um array de strings."}));
+                    return;
+                }
+                var proibidosLimpos = payload
+                    .filter(function(i){ return typeof i === "string"; })
+                    .map(function(s){ return s.trim(); })
+                    .filter(function(s){ return s.length > 0; });
+                updateConfigKey("proibidos", proibidosLimpos);
+                appCfg.proibidos = proibidosLimpos;
+                _config.proibidos = proibidosLimpos;
                 cache = Object.create(null);
                 var dh = hoje();
                 gerarEmBackground(dh, dh, dh);
                 res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
                 res.end(JSON.stringify({ok:true}));
             } catch(e) {
-                res.writeHead(400); res.end();
+                // CATCH FIX: catch silencioso → log + resposta estruturada de erro
+                logTs("ERRO /api/proibidos POST: "+e.message);
+                res.writeHead(400,{"Content-Type":"application/json; charset=utf-8"});
+                res.end(JSON.stringify({ok:false,erro:e.message}));
             }
         });
         return;
     }
 
-    // /api/config GET
+    // /api/config GET — usa _config em memória (sem readFileSync por request)
     if(rota==="/api/config" && req.method==="GET"){
-        var cc = loadConfig();
         sendJson({
-            appName:        cc.appName        || "",
-            pollInterval:   cc.pollInterval   || 200,
-            maxLogLines:    cc.maxLogLines     || 1000,
-            favicon:        cc.favicon         || "",
-            toastDuration:  cc.toastDuration   || 4000,
-            spawnTimeoutMs: _SPAWN_TIMEOUT_MS, // valor ativo (já clampeado 5000–120000)
-            proibidos:      Array.isArray(cc.proibidos) ? cc.proibidos : []
+            appName:               _config.appName              || "",
+            pollInterval:          _config.pollInterval         || 200,
+            maxLogLines:           _config.maxLogLines          || 1000,
+            favicon:               _config.favicon              || "",
+            toastDuration:         _config.toastDuration        || 5000, // CONTRATO FIX: padrão unificado com filho (era 4000)
+            spawnTimeoutMs:        _SPAWN_TIMEOUT_MS,
+            proibidos:             Array.isArray(_config.proibidos) ? _config.proibidos : [],
+            teclasPersonalizadas:  Array.isArray(_config.teclasPersonalizadas) ? _config.teclasPersonalizadas : []
         });
         return;
     }
@@ -2826,18 +3771,96 @@ var server=http.createServer(function(req,res){
                 if(p.appName       !== undefined){ var n=String(p.appName||"").trim();    if(n) obj.appName=n; }
                 if(p.pollInterval  !== undefined){ var pi=parseInt(p.pollInterval,10);    if(pi>=200) obj.pollInterval=pi; }
                 if(p.maxLogLines   !== undefined){ var ml=parseInt(p.maxLogLines,10);     if(ml>=100) obj.maxLogLines=ml; }
-                if(p.favicon       !== undefined){ obj.favicon=String(p.favicon||"").trim(); }
+                if(p.favicon       !== undefined){
+                    // SEGURANÇA FIX (v2.5.0): ver _faviconCaminhoSeguro — rejeita caminhos
+                    // fora da pasta do app e caminhos UNC, em vez de aceitar qualquer string.
+                    var _favChk = _faviconCaminhoSeguro(p.favicon);
+                    if (!_favChk.ok) {
+                        res.writeHead(400,{"Content-Type":"application/json; charset=utf-8"});
+                        res.end(JSON.stringify({ok:false,erro:"Favicon inválido: " + _favChk.motivo}));
+                        return;
+                    }
+                    obj.favicon = _favChk.valor;
+                }
                 if(p.toastDuration !== undefined){ var td=parseInt(p.toastDuration,10);   if(td>=500&&td<=60000) obj.toastDuration=td; }
-                if(p.proibidos     !== undefined && Array.isArray(p.proibidos)){ obj.proibidos=p.proibidos; }
+                if(p.proibidos            !== undefined && Array.isArray(p.proibidos)){ obj.proibidos=p.proibidos; }
+                if(p.teclasPersonalizadas !== undefined && Array.isArray(p.teclasPersonalizadas)){
+                    obj.teclasPersonalizadas = p.teclasPersonalizadas.filter(function(t){
+                        return t && typeof t.tecla === "string" && typeof t.comando === "string";
+                    });
+                }
 
-                fs.writeFileSync(CONFIG,JSON.stringify(obj,null,2),"utf8");
+                // PRECISÃO FIX (v2.6.7): gravação atômica do config.json. Este
+                // arquivo já era gravado direto (writeFileSync no destino),
+                // enquanto o hora-fixada-cache.json — MUITO menos crítico — já
+                // usava _gravarArquivoAtomico neste mesmo arquivo. A assimetria
+                // era perigosa porque o tray encerra este processo com
+                // "taskkill /F /T" (kill imediato, sem chance de terminar a
+                // escrita) sempre que o usuário clica em "Reiniciar servidor" ou
+                // o watchdog detecta travamento. Um kill no meio do writeFileSync
+                // deixava config.json truncado — e como loadConfig() descarta JSON
+                // inválido e volta aos padrões, a loja perderia de uma vez
+                // appName, porta, lista de proibidos e, o pior de tudo, fdbPath:
+                // sem ele o servidor não acha o banco e o relatório para de
+                // funcionar até alguém reconfigurar na mão.
+                if (!_gravarArquivoAtomico(CONFIG, JSON.stringify(obj,null,2))) {
+                    logTs("ERRO /api/config: falha ao gravar config.json em disco.");
+                    res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"});
+                    res.end(JSON.stringify({ok:false,erro:"Falha ao gravar config.json em disco."}));
+                    return;
+                }
 
-                var novosCfg=loadConfig();
-                APP_NAME=(novosCfg.appName&&novosCfg.appName.trim())?novosCfg.appName.trim():"Relatorios";
-                if(novosCfg.pollInterval&&parseInt(novosCfg.pollInterval,10)>0) POLL_INTERVAL=parseInt(novosCfg.pollInterval,10);
-                if(novosCfg.maxLogLines&&parseInt(novosCfg.maxLogLines,10)>=100){ MAX_LOG_LINES=parseInt(novosCfg.maxLogLines,10); if(_logBuffer.length>MAX_LOG_LINES)_logBuffer=_logBuffer.slice(-MAX_LOG_LINES); }
-                if(novosCfg.favicon&&novosCfg.favicon.trim()) FAVICON=novosCfg.favicon.trim();
-                if(novosCfg.toastDuration&&parseInt(novosCfg.toastDuration,10)>=500) TOAST_DURATION=parseInt(novosCfg.toastDuration,10);
+                // CONFIG RELOAD FIX: não relê o arquivo que acabou de escrever.
+                // Usa diretamente o objeto 'obj' já construído em memória — uma única operação.
+                if(obj.appName&&obj.appName.trim()) APP_NAME=obj.appName.trim();
+                if(obj.pollInterval&&parseInt(obj.pollInterval,10)>0){
+                    POLL_INTERVAL=parseInt(obj.pollInterval,10);
+                    // PRECISÃO FIX (v2.6.5): a janela de entrega das notificações de
+                    // correção de hora é derivada do POLL_INTERVAL — sem recalcular
+                    // aqui, alterar o intervalo na tela de configurações deixava a
+                    // janela com o valor ANTIGO até o servidor reiniciar, e um
+                    // intervalo novo maior que a janela antiga faria os toasts serem
+                    // perdidos silenciosamente. Mantido em sincronia com a fórmula
+                    // usada na inicialização (procure por "_CORRECOES_JANELA_MS").
+                    _CORRECOES_JANELA_MS = Math.max(3000, POLL_INTERVAL * 3);
+                    _CORRECOES_TTL_MS    = _CORRECOES_JANELA_MS + 5000;
+                    // BUG FIX (v2.4.1): o setInterval de pollStatus é criado uma única
+                    // vez no boot com o valor original de POLL_INTERVAL×POLL_RETRY_MULTIPLIER.
+                    // Sem recriá-lo aqui, alterar o intervalo de polling na tela de
+                    // configurações não tinha efeito nenhum até o servidor reiniciar —
+                    // o campo "salvava" mas o comportamento real não mudava.
+                    if (Firebird && dbStatus.ok) {
+                        if (_pollIntervalId) clearInterval(_pollIntervalId);
+                        _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
+                    }
+                }
+                if(obj.maxLogLines&&parseInt(obj.maxLogLines,10)>=100){
+                    MAX_LOG_LINES=parseInt(obj.maxLogLines,10);
+                    if(_logBuffer.length>MAX_LOG_LINES) _logBuffer.splice(0, _logBuffer.length - MAX_LOG_LINES);
+                    // PRECISÃO FIX (v2.6.5): com o logger append-only (v2.6.2), podar
+                    // apenas o buffer em memória não encolhe mais o ARQUIVO — ele só
+                    // seria cortado na próxima rotação natural, que pode demorar
+                    // MAX_LOG_LINES linhas. Quem acabou de REDUZIR o limite espera
+                    // ver efeito agora, não daqui a milhares de linhas. Força a
+                    // rotação imediata zerando o contador (a própria função relê o
+                    // arquivo do disco e grava de forma atômica).
+                    _logLinhasDesdeRotacao = MAX_LOG_LINES;
+                    _rotacionarLogSeNecessario();
+                }
+                if(p.favicon !== undefined){
+                    // BUG FIX (v2.5.0): antes, só um valor NÃO-VAZIO atualizava FAVICON —
+                    // limpar o campo (voltar ao padrão, exatamente como a própria tela de
+                    // configurações promete: "vazio para padrão") não tinha efeito nenhum
+                    // em memória (o config.json salvava vazio, mas o ícone servido
+                    // continuava sendo o customizado anterior até reiniciar o servidor).
+                    // obj.favicon já foi validado acima por _faviconCaminhoSeguro.
+                    FAVICON = obj.favicon ? obj.favicon : path.join(__dirname, "favicon.png");
+                    _FAVICON_CACHE = null; // invalida o cache em memória do favicon servido
+                }
+                if(obj.toastDuration&&parseInt(obj.toastDuration,10)>=500) TOAST_DURATION=parseInt(obj.toastDuration,10);
+
+                // Sincroniza _config em memória com o objeto já processado (sem novo readFileSync).
+                try { Object.assign(_config, obj); appCfg = _config; cfg = _config; } catch(_sc) {}
 
                 cache=Object.create(null);
                 var dh=hoje(); gerarEmBackground(dh,dh,dh);
@@ -2858,11 +3881,12 @@ var server=http.createServer(function(req,res){
     if(rota==="/config"){
         var SC3="</"+"script>";
         var cfgHtml=(function(){
-            var cc=loadConfig();
+            // Usa _config em memória — sem readFileSync por request de página
+            var cc=_config;
             var _pn=escH(APP_NAME);
             var _pi=parseInt(cc.pollInterval||POLL_INTERVAL,10);
             var _ml=parseInt(cc.maxLogLines||MAX_LOG_LINES,10);
-            var _td=parseInt(cc.toastDuration||TOAST_DURATION,10);
+            var _td=parseInt(cc.toastDuration||TOAST_DURATION||5000,10);
             var _fv=escH(cc.favicon||"");
             var _pr=JSON.stringify(Array.isArray(cc.proibidos)?cc.proibidos:[]);
             return "<!doctype html><html lang=\"pt-br\"><head><meta charset=\"utf-8\">"+htmlFavicon+"<title>Configuracoes</title>"+
@@ -2982,6 +4006,19 @@ var server=http.createServer(function(req,res){
             if (!err) {
                 try{
                     var e=JSON.parse(errBody);
+                    // RUÍDO FIX (v2.7.2): descarta erros originados de EXTENSÕES DO
+                    // NAVEGADOR. O filtro principal fica no cliente
+                    // (gerar-relatorio-html.js v2.6.7), mas esta segunda camada é
+                    // necessária porque abas já abertas continuam rodando o HTML
+                    // ANTIGO, sem o filtro, até serem recarregadas — e um relatório
+                    // costuma ficar aberto o dia inteiro numa tela de loja. Caso
+                    // real: uma extensão do Chrome falhando ~1x/s gerou 92% de todo
+                    // o relatorio.log (1360 de 1478 linhas), empurrando para fora a
+                    // informação de diagnóstico útil pela rotação do arquivo.
+                    var _stackTxt = String(e.stack||"") + " " + String(e.src||"");
+                    if(/(?:chrome|moz|safari|ms-browser)-extension:\/\//i.test(_stackTxt)){
+                        res.writeHead(204);res.end();return;
+                    }
                     logTs("[BROWSER-ERROR] "+String(e.msg||"")+(e.src?" | "+e.src:"")+(e.line?" L"+e.line:"")+(e.col?":"+e.col:"")+(e.stack?"\n"+e.stack:""));
                 }catch(_){}
             }
@@ -3004,10 +4041,9 @@ var server=http.createServer(function(req,res){
                     if(mudou){
                         var h = Math.abs(Math.round(tzMs/3600000));
                         var sinal = tzMs >= 0 ? "-" : "+";
-                        logTs("Fuso do usuário sincronizado: UTC"+sinal+h+"h (tzOffsetMs="+tzMs+").");
+                        logDebug("Fuso do usuário sincronizado: UTC"+sinal+h+"h (tzOffsetMs="+tzMs+").");
                     }
                     _clientTzOffsetMs = tzMs;
-                    _ultimaSincHoraUsuario = Date.now();
                 }
                 res.writeHead(204);res.end();
             }catch(e){
@@ -3089,19 +4125,35 @@ var server=http.createServer(function(req,res){
         res.write("data: "+JSON.stringify({type:"connected",id:clientId})+"\n\n");
         try{if(res.socket){res.socket.setNoDelay(true);}}catch(_){}
 
-        var clientObj = {res:res, id:clientId};
+        var clientObj = {res:res, id:clientId, hb:null};
         sseClients.push(clientObj);
-        /*logTs("SSE id="+clientId+" conectado. Total="+sseClients.length);*/
+
+        // PRECISÃO FIX (v2.6.6): o heartbeat detectava o socket morto e limpava
+        // o próprio timer, mas NÃO removia o cliente de sseClients — dependia de
+        // broadcastSSE varrer a lista ou do evento "close" disparar. Numa loja
+        // parada (sem vendas novas, logo sem broadcast) e com um socket que
+        // morreu sem emitir "close" (queda de rede, notebook suspenso, aba
+        // congelada), a entrada ficava na lista indefinidamente: contagem errada
+        // em /api/sse-clients e a referência ao res segurada na memória para
+        // sempre. Agora o próprio heartbeat também se desregistra.
+        var _encerrarSse = function(){
+            clearInterval(clientObj.hb);
+            sseClients = sseClients.filter(function(c){return c.id!==clientId;});
+        };
 
         var hb = setInterval(function(){
-            try{res.write(": ping\n\n");}catch(e){clearInterval(hb);}
-        }, 15000);
+            try{
+                if (res.destroyed || res.writable === false) { _encerrarSse(); return; }
+                res.write(": ping\n\n");
+            }catch(e){ _encerrarSse(); }
+        }, TIMEOUT_SSE_HEARTBEAT_MS);
+        // Guarda o timer no objeto para que broadcastSSE consiga limpá-lo ao
+        // descartar um cliente morto (ver LEAK FIX em broadcastSSE).
+        clientObj.hb = hb;
 
-        req.on("close",function(){
-            clearInterval(hb);
-            sseClients = sseClients.filter(function(c){return c.id!==clientId;});
-            /*logTs("SSE id="+clientId+" desconectado. Total="+sseClients.length);*/
-        });
+        req.on("close", _encerrarSse);
+        req.on("error", _encerrarSse);
+        res.on("error", _encerrarSse);
         return;
     }
 
@@ -3172,8 +4224,29 @@ var server=http.createServer(function(req,res){
                     return;
                 }
                 var favDest=path.join(__dirname,"favicon.png");
-                fs.writeFileSync(favDest,buf);
+                // PRECISÃO FIX (v2.6.7): gravação atômica também aqui. Não dá para
+                // reusar _gravarArquivoAtomico: ele grava string em UTF-8 e isso
+                // corromperia os bytes da imagem — favicon é binário (Buffer), então
+                // a versão atômica precisa ser feita à parte, sem encoding.
+                // Um favicon truncado não é só cosmético: iniciar-tray.ps1 carrega
+                // esse arquivo com Bitmap::FromFile para montar o ícone da bandeja,
+                // e um PNG pela metade faz esse carregamento falhar — a loja fica
+                // sem o ícone de acesso ao sistema.
+                var _favTmp = favDest + ".tmp" + process.pid;
+                try {
+                    fs.writeFileSync(_favTmp, buf);
+                    fs.renameSync(_favTmp, favDest);
+                } catch(_eFav) {
+                    // Fallback: destino pode estar travado (antivírus/indexador do
+                    // Windows, ou o próprio tray com o arquivo aberto). Melhor gravar
+                    // de forma não-atômica que não gravar.
+                    try { if (fs.existsSync(_favTmp)) fs.unlinkSync(_favTmp); } catch(_) {}
+                    fs.writeFileSync(favDest, buf);
+                }
                 FAVICON=favDest;
+                // Invalida cache em memória para que próximo request leia o novo arquivo
+                _FAVICON_CACHE = null;
+                _FAVICON_CACHE_MTIME = 0;
                 logTs("Favicon atualizado via modal ("+buf.length+" bytes).");
                 res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
                 res.end(JSON.stringify({ok:true}));
@@ -3198,14 +4271,20 @@ var server=http.createServer(function(req,res){
         }
         var dh=hoje(),ent=cache[dh];
         if(!ent){gerarEmBackground(dh,dh,dh);ent=cache[dh];}
+        // ROBUSTEZ FIX (v2.4.1): gerarEmBackground é síncrono até o spawn/callback
+        // ser agendado, então ent deveria sempre existir aqui — mas se algum erro
+        // inesperado escapou sem popular o cache, exibir undefined.html quebrava
+        // a página sem nenhuma mensagem. Trata como erro recuperável.
+        if(!ent){res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaLoading("Gerando relatorio de hoje...",isoParaBR(dh),dh,"/"));return;}
         if(ent.gerando||ent.matando){res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaLoading("Gerando relatorio de hoje...",isoParaBR(dh),dh,"/"));return;}
         if(ent.erro){var em=ent.erro;delete cache[dh];res.writeHead(500,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaErro("Erro ao gerar relatorio de "+isoParaBR(dh),em,"/"));return;}
+        if(!ent.html){delete cache[dh];res.writeHead(500,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaErro("Erro ao gerar relatorio de "+isoParaBR(dh),"Conteúdo não disponível — tente novamente.","/"));return;}
         res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(ent.html);return;
     }
 
     // /atualizar
     if(rota==="/atualizar"){
-        logTs("Atualizando "+isoParaBR(hoje())+"...");
+        logDebug("Atualizando "+isoParaBR(hoje())+"...");
         var _dhAtual = hoje();
         delete cache[_dhAtual];
         _gerarTentativas[_dhAtual] = 0; // reseta contador para a nova geração começar limpa
@@ -3242,8 +4321,10 @@ var server=http.createServer(function(req,res){
         var urlDest="/periodo?i="+encodeURIComponent(inicio)+"&f="+encodeURIComponent(fim);
         var ep=cache[chave];
         if(!ep){gerarEmBackground(inicio,fim,chave);ep=cache[chave];}
+        if(!ep){res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaLoading("Gerando relatorio...",label,chave,urlDest));return;}
         if(ep.gerando||ep.matando){res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaLoading("Gerando relatorio...",label,chave,urlDest));return;}
         if(ep.erro){var em2=ep.erro;delete cache[chave];res.writeHead(500,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaErro("Erro ao gerar relatorio de "+label,em2,"/"));return;}
+        if(!ep.html){delete cache[chave];res.writeHead(500,{"Content-Type":"text/html; charset=utf-8"});res.end(paginaErro("Erro ao gerar relatorio de "+label,"Conteúdo não disponível — tente novamente.","/"));return;}
         res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});res.end(ep.html);return;
     }
 
@@ -3284,14 +4365,17 @@ server.listen(PORT, BIND_ADDR, function(){
                 pollStatus();
                 if (_pollIntervalId) clearInterval(_pollIntervalId);
                 // Fast-poll (50ms) trata detecção; pollStatus só para correções + fallback.
-                _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * 5, 2000));
+                _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
                 _iniciarFastPoll(); // detecção em tempo real via conexão persistente
             }, 5000);
-            /*logTs("Polling Firebird ativo ("+POLL_INTERVAL/1000+"s).");*/
+    
         }
 
         agendarRegen();
-        logTs("Fast-poll: 200ms (detecção instantânea) | pollStatus fallback: " + (POLL_INTERVAL/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
+        // BUG FIX (v2.4.1): mensagem tinha "200ms" fixo no texto, mas a constante
+        // real do fast-poll (_FP_INTERVAL_MS) é 50ms — o log mentia sobre o próprio
+        // comportamento do servidor, confundindo qualquer debug futuro.
+        logTs("Fast-poll: " + _FP_INTERVAL_MS + "ms (detecção instantânea) | pollStatus fallback: " + (POLL_INTERVAL/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
     });
 });
 
@@ -3302,6 +4386,16 @@ server.on("error",function(err){
     } else {
         console.error("Erro: "+err.message);process.exit(1);
     }
+});
+
+// INTEGRIDADE FIX (v2.4.1): garante que a última janela de correções de horário
+// (até 500ms de debounce) seja gravada em disco antes do processo morrer, e que
+// a conexão Firebird persistente do fast-poll não fique pendurada no SO após o
+// Node encerrar (no Windows, o processo Firebird do lado servidor pode manter
+// o handle da conexão TCP em CLOSE_WAIT por um tempo se não for fechada).
+process.on("exit", function() {
+    try { if (typeof _salvarHoraFixadaCache === "function" && _salvarHoraFixadaCache.flush) _salvarHoraFixadaCache.flush(); } catch(_) {}
+    try { if (typeof _fpDb !== "undefined" && _fpDb) _matarConexao(_fpDb); } catch(_) {}
 });
 
 process.on("SIGINT",function(){console.log("\nServidor encerrado.\n");process.exit(0);});

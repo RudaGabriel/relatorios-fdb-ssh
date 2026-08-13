@@ -2,13 +2,28 @@
 .SYNOPSIS
 Cliente CLI robusto para servidor-relatorio.js
 .DESCRIPTION
-Interface PowerShell para interação com API do servidor de relatórios.
-- IP manual via parâmetro ou prompt interativo
+Interface PowerShell para interacao com API do servidor de relatorios.
+- IP manual via parametro ou prompt interativo
 - Retry exponencial e tratamento rigoroso de erros
 - Menu interativo + modo direto para scripting
-- Contém APENAS endpoints implementados no backend atual
+- Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
+@version 1.3.1
+@changelog
+  1.3.1 - 2026-08-12 21:30 - Revisao no eixo precisao (etapa 5/6).
+    - upload-favicon: validava so' a existencia do caminho e ja chamava
+      ReadAllBytes, que le o arquivo INTEIRO de uma vez. Apontar por engano
+      para um video ou ISO travaria a maquina tentando alocar tudo em RAM.
+      Agora confere antes: nao pode ser pasta, nao pode estar vazio, tem que
+      caber no limite de 2 MB do servidor e a extensao precisa ser PNG/ICO/
+      JPG. A validacao real continua no servidor (bytes magicos); esta e' um
+      aviso amigavel e uma protecao contra upload longo fadado a falhar.
+    - navigate-periodo: qualquer texto era interpolado direto na URL. Erro de
+      digitacao so' viraria erro no servidor, com mensagem generica, e um
+      valor com barra ou ".." alteraria o caminho da requisicao. Agora exige
+      AAAA-MM-DD, confirma que a data existe no calendario e que a inicial
+      nao e' posterior a final.
 #>
 [CmdletBinding()]
 param(
@@ -35,8 +50,19 @@ function Get-ConfigSegura {
 
 $Config = Get-ConfigSegura -Path $ConfigPath
 
+# TITULO FIX (ajuste solicitado): sem isso, a janela ficava com o titulo
+# generico "Windows PowerShell" - nao dava para saber, so olhando a barra de
+# tarefas, que aquela janela era o cliente CLI de relatorios da loja. Nunca
+# derruba o script se falhar (ex: config.json sem appName) - titulo e so
+# cosmetico, nao pode impedir o uso da ferramenta.
+try {
+    $__appName = if ($Config.appName) { $Config.appName } else { "Relatorios" }
+    $host.UI.RawUI.WindowTitle = "$__appName - Cliente API"
+} catch {}
+
+
 # ===========================================================================
-# 2. DEFINIÇÃO DO IP (Parâmetro > Config > Prompt)
+# 2. DEFINICAO DO IP (Parametro > Config > Prompt)
 # ===========================================================================
 $IpDefinido = $null
 if (-not [string]::IsNullOrWhiteSpace($MaquinaIP)) {
@@ -56,6 +82,22 @@ if ($IpDefinido -notmatch "^[a-zA-Z0-9.\-_:]+$") {
 }
 
 $BaseUri = "http://${IpDefinido}:$($Config.porta)"
+
+# Anuncia a sessao no relatorio.log do SERVIDOR (v1.3.0). Feito via
+# /api/log-error de proposito: e' a unica rota que ja aceita texto livre do
+# cliente, e assim o registro cai no MESMO arquivo do servidor/tray/instalador,
+# em vez de num log separado nesta maquina (que ninguem iria consultar).
+# Best-effort: se o servidor estiver fora do ar, o menu abre normalmente -- o
+# proprio uso do cliente e' o que vai revelar isso ao usuario.
+try {
+    $__corpoSessao = @{
+        msg = "[API-CLIENTE] Sessao iniciada por $env:USERNAME em $env:COMPUTERNAME"
+        src = "api.ps1"
+    } | ConvertTo-Json -Compress
+    Invoke-WebRequest -Uri "$BaseUri/api/log-error" -Method POST -Body $__corpoSessao `
+        -ContentType "application/json" -Headers @{ "X-Cliente" = "$env:COMPUTERNAME/$env:USERNAME" } `
+        -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+} catch {}
 Write-Host "[CONFIG] Servidor ativo: ${BaseUri}" -ForegroundColor Cyan
 
 # ===========================================================================
@@ -80,7 +122,10 @@ function Invoke-ApiCall {
                 Method = $Metodo
                 UseBasicParsing = $true
                 TimeoutSec = $Timeout
-                Headers = @{ "Accept" = "application/json" }
+                # X-Cliente (v1.3.0): identifica a maquina de origem no log do
+                # servidor. Sem ele o relatorio.log so' mostraria o IP, que muda
+                # com DHCP e nao diz de qual computador da loja veio o comando.
+                Headers = @{ "Accept" = "application/json"; "X-Cliente" = "$env:COMPUTERNAME/$env:USERNAME" }
                 ErrorAction = "Stop"
             }
             if ($Metodo -ne "GET" -and $null -ne $Corpo) {
@@ -111,7 +156,31 @@ function Invoke-ApiCall {
 }
 
 # ===========================================================================
-# 4. EXECUÇÃO DE ENDPOINTS (VALIDADOS NO BACKEND)
+# 3.1 NORMALIZACAO DE PAYLOAD
+# ===========================================================================
+# BUG FIX: -Payload aceitava apenas [hashtable] nos endpoints "config" e
+# "log-error" (.ContainsKey / -isnot [hashtable]). Quando o parametro e
+# fornecido via linha de comando com um objeto vindo de ConvertFrom-Json
+# (uso comum em scripting: -Payload (Get-Content x.json | ConvertFrom-Json)),
+# o resultado e um [PSCustomObject], que nao tem .ContainsKey() e nao passa
+# no teste -isnot [hashtable] - o comando falhava com erro pouco claro.
+# Esta funcao aceita hashtable, PSCustomObject ou $null e sempre devolve uma
+# [hashtable] (ou $null), permitindo os dois estilos de chamada.
+function ConvertTo-HashtableSegura {
+    param([object]$Objeto)
+    if ($null -eq $Objeto) { return $null }
+    if ($Objeto -is [hashtable]) { return $Objeto }
+    if ($Objeto -is [System.Collections.IDictionary]) { return $Objeto }
+    if ($Objeto -is [pscustomobject]) {
+        $h = @{}
+        foreach ($p in $Objeto.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        return $h
+    }
+    throw "Payload em formato nao suportado: $($Objeto.GetType().FullName). Use hashtable (@{...}) ou objeto JSON."
+}
+
+# ===========================================================================
+# 4. EXECUCAO DE ENDPOINTS (VALIDADOS NO BACKEND)
 # ===========================================================================
 function Executar-Endpoint {
     param([string]$Ep, [object]$Data)
@@ -120,20 +189,29 @@ function Executar-Endpoint {
         "db-status" { return Invoke-ApiCall -Rota "/api/db-status" }
         "sse-clients" { return Invoke-ApiCall -Rota "/api/sse-clients" }
         "proibidos" {
-            if ($Data) {
+            # BUG FIX: a checagem antiga "if ($Data)" tratava um array VAZIO
+            # (@()) como "nao informado" - PowerShell avalia @() como $false
+            # em contexto booleano. Resultado: enviar uma lista vazia (para
+            # LIMPAR os proibidos) silenciosamente virava um GET, sem nunca
+            # limpar nada e sem nenhum erro visivel ao usuario.
+            # "$null -ne $Data" distingue corretamente "parametro omitido"
+            # (Data = $null) de "array vazio fornecido de proposito".
+            if ($null -ne $Data) {
                 if ($Data -isnot [array]) { throw "Payload deve ser array de strings" }
-                return Invoke-ApiCall -Rota "/api/proibidos" -Metodo POST -Corpo ($Data | ConvertTo-Json -Compress)
+                return Invoke-ApiCall -Rota "/api/proibidos" -Metodo POST -Corpo (@($Data) | ConvertTo-Json -Compress)
             }
             return Invoke-ApiCall -Rota "/api/proibidos"
         }
         "config" {
-            if ($Data) {
+            if ($null -ne $Data) {
+                $Data = ConvertTo-HashtableSegura -Objeto $Data
                 $valido = @{}
                 if ($Data.ContainsKey("appName")) { $valido["appName"] = $Data.appName }
                 if ($Data.ContainsKey("pollInterval")) { $valido["pollInterval"] = [int]$Data.pollInterval }
                 if ($Data.ContainsKey("maxLogLines")) { $valido["maxLogLines"] = [int]$Data.maxLogLines }
                 if ($Data.ContainsKey("proibidos")) { $valido["proibidos"] = $Data.proibidos }
                 if ($Data.ContainsKey("favicon")) { $valido["favicon"] = $Data.favicon }
+                if ($valido.Count -eq 0) { throw "Nenhum campo valido informado no Payload (aceitos: appName, pollInterval, maxLogLines, proibidos, favicon)." }
                 return Invoke-ApiCall -Rota "/api/config" -Metodo POST -Corpo ($valido | ConvertTo-Json -Compress)
             }
             return Invoke-ApiCall -Rota "/api/config"
@@ -150,16 +228,109 @@ function Executar-Endpoint {
         "navigate-periodo" {
             if ($Data -isnot [array] -or $Data.Count -ne 2) { throw "Informe 2 datas: @('YYYY-MM-DD','YYYY-MM-DD')" }
             $d1 = $Data[0] -replace '/','-'; $d2 = $Data[1] -replace '/','-'
+            # PRECISAO FIX (v1.3.1): valida o formato ANTES de montar a URL. Antes,
+            # qualquer texto era interpolado direto na rota -- um erro de digitacao
+            # so' viraria erro la' no servidor, com mensagem generica, e um valor
+            # com barra ou ".." alteraria o caminho da requisicao.
+            foreach ($__d in @($d1, $d2)) {
+                if ($__d -notmatch '^\d{4}-\d{2}-\d{2}$') {
+                    throw "Data invalida: '$__d'. Use o formato AAAA-MM-DD (ex: 2026-08-12)."
+                }
+                $__dt = [datetime]::MinValue
+                if (-not [datetime]::TryParseExact($__d, 'yyyy-MM-dd', $null, [Globalization.DateTimeStyles]::None, [ref]$__dt)) {
+                    throw "Data inexistente no calendario: '$__d'."
+                }
+            }
+            if ([datetime]::ParseExact($d1,'yyyy-MM-dd',$null) -gt [datetime]::ParseExact($d2,'yyyy-MM-dd',$null)) {
+                throw "A data inicial ($d1) e posterior a final ($d2)."
+            }
             return Invoke-ApiCall -Rota "/api/navigate/periodo/${d1}/${d2}"
         }
         "upload-favicon" {
             if ($Data -isnot [string] -or -not (Test-Path $Data)) { throw "Caminho de imagem invalido" }
+            # PRECISAO FIX (v1.3.1): valida ANTES de carregar o arquivo na memoria.
+            # ReadAllBytes le o arquivo INTEIRO de uma vez: apontar por engano para
+            # um video ou ISO travaria a maquina tentando alocar tudo em RAM. O
+            # servidor tem limite de 2MB para favicon, entao checar aqui evita
+            # tambem um upload longo que seria rejeitado no fim.
+            $__fi = Get-Item -LiteralPath $Data -ErrorAction Stop
+            if ($__fi.PSIsContainer) { throw "O caminho informado e uma pasta, nao um arquivo de imagem." }
+            if ($__fi.Length -eq 0)  { throw "Arquivo de imagem vazio: $Data" }
+            if ($__fi.Length -gt 2MB) {
+                throw ("Imagem muito grande ({0:N1} MB). O limite do servidor e 2 MB." -f ($__fi.Length / 1MB))
+            }
+            # Extensao conferida contra os formatos que o servidor aceita. E' so'
+            # uma checagem previa amigavel -- o servidor valida os bytes magicos
+            # do arquivo, que e' a verificacao que realmente vale.
+            if ($__fi.Extension -notmatch '^\.(png|ico|jpe?g)$') {
+                throw "Formato nao suportado ($($__fi.Extension)). Use PNG, ICO ou JPG."
+            }
             $bytes = [System.IO.File]::ReadAllBytes($Data)
             return Invoke-ApiCall -Rota "/api/upload-favicon" -Metodo POST -ContentType "application/octet-stream" -Corpo $bytes
         }
         "restart" {
             Write-Warning "Solicitando restart do servidor..."
-            return Invoke-ApiCall -Rota "/api/restart"
+            # ROBUSTEZ FIX (usuario reportou "restart" falhando com "Impossivel
+            # conectar-se ao servidor remoto"): /api/restart so' funciona se o
+            # servidor JA estiver rodando - o handler responde primeiro e SO'
+            # DEPOIS se desliga sozinho (1.4s depois, para o tray reiniciar).
+            # Uma falha de conexao logo na PRIMEIRA tentativa (antes de
+            # qualquer retry) significa que nao havia nada escutando naquela
+            # porta - ou seja, o servidor ja estava fora do ar por outro
+            # motivo, e nao existe nada para "reiniciar". O erro de rede
+            # generico nao deixava isso claro. Agora detecta esse caso
+            # especifico e tenta subir o servidor do zero via launcher.vbs
+            # (mesmo caminho que os .bat de relatorio usam para iniciar o
+            # servidor quando ele nao esta rodando), confirmando o resultado
+            # antes de reportar sucesso ou falha.
+            try {
+                return Invoke-ApiCall -Rota "/api/restart"
+            } catch {
+                # ROBUSTEZ FIX (v1.2.3): "Falha de rede" e' o rotulo generico que
+                # Invoke-ApiCall poe em QUALQUER excecao do WebRequest - inclusive
+                # respostas HTTP de erro como 403. Tratar 403 como "servidor fora
+                # do ar" era errado no sentido mais perigoso possivel: um 403 so'
+                # existe porque o servidor ESTA VIVO e respondeu. O fallback
+                # entao chamava o launcher.vbs para "subir" um servidor que ja
+                # estava rodando. Agora so' cai no fallback quando a conexao
+                # realmente nao se estabeleceu (recusada/timeout/host inacessivel);
+                # qualquer resposta HTTP do servidor e' repassada como erro real.
+                $_msgErro = $_.Exception.Message
+                $_respondeuHttp = ($_msgErro -match "\(\d{3}\)") -or ($_msgErro -match "HTTP \d{3}")
+                if ($_respondeuHttp) {
+                    if ($_msgErro -match "403") {
+                        throw ("Restart negado pelo servidor (403). O servidor esta no ar, mas so' aceita " +
+                               "restart de si mesmo ou da maquina registrada em 'maquinaIP' no config.json. " +
+                               "Rode o api.ps1 na propria maquina do servidor, ou atualize " +
+                               "servidor-relatorio.js para v2.7.8+, que passou a aceitar tambem a rede local.")
+                    }
+                    throw $_msgErro
+                }
+                if ($_msgErro -notmatch "Falha de rede") { throw }
+                Write-Warning "Servidor nao respondeu - ja estava fora do ar (isso e' um START do zero, nao um restart de verdade)."
+                $launcherPath = Join-Path $PSScriptRoot "launcher.vbs"
+                if (-not (Test-Path $launcherPath)) {
+                    throw "Servidor fora do ar e launcher.vbs nao foi encontrado em '$PSScriptRoot' para tentar iniciar automaticamente. Inicie manualmente (ex: gerar_relatorio_do_dia.bat) ou verifique relatorio.log."
+                }
+                Write-Warning "Iniciando servidor via launcher.vbs..."
+                try {
+                    Start-Process -FilePath "wscript.exe" -ArgumentList "`"$launcherPath`"" -WindowStyle Hidden -ErrorAction Stop
+                } catch {
+                    throw "Falha ao executar launcher.vbs: $($_.Exception.Message)"
+                }
+                Write-Warning "Aguardando o servidor responder (ate 30s)..."
+                for ($i = 0; $i -lt 15; $i++) {
+                    Start-Sleep -Seconds 2
+                    try {
+                        $chk = Invoke-WebRequest -Uri "${BaseUri}/api/status" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+                        if ($chk.StatusCode -ge 200 -and $chk.StatusCode -lt 300) {
+                            Write-Host "[OK] Servidor iniciado e respondendo." -ForegroundColor Green
+                            return @{ ok = $true; msg = "Servidor nao estava rodando - iniciado do zero via launcher.vbs." }
+                        }
+                    } catch {}
+                }
+                throw "launcher.vbs foi executado mas o servidor nao respondeu em 30s. Verifique relatorio.log na pasta do sistema (pode ser Node.js ausente ou Firebird inacessivel)."
+            }
         }
         "pronto" {
             if ($Data -isnot [string]) { throw "Informe chave de polling" }
@@ -167,7 +338,8 @@ function Executar-Endpoint {
             return Invoke-ApiCall -Rota "/pronto?k=${escaped}"
         }
         "log-error" {
-            if ($Data -isnot [hashtable]) { throw "Payload deve ser hashtable" }
+            if ($null -eq $Data) { throw "Informe um Payload com pelo menos o campo 'msg'." }
+            $Data = ConvertTo-HashtableSegura -Objeto $Data
             return Invoke-ApiCall -Rota "/api/log-error" -Metodo POST -Corpo ($Data | ConvertTo-Json -Compress)
         }
         "sse-test" {
@@ -222,7 +394,7 @@ function Mostrar-Menu {
 }
 
 # ===========================================================================
-# 6. EXECUÇÃO PRINCIPAL
+# 6. EXECUCAO PRINCIPAL
 # ===========================================================================
 if ($Endpoint -eq "menu") {
     Mostrar-Menu
@@ -258,8 +430,13 @@ if ($Endpoint -eq "menu") {
             $dados = $null
             switch ($escolha) {
                 "5" {
-                    $inp = Read-Host "Proibidos (separados por virgula)"
-                    $dados = $inp.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                    $inp = Read-Host "Proibidos (separados por virgula; deixe vazio para LIMPAR a lista)"
+                    # BUG FIX: envolver em @(...) garante que $dados seja SEMPRE um
+                    # array (mesmo vazio) e nunca $null - sem isso, quando o pipeline
+                    # nao produz nenhum item (ex: entrada vazia), o PowerShell atribui
+                    # $null a $dados em vez de um array vazio, e a intencao de "limpar
+                    # a lista" se perdia silenciosamente (ver bug fix em Executar-Endpoint).
+                    $dados = @($inp.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
                 }
                 "7" {
                     $dados = @{}
