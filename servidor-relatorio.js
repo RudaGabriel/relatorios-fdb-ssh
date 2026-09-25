@@ -2,23 +2,25 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.8.4
+ * @version 2.8.5
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.8.4 - 2026-08-08 07:00 - Versões do servidor E do gerador na linha de
- *                              início do log.
- *     - A marca de início passa a terminar com "Servidor vX.Y.Z | Gerador
- *       vX.Y.Z". Os dois arquivos são atualizados juntos com frequência, e
- *       uma combinação incompatível já causou sintomas confusos antes (o
- *       marcador "CANCELADA" aparecendo na coluna de hora quando só o
- *       servidor tinha sido trocado). Ver as duas versões lado a lado na
- *       abertura do log torna esse desencontro imediato de identificar.
- *     - A versão do gerador é lida do @version no cabeçalho do próprio
- *       arquivo (só os primeiros 600 caracteres). Leitura de arquivo em vez
- *       de require(): o gerador é um script executável que abre conexão com
- *       o banco ao ser carregado, não um módulo. Se o arquivo faltar ou não
- *       for legível, registra "ausente" em vez de impedir o boot.
+ *   2.8.5 - 2026-09-23 - RECONCILIACAO/AVISO RECONCILIACAO agora sempre vão
+ *                        pro relatorio.log.
+ *     - CAUSA: o roteador de stdout do filho (gerar-relatorio-html.js) só
+ *       gravava linhas iniciadas por ">", "OK:", "Conectando em:" ou
+ *       "Conectado!" — e mesmo essas só via logDebug() (exige
+ *       logDebug:true no config.json) e só na 1ª geração do dia
+ *       (_queryLogsHoje). As linhas "RECONCILIACAO: ..."/"AVISO
+ *       RECONCILIACAO: ..." (fusão automática Gerencial→NF-e por valor
+ *       idêntico, introduzida no gerador v2.7.7+) caíam nesse buffer e
+ *       eram descartadas silenciosamente — nunca apareciam no log, em
+ *       nenhuma configuração.
+ *     - Corrigido: essas duas linhas agora são reconhecidas antes do
+ *       filtro de rotina e gravadas via logTs() (sempre registra,
+ *       independente de logDebug/_queryLogsHoje) — é evento de negócio
+ *       que afeta o total do dia, não ruído de performance.
  */
 
 
@@ -26,7 +28,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.8.4";
+const SERVER_VERSION = "2.8.5";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -1465,6 +1467,15 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         lines.forEach(function(l) {
             var t = l.trim();
             if (!t) return;
+            // RECONCILIACAO/AVISO RECONCILIACAO (gerar-relatorio-html.js v2.7.7+):
+            // fusão automática Gerencial→NF-e por valor idêntico é evento de
+            // negócio relevante (afeta o total do dia) — sempre grava via
+            // logTs(), independente de _queryLogsHoje/logDebug, para não ficar
+            // invisível fora da 1ª geração do dia ou sem logDebug:true no config.
+            if (t.indexOf("RECONCILIACAO:") === 0 || t.indexOf("AVISO RECONCILIACAO:") === 0) {
+                logTs(t);
+                return;
+            }
             // Linhas ">> arquivo gravado:" eram tratadas por um bloco removido
             // que causava confusão — agora caem no filtro isPrimeiraVez abaixo.
             // Linhas de conexão e progresso somente na 1ª geração do dia

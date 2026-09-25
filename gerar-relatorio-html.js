@@ -1,20 +1,26 @@
 /**
  * gerar-relatorio-html.js
- * @version 2.7.5
+ * @version 2.7.9
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog
- *   2.7.5 - 2026-08-08 02:30 - Nova regra de hora fixa (definida pelo
- *                              usuário), agora idêntica nos dois lados.
- *     - TOLERANCIA_RELOGIO_MIN passou de 1,5 para 3 min e MAXIMO_ATRASO_MIN
- *       de 18 para 60 min. Nenhum dos dois batia com a regra pedida, e o
- *       segundo também não batia com a janela usada pelo servidor — havia
- *       uma faixa em que um lado corrigia e o outro não, fazendo a venda
- *       parecer "pular" de horário conforme quem processou por último.
- *     - Regra final: futuro -> corrige para a hora atual; até 3 min atrás
- *       -> aceita como está (marca OK); de 3 min a 1 hora atrás -> corrige
- *       para a hora atual; mais de 1 hora atrás -> ignora.
- *     - Verificado por simulação em toda a faixa (+5, 0, -3, -3.1, -30,
- *       -60, -61, -90 min): cada intervalo cai na ação correta.
+ *   2.7.9 - 2026-09-23 - Reativa fusão automática Gerencial→NF-e por valor
+ *                        idêntico, a pedido do usuário (regra de negócio:
+ *                        gerenciais do filtro [proibidos] são convertidas
+ *                        manualmente por fora do fluxo integrado, então
+ *                        nunca terão vínculo de coluna — valor idêntico no
+ *                        mesmo dia é o sinal correto e deve sempre prevalecer).
+ *     - A v2.7.8 tinha rebaixado essa reconciliação para somente aviso,
+ *       por causa do risco de colisão (R$118,75 é preço de produto comum
+ *       e se repete no dia). Reativada agora com trava adicional: cada
+ *       NF-e só pode absorver NO MÁXIMO 1 gerencial — gerenciais candidatas
+ *       ao mesmo valor são processadas em ordem de horário e casadas uma
+ *       de cada vez, nunca duas desaparecendo em cima do mesmo documento.
+ *       Com mais de uma NF-e candidata para a mesma gerencial, escolhe a
+ *       mais próxima em horário. Tudo fica registrado via
+ *       "RECONCILIACAO: ..." no console para auditoria.
+ *     - Mantém a v2.7.8 (vínculo real via coluna GERENCIAL para o caso
+ *       Gerencial→NFC-e, sem qualquer heurística) e a v2.7.6 (descarta
+ *       NF-e com STATUS de rejeição da SEFAZ antes de virar candidata).
  */
 
 (function() {
@@ -22,7 +28,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "2.7.5";
+    const SCRIPT_VERSION = "2.7.9";
     const Firebird = require("node-firebird");
     const fs = require("node:fs");
     const process = require("node:process");
@@ -589,6 +595,32 @@
 				}
 			}
 
+			// BUG REAL (v2.7.8) — caso 061449 → NFC-e 124242, confirmado na tela nativa
+			// do SmallSoft: a coluna GERENCIAL da linha 124242 (modelo 65) aponta
+			// explicitamente para 061449, mas a gerencial de origem NÃO estava com
+			// CANC='T' (só o loop acima, que exige CANC='T', preenche
+			// _origemConvertida — e só serve pra HERDAR vendedor/hora, nunca pra
+			// SUPRIMIR a gerencial duplicada). Resultado: 061449 continuava sendo
+			// listada como venda própria, em cima da NFC-e que já é a mesma venda.
+			//
+			// Corrigido: monta um conjunto de números de gerencial que JÁ TÊM um
+			// documento fiscal válido (modelo 65/55, não cancelado/rejeitado)
+			// apontando pra eles via GERENCIAL — usando o vínculo direto do banco,
+			// SEM depender do CANC da própria gerencial estar certo. Isso é uma
+			// referência de chave real (não heurística de data/valor — ver aviso
+			// na reconciliação por VENDAS logo abaixo, que É heurística e foi
+			// rebaixada a apenas registrar aviso, por causa deste mesmo caso).
+			const _gerenciaisAbsorvidasPorDocFiscal = new Set();
+			if (validCols.includes("GERENCIAL")) {
+				for (const n of rNfce.rows) {
+					const _modeloDoc = Number(n.MODELO || 0);
+					if (_modeloDoc !== 65 && _modeloDoc !== 55) continue; // só documento fiscal válido conta
+					if (n.CANC === 'S' || n.CANC === 'T' || n.SIT === 'C' || n.EMI === 'C') continue; // o próprio doc não pode estar cancelado/rejeitado
+					const _gVal = String(n.VAL_GERENCIAL || "").trim().replace(/^0+/, "");
+					if (_gVal) _gerenciaisAbsorvidasPorDocFiscal.add(_gVal);
+				}
+			}
+
 			for (const n of rNfce.rows) {
 				if (n.CANC === 'S' || n.CANC === 'T' || n.SIT === 'C' || n.EMI === 'C') continue; 
 				const totalNum = Number(n.TOTAL || 0);
@@ -623,6 +655,13 @@
 					if (val && !ids.includes(val)) ids.push(val);
 				}
 				if (ids.length === 0) continue;
+
+				// Gerencial (modelo 99) já convertida em documento fiscal válido, mesmo
+				// que a própria linha da gerencial não esteja com CANC='T' — ver
+				// comentário completo em _gerenciaisAbsorvidasPorDocFiscal acima.
+				// Restrito a modelo 99 de propósito: um documento fiscal nunca deve
+				// ser descartado por essa checagem, só a gerencial de origem.
+				if (_modeloLinha === 99 && ids.some(id => _gerenciaisAbsorvidasPorDocFiscal.has(id))) continue;
 
 				const primaryId = ids[0];
 				// toISO() normaliza Date JS e strings para YYYY-MM-DD
@@ -681,6 +720,18 @@
 			// Inserido ANTES do PAGAMENT para que idIndex tenha NSU→key
 			// quando PAGAMENT tentar linkar (PAGAMENT.PEDIDO = VENDAS.NSU stripped).
 			const _vendaNfeKey = new Map();
+			// Reconciliação heurística Gerencial↔NF-e (v2.7.7) — populada abaixo,
+			// consumida logo após o try/catch desta seção. Ver comentário completo
+			// no ponto de uso.
+			const _novasNfeParaReconciliar = [];
+			function _horaParaMinutos(h) {
+				const s = String(h || "").trim();
+				const m = s.match(/^(\d{1,2}):(\d{2})/);
+				if (!m) return null;
+				const hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+				if (isNaN(hh) || isNaN(mm)) return null;
+				return hh * 60 + mm;
+			}
 			try {
 				const _camV = await camposTabela("VENDAS");
 				if (_camV.size > 0 && _camV.has("NUMERONF") && _camV.has("TOTAL")) {
@@ -692,6 +743,14 @@
 					const _cVn  = _camV.has("NSU")         ? "cast(v.NSU as varchar(20))"       : "cast(null as varchar(20))";
 					const _cVm  = _camV.has("MODELO")      ? "cast(v.MODELO as varchar(5))"     : "'55'";
 					const _cVcc = _camV.has("DATA_CANCEL") ? "v.DATA_CANCEL"                    : "cast(null as date)";
+					// NF-e REJEITADA pela SEFAZ (STATUS tipo "Rejeicao: ...", sem protocolo de
+					// autorização) não é uma venda válida — quem continua valendo é a Gerencial
+					// de origem, que nunca deixou de ser o documento da venda. Sem este filtro,
+					// a rejeitada era contada JUNTO com a Gerencial (duplicidade + total inflado).
+					// Coluna lida condicionalmente (camposTabela) para não quebrar em bases
+					// onde STATUS não exista; filtro final é feito em JS abaixo (evita
+					// depender de função de acentuação do Firebird na cláusula WHERE).
+					const _cVstat = _camV.has("STATUS") ? "cast(v.STATUS as varchar(200))" : "cast(null as varchar(200))";
 					const _rV = await query(db, `
 						SELECT ${_cVd}  as DATA_V,
 						       cast(v.NUMERONF as varchar(30)) as NF_NUM,
@@ -701,7 +760,8 @@
 						       ${_cVop} as OP_V,
 						       ${_cVh}  as HORA_V,
 						       ${_cVn}  as NSU_V,
-						       ${_cVcc} as CANCEL_V
+						       ${_cVcc} as CANCEL_V,
+						       ${_cVstat} as STATUS_V
 						FROM VENDAS v
 						WHERE ${_cVd} BETWEEN cast(? as date) AND cast(? as date)
 						  AND ${_cVm} = '55'
@@ -713,6 +773,13 @@
 						for (const vr of _rV.rows) {
 							const _vTotal = Number(vr.TOTAL_V || 0);
 							if (_vTotal <= 0) continue;
+							// Descarta NF-e rejeitada pela SEFAZ (ex.: "Rejeicao: Informado Cupom
+							// Fiscal referenciado") — comparação em maiúsculas e sem acento para
+							// cobrir "Rejeição"/"Rejeicao" e variações de charset do Firebird.
+							const _statusNorm = String(vr.STATUS_V || "")
+								.toUpperCase()
+								.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+							if (_statusNorm.startsWith("REJEI")) continue;
 							const _nfRaw = String(vr.NF_NUM || "").trim();
 							let _nfExib = _nfRaw;
 							if (/^\d{12}$/.test(_nfRaw)) {
@@ -762,10 +829,77 @@
 							if (_keyStripped !== _keyV) idIndex.set(_keyStripped, _keyV);
 							if (_nsuStr) idIndex.set(_dtV + "|" + _nsuStr, _keyV);
 							_vendaNfeKey.set(_nfRaw, _keyV);
+							// Candidata para reconciliação heurística Gerencial↔NF-e (ver abaixo,
+							// logo após este bloco try/catch) — NF-e AUTORIZADA (já filtramos
+							// rejeitada acima) que não achou par direto na tabela nfce. Pode ser
+							// o destino de uma Gerencial convertida sem nenhum vínculo gravado
+							// no banco (schema desta versão do SmallSoft não grava referência
+							// cupom↔NF-e em nenhuma coluna nem no XML — confirmado em diagnóstico).
+							_novasNfeParaReconciliar.push({ key: _keyV, dt: _dtV, total: _vTotal, horaMin: _horaParaMinutos(vr.HORA_V) });
 						}
 					}
 				}
 			} catch(eV) { console.log("AVISO VENDAS: " + eV.message); }
+
+			// ── Reconciliação Gerencial → NF-e sem vínculo no banco (v2.7.9) ──────────
+			// CONTEXTO: para conversão Gerencial→NFC-e (mesma tabela nfce) existe vínculo
+			// AUTORITATIVO — a coluna GERENCIAL (ver _gerenciaisAbsorvidasPorDocFiscal
+			// acima, v2.7.8) — que resolve o caso sem qualquer chute.
+			// Para conversão Gerencial→NF-e (modelo 55, tabela VENDAS externa) o schema
+			// deste SmallSoft não grava vínculo nenhum — nem coluna, nem referência no XML.
+			// REGRA DE NEGÓCIO (definida pelo usuário, v2.7.9): essas gerenciais são as
+			// mesmas usadas pela automação do filtro [proibidos] (marcas da lista em
+			// proibidosPadrao) — convertidas manualmente por fora do fluxo integrado, por
+			// isso nunca terão vínculo de coluna. Nesse caso específico, valor idêntico no
+			// mesmo dia é o sinal correto e deve SEMPRE prevalecer: a NF-e é mantida, a
+			// Gerencial é suprimida.
+			// TRAVA DE SEGURANÇA mantida (evita o problema que quase aconteceu — R$118,75
+			// é preço de produto comum e se repete no dia): cada NF-e só pode absorver NO
+			// MÁXIMO 1 gerencial. Com várias gerenciais candidatas ao mesmo valor, casa a
+			// mais próxima em horário com cada NF-e disponível, uma de cada vez, e nunca
+			// deixa duas gerenciais desaparecerem em cima do mesmo documento.
+			const TOLERANCIA_VALOR = 0.01;      // R$ — mesma régua de arredondamento do resto do sistema
+			const TOLERANCIA_MINUTOS = 20;      // janela de emissão da NF-e após o fechamento da gerencial
+			if (_novasNfeParaReconciliar.length > 0) {
+				const _nfeJaAbsorveu = new Set(); // key da NF-e -> já usada, não pode absorver 2ª gerencial
+				// Ordena gerenciais por horário para casar de forma determinística
+				// (mais cedo primeiro) quando há disputa pela mesma NF-e.
+				const _gerenciais99 = [];
+				for (const [gerKey, gerVenda] of mapVendas) {
+					if (gerVenda.modelo !== 99) continue;
+					const gerHoraMin = _horaParaMinutos(gerVenda.hora);
+					if (gerHoraMin === null) continue;
+					_gerenciais99.push({ gerKey, gerVenda, gerHoraMin });
+				}
+				_gerenciais99.sort((a, b) => a.gerHoraMin - b.gerHoraMin);
+
+				for (const { gerKey, gerVenda, gerHoraMin } of _gerenciais99) {
+					const candidatas = _novasNfeParaReconciliar.filter(c => {
+						if (_nfeJaAbsorveu.has(c.key)) return false; // já usada por outra gerencial
+						if (c.dt !== gerVenda._dtKey) return false;
+						if (Math.abs(c.total - gerVenda.total_nfce) > TOLERANCIA_VALOR) return false;
+						if (c.horaMin === null) return false;
+						const diff = c.horaMin - gerHoraMin; // NF-e sempre emitida DEPOIS do fechamento
+						return diff >= 0 && diff <= TOLERANCIA_MINUTOS;
+					});
+					if (candidatas.length === 0) continue;
+					// Mais de uma disponível: escolhe a mais próxima em horário (menor diff).
+					candidatas.sort((a, b) => (a.horaMin - gerHoraMin) - (b.horaMin - gerHoraMin));
+					const escolhida = candidatas[0];
+					const alvo = mapVendas.get(escolhida.key);
+					if (!alvo) continue;
+					// Herda identificação da gerencial só onde a NF-e ainda estiver vazia —
+					// dado fiscal já presente na NF-e sempre prevalece.
+					if (!alvo.vendedor && gerVenda.vendedor) alvo.vendedor = gerVenda.vendedor;
+					if (!alvo.cliente  && gerVenda.cliente)  alvo.cliente  = gerVenda.cliente;
+					alvo._gerencialOrigemNumero = gerVenda.numero;
+					_nfeJaAbsorveu.add(escolhida.key);
+					mapVendas.delete(gerKey);
+					if (idIndex.get(gerKey) === gerKey) idIndex.delete(gerKey);
+					const _obs = candidatas.length > 1 ? ` (${candidatas.length} candidatas disponíveis, escolhida a mais próxima)` : "";
+					console.log(`RECONCILIACAO: Gerencial ${gerVenda.numero} absorvida pela NF-e ${alvo.numero} (mesma data/valor, ${escolhida.horaMin - gerHoraMin}min depois)${_obs}.`);
+				}
+			}
 
 			// ── Aguarda as 2 queries paralelas ──────────────────────────────────────────
 			// Main conn já terminou NFCE+VENDAS; PAGAMENT é o bottleneck (~70ms sem GROUP BY).
