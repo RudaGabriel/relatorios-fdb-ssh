@@ -3,6 +3,7 @@
 /**
  * servidor-relatorio.js
  * @version 2.9.1
+ * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog

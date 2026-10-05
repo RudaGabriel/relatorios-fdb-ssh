@@ -1,5 +1,6 @@
 ' =============================================================================
 ' launcher.vbs                                                       v1.0.1
+' Autor: Ruda Gabriel
 ' -----------------------------------------------------------------------------
 ' ARQUIVO RECONSTRUIDO NA AUDITORIA - nao existia em nenhum lugar do projeto
 ' entregue, apesar de ser referenciado por TODOS os pontos de entrada:

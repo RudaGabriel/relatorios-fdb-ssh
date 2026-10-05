@@ -143,6 +143,7 @@ timeout /t 5 >nul
 
 :: =========================================================
 :: instalar-na-inicializacao.bat                       v1.11.1
+::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
 :: CHANGELOG 1.11.1 - 2026-10-05 17:30 - O nome do sistema perdia TODOS os

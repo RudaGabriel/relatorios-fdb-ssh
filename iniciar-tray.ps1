@@ -4,6 +4,7 @@
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
 # @version 1.3.0
+# @author Ruda Gabriel
 # @changelog
 #   1.3.0 - 2026-10-05 16:24 - Credenciais do Firebird repassadas ao servidor
 #     por variavel de ambiente (RELATORIO_FB_USER / RELATORIO_FB_PASS) em vez de

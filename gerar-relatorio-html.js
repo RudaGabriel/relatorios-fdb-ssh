@@ -1,6 +1,7 @@
 /**
  * gerar-relatorio-html.js
  * @version 3.2.2
+ * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   3.2.2 - 2026-10-05 21:30 - Mescla da v3.2.1 (16 temas, data junto da hora no detalhe e demais recursos)

@@ -9,6 +9,7 @@ chcp 65001 >nul 2>&1
 
 :: =========================================================
 ::  Relatorio do Dia                                 v1.4.2
+::  Autor: Ruda Gabriel
 ::  - Verifica / instala Node.js automaticamente
 ::  - Verifica / instala modulo node-firebird automaticamente
 ::  - Inicia servidor se necessario
