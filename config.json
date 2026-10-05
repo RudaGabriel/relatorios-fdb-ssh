@@ -12,6 +12,7 @@
   "logDebug": false,
   "favicon": "",
   "toastDuration": 5000,
+  "janelaCorrecaoHoraMin": 180,
   "spawnTimeoutMs": 120000,
   "teclasPersonalizadas": []
 }

@@ -26,7 +26,12 @@ function query(sql, params, cb) {
             if (/^UPDATE/i.test(s)) { registrar("UPDATE " + JSON.stringify(params) + " :: " + s.slice(0, 40)); return cb(null, []); }
             if (/AS VELHA FROM nfce/i.test(s))     return cb(null, (st.nfce || []).filter(r => (r.modelo || 65) !== 99).map(r => ({ NUMERO: r.numero, VELHA: r.hora < params[0] ? 1 : 0 })));
             if (/AS VELHA FROM pagament/i.test(s)) return cb(null, (st.pag || []).map(r => ({ NUMERO: r.numero, VELHA: r.hora < params[0] ? 1 : 0 })));
-            if (/AS HORA_VAL/.test(s))             return cb(null, (st.ger || []).map(r => ({ NUMERO: r.numero, HORA_VAL: r.hora, CANC: "N", TOT: 10 })));
+            // Aplica o mesmo filtro de janela do SQL real:
+            // hora > agora (futuro) OU (hora >= início da janela E hora < agora).
+            // params: [dh, dh, horaAtual, horaLimiteJanela, horaAtual]
+            if (/AS HORA_VAL/.test(s)) return cb(null, (st.ger || [])
+                .filter(r => r.hora > params[2] || (r.hora >= params[3] && r.hora < params[4]))
+                .map(r => ({ NUMERO: r.numero, HORA_VAL: r.hora, CANC: "N", TOT: 10 })));
             if (/FP_QT/.test(s)) return cb(null, [{ FP_QT: (st.nfce || []).length, FP_TOT: (st.nfce || []).length * 10, FP_PEND: 0, FP_SVEND: 0, FP_SFORMA: 0 }]);
             if (/QT_G/.test(s))  return cb(null, [{ QT_G: 0, TOT_G: 0, QT_NFC: (st.nfce || []).length, TOT_NFC: (st.nfce || []).length * 10, QT_NF: 0, TOT_NF: 0, QT_PAG: 0, TOT_PAG: 0 }]);
             if (/rdb\$relation_fields rf/i.test(s) && params[0] === "NFCE")

@@ -80,6 +80,24 @@ test("gerador: hora-fixada-cache.json preserva entradas gravadas por outro proce
     assert.match(cache[hojeISO() + "|200"].hora, /^\d{2}:\d{2}$/, "venda fora da tolerância deveria ter hora fixada");
 });
 
+test("gerador: janela de correção de horário — padrão 3 h e valor configurado", () => {
+    // Venda com hora 2 h atrás: dentro da janela padrão (180 min) → hora fixada;
+    // com janela configurada em 60 min → fora da janela, nenhuma entrada no cache.
+    const estado = { nfce: [{ numero: "400", hora: horaHaMin(120) }] };
+    const chave = hojeISO() + "|400";
+
+    const dirPadrao = montarPasta({}, estado);
+    gerar(dirPadrao);
+    const cachePadrao = JSON.parse(fs.readFileSync(path.join(dirPadrao, "hora-fixada-cache.json"), "utf8"));
+    assert.ok(cachePadrao[chave] && /^\d{2}:\d{2}$/.test(cachePadrao[chave].hora), "com o padrão de 3 h a venda de 2 h atrás deveria ser fixada");
+
+    const dir60 = montarPasta({ janelaCorrecaoHoraMin: 60 }, estado);
+    gerar(dir60);
+    let cache60 = {};
+    try { cache60 = JSON.parse(fs.readFileSync(path.join(dir60, "hora-fixada-cache.json"), "utf8")); } catch (_) {}
+    assert.strictEqual(cache60[chave], undefined, "com janela de 60 min a venda de 2 h atrás deveria ser ignorada");
+});
+
 test("gerador: duplicata gerencial→NFC-e vai para o painel e sai da tabela", () => {
     const dir = montarPasta({}, { nfce: [
         { numero: "300", hora: "10:00", modelo: 99 },
@@ -104,6 +122,10 @@ test("servidor: correção de horário só em documentos que APARECEM com hora v
         assert.ok(!/UPDATE/.test(lerSqlLog(dir)), "a linha de base (boot) não pode alterar nada:\n" + lerSqlLog(dir));
 
         const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
+        st.ger = [
+            { numero: "700", hora: horaHaMin(150) },                   // gerencial 2h30 atrás → corrigir (janela padrão 3 h)
+            { numero: "701", hora: horaHaMin(200) }                    // gerencial 3h20 atrás → fora da janela, ignorar
+        ];
         st.nfce.find(r => r.numero === "101").hora = horaHaMin(20); // já visto → nunca corrigir
         st.nfce.push({ numero: "102", hora: horaHaMin(10) });         // novo e velho → corrigir
         st.nfce.push({ numero: "103", hora: horaHaMin(0.1) });        // novo e recente → não corrigir
@@ -113,7 +135,7 @@ test("servidor: correção de horário só em documentos que APARECEM com hora v
 
         const updates = lerSqlLog(dir).split("\n").filter(l => l.startsWith("UPDATE"));
         const alvos = updates.map(l => JSON.parse(l.slice(7, l.indexOf(" :: ")))[1]).sort();
-        assert.deepStrictEqual(alvos, ["102", "501"], "UPDATEs inesperados:\n" + updates.join("\n"));
+        assert.deepStrictEqual(alvos, ["102", "501", "700"], "UPDATEs inesperados:\n" + updates.join("\n"));
     } finally { srv.parar(); }
 });
 
@@ -141,5 +163,12 @@ test("servidor: validações das rotas HTTP", { timeout: 60000 }, async () => {
         assert.strictEqual((await fetch(srv.base + "/api/navigate/periodo/2026-02-30/2026-03-01")).status, 400);
         assert.strictEqual((await fetch(srv.base + "/api/navigate/hash/periodo")).status, 200);
         assert.strictEqual((await fetch(srv.base + "/api/navigate/foco")).status, 200);
+
+        // Janela de correção de horário: padrão 180, limites 5–720, alterável pela API.
+        assert.strictEqual(cfg.janelaCorrecaoHoraMin, 180);
+        assert.strictEqual((await post("/api/config", JSON.stringify({ janelaCorrecaoHoraMin: 1000 }))).status, 400);
+        assert.strictEqual((await post("/api/config", JSON.stringify({ janelaCorrecaoHoraMin: 240 }))).status, 200);
+        assert.strictEqual((await (await fetch(srv.base + "/api/config")).json()).janelaCorrecaoHoraMin, 240);
+        assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8")).janelaCorrecaoHoraMin, 240);
     } finally { srv.parar(); }
 });
