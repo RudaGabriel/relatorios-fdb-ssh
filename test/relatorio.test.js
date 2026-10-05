@@ -104,7 +104,8 @@ test("padrão de fábrica: config.json do repositório sem dados de loja e sem p
     assert.deepStrictEqual(cfg.proibidos, []);
     assert.deepStrictEqual(cfg.teclasPersonalizadas, []);
     for (const k of ["fbHost", "fdbPath", "maquinaIP", "fbUser", "fbPass", "favicon"]) assert.strictEqual(cfg[k], "", k + " deveria estar vazio");
-    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(RAIZ_PROJETO, "hora-fixada-cache.json"), "utf8")), {});
+    // hora-fixada-cache.json não é versionado: o sistema o cria sozinho na primeira correção.
+    // O gerador precisa funcionar sem ele (montarPasta não cria o arquivo).
     const html = gerar(montarPasta());
     assert.ok(html.includes("const proibidosPadrao=[];"), "a lista padrão de proibidos deveria vir vazia");
 });

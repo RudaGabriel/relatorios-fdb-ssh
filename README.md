@@ -198,7 +198,7 @@ Os botões **Todos / Gerencial / NFC-e / NF-e**, ao lado da busca, restringem o 
 | `proibidos` | `[]` | Lista de produtos/termos do filtro de proibidos |
 | `teclasPersonalizadas` | `[]` | Atalhos: `{ "tecla": "F2", "comando": "[-proibidos]>150", "acao": "" }` |
 
-O arquivo `hora-fixada-cache.json` é mantido pelo próprio sistema. Ele guarda os horários já corrigidos do dia e não precisa ser editado.
+O arquivo `hora-fixada-cache.json` é criado e mantido pelo próprio sistema (não faz parte do pacote). Ele guarda os horários já corrigidos do dia e não precisa ser editado. O mesmo vale para `relatorio.log` e `favicon.png` (criado ao enviar um ícone).
 
 ---
 
@@ -295,6 +295,8 @@ Os testes rodam **sem Firebird real**: um banco simulado em `test/mock-firebird`
 npm test
 ```
 
+No Windows, basta dar **duplo clique em `test\executar-testes.bat`**. Ele confere o Node.js, roda a bateria e mostra o resultado na tela; o código de saída é 0 se tudo passou.
+
 Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos, o painel de duplicatas, a regra de correção de horário (incluindo a janela configurável) e a validação das rotas da API.
 
 ---
@@ -305,7 +307,6 @@ Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos,
 ├── servidor-relatorio.js          Servidor HTTP/SSE e monitoramento do banco
 ├── gerar-relatorio-html.js        Geração do relatório (subprocesso)
 ├── config.json                    Configurações
-├── hora-fixada-cache.json         Horários corrigidos do dia (automático)
 ├── iniciar-tray.ps1               Ícone na bandeja + watchdog
 ├── launcher.vbs / bootstrap.vbs   Inicialização oculta
 ├── instalar-na-inicializacao.bat  Instalação da inicialização automática
@@ -316,7 +317,10 @@ Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos,
 ├── _instalar-node.ps1             Instalador do Node.js
 ├── node-firebird.bat              Instalador do módulo node-firebird
 ├── package.json                   Script de testes (npm test)
-└── test/                          Testes automáticos e Firebird simulado
+└── test/
+    ├── executar-testes.bat        Roda os testes no Windows (duplo clique)
+    ├── relatorio.test.js          Testes automáticos
+    └── mock-firebird/             Firebird simulado usado pelos testes
 ```
 
 ---
