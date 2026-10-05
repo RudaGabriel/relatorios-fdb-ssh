@@ -1,15 +1,13 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.2.2
+ * @version 3.3.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.2.2 - 2026-10-05 21:30 - Mescla da v3.2.1 (16 temas, data junto da hora no detalhe e demais recursos)
- *     com as correções que já estavam no GitHub (v2.9.2): escape de JSON em <script> contra XSS
- *     (_jsonParaScript), mescla do hora-fixada-cache.json gravando só as chaves alteradas, credenciais
- *     por variável de ambiente (RELATORIO_FB_USER/RELATORIO_FB_PASS do servidor e FIREBIRD_USER/
- *     FIREBIRD_PASSWORD da v3.2.1), atalhos Delete/Insert/CapsLock+P sem agir dentro de campos de texto,
- *     e linhas de duplicata reconstituídas com _idx/_busca (clique e busca funcionam nelas).
+ *   3.3.0 - 2026-10-05 21:45 - Janela de correção de horário configurável: lida de
+ *     "janelaCorrecaoHoraMin" no config.json (mesma chave do servidor), padrão 180 min
+ *     (3 horas) em vez de 1 hora fixa, limites de 5 a 720 min. Novo campo "Janela de
+ *     correção de horário (min)" no modal de configurações, com botão "Padrão (3h)".
  */
 
 (function() {
@@ -17,7 +15,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.2.2";
+    const SCRIPT_VERSION = "3.3.0";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -125,6 +123,9 @@
     let cfgProibidos             = [];
     let cfgAppName               = "Relatorios"; // default igual ao servidor — evita título "Relatório  YYYY-MM-DD" (espaço duplo) quando config.json não tem appName
     let cfgToastDuracao          = 5000;
+    // Janela de correção de horário (min) — mesma chave e mesmos limites de
+    // servidor-relatorio.js ("janelaCorrecaoHoraMin"); padrão 180 (3 horas).
+    let cfgJanelaHoraMin         = 180;
     let cfgTeclasPersonalizadas  = [];
     try {
         const rawCfg = fs.readFileSync(pathConfig, "utf8").replace(/^\uFEFF/, "");
@@ -132,6 +133,7 @@
         if (Array.isArray(c.proibidos))            cfgProibidos    = c.proibidos;
         if (c.appName && String(c.appName).trim()) cfgAppName      = String(c.appName).trim();
         const _td = parseInt(c.toastDuration, 10); if (_td >= 500) cfgToastDuracao = _td;
+        const _jh = parseInt(c.janelaCorrecaoHoraMin, 10); if (_jh >= 5 && _jh <= 720) cfgJanelaHoraMin = _jh;
         if (Array.isArray(c.teclasPersonalizadas)) cfgTeclasPersonalizadas = c.teclasPersonalizadas.filter(
             t => t && typeof t.tecla === "string" && (typeof t.comando === "string" || typeof t.acao === "string")
         );
@@ -462,11 +464,13 @@
 	// com a regra descrita pelo usuário:
 	//   hora acima da atual (futuro)      -> corrige para a hora atual
 	//   ate 3 min atras                    -> aceita como esta (marca OK)
-	//   entre 3 min e 1 hora atras         -> corrige para a hora atual
-	//   mais de 1 hora atras               -> ignora (fora da janela)
+	//   entre 3 min e a janela atras       -> corrige para a hora atual
+	//   mais antigo que a janela           -> ignora (fora da janela)
+	// A janela é configurável (v3.3.0): "janelaCorrecaoHoraMin" no config.json,
+	// padrão 180 min (3 horas) — antes era fixa em 1 hora.
 	// Antes eram 1,5 min de tolerancia e 18 min de janela, valores que nao
 	// batiam nem com a regra pedida nem com a janela usada pelo servidor.
-	const MAXIMO_ATRASO_MIN      = 60;   // janela: > 1 hora atrasado -> ignora
+	const MAXIMO_ATRASO_MIN      = cfgJanelaHoraMin; // janela: mais antigo que isso -> ignora
 
 	// ── CACHE DE HORAS DO PDV ─────────────────────────────────────────────────
 	// Quando uma venda de hoje tem hora futura (relógio do PDV adiantado), capamos
@@ -4928,6 +4932,7 @@ var __abrirModalConfig = function() {
         var _ml  = parseInt(cfg.maxLogLines  || 1000, 10);
         var _fv  = String(cfg.favicon        || "");
         var _td  = parseInt(cfg.toastDuration || 5000, 10);
+        var _jh  = parseInt(cfg.janelaCorrecaoHoraMin || 180, 10);
         var _prArr = Array.isArray(cfg.proibidos) ? cfg.proibidos : [];
 
         // Aplica a duração de toast imediatamente ao abrir o modal
@@ -4960,6 +4965,13 @@ var __abrirModalConfig = function() {
                 '<div style="display:flex;gap:8px;align-items:center;flex:1">' +
                   '<input type="number" id="cfgToastDuracao" value="' + _td + '" min="500" max="30000" step="500" class="input" style="flex:1">' +
                   '<button class="btn" type="button" id="cfgToastReset" data-tip="Restaurar duração padrão (5 segundos)" style="white-space:nowrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Padrão (5s)</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="kv">' +
+                '<div class="k" data-tip="Gerenciais com hora no futuro ou entre 3 min e este tempo atrás passam a usar a hora atual; mais antigas são ignoradas.">Janela de correção de horário (min)</div>' +
+                '<div style="display:flex;gap:8px;align-items:center;flex:1">' +
+                  '<input type="number" id="cfgJanelaHora" value="' + _jh + '" min="5" max="720" step="5" class="input" style="flex:1">' +
+                  '<button class="btn" type="button" id="cfgJanelaReset" data-tip="Restaurar janela padrão (3 horas)" style="white-space:nowrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Padrão (3h)</button>' +
                 '</div>' +
               '</div>' +
               '<div class="kv" style="flex-direction:column;gap:8px">' +
@@ -5149,6 +5161,9 @@ var __abrirModalConfig = function() {
         });
 
         // Botão restaurar padrão do toast
+        document.getElementById("cfgJanelaReset").addEventListener("click", function() {
+            document.getElementById("cfgJanelaHora").value = 180;
+        });
         document.getElementById("cfgToastReset").addEventListener("click", function() {
             document.getElementById("cfgToastDuracao").value = 5000;
         });
@@ -5189,6 +5204,7 @@ var __abrirModalConfig = function() {
             var pi   = parseInt(document.getElementById("cfgPollInterval").value, 10) || 800;
             var ml   = parseInt(document.getElementById("cfgMaxLogLines").value, 10)  || 1000;
             var td   = parseInt(document.getElementById("cfgToastDuracao").value, 10) || 5000;
+            var jh   = parseInt(document.getElementById("cfgJanelaHora").value, 10);
             var fv   = String(document.getElementById("cfgFaviconPath").value || "").trim();
             var prRaw= String(document.getElementById("cfgProibidos").value   || "");
             var pr   = prRaw.split("\n").map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
@@ -5198,6 +5214,7 @@ var __abrirModalConfig = function() {
             if (pi < 200) { toast("Erro", "Intervalo mínimo: 200 ms."); return; }
             if (ml < 100) { toast("Erro", "Mínimo de 100 linhas de log."); return; }
             if (td < 500) { toast("Erro", "Duração mínima de aviso: 500 ms."); return; }
+            if (!(jh >= 5 && jh <= 720)) { toast("Erro", "Janela de correção de horário: entre 5 e 720 minutos."); return; }
 
             _btn.disabled = true; _btn.textContent = "Salvando...";
             if (_st) _st.style.display = "block";
@@ -5206,7 +5223,7 @@ var __abrirModalConfig = function() {
                 _fetchJSON("/api/config", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, proibidos: pr, teclasPersonalizadas: _teclasArr})
+                    body: JSON.stringify({appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, janelaCorrecaoHoraMin: jh, proibidos: pr, teclasPersonalizadas: _teclasArr})
                 })
                 .then(function(d){
                     if (_st) _st.style.display = "none";

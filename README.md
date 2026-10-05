@@ -64,7 +64,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Filtro de "proibidos"**: lista de produtos ou marcas que podem ser ocultados ou isolados com uma tecla.
 - **Teclas de atalho personalizáveis**: cada tecla executa um comando de busca e/ou uma ação (copiar, filtrar, trocar tema…).
 - **Ferramentas de cópia** para a área de transferência: tudo, com itens, sem dinheiro, só gerencial.
-- Configurações editáveis pela própria tela: nome do sistema, ícone, intervalos, proibidos e atalhos.
+- Configurações editáveis pela própria tela: nome do sistema, ícone, intervalos, janela de correção de horário, proibidos e atalhos.
 
 ### Operação
 - **Ícone na bandeja do Windows** com abrir relatório, atualizar, gerar por período, configurações, selecionar banco, reiniciar e sair.
@@ -191,6 +191,7 @@ Os botões **Todos / Gerencial / NFC-e / NF-e**, ao lado da busca, restringem o 
 | `pollInterval` | `200` | Intervalo (ms) de verificação do navegador; o servidor usa no mínimo 2 s para a verificação completa |
 | `spawnTimeoutMs` | `120000` | Tempo máximo (30 s a 600 s) para gerar um relatório; aumente para períodos longos |
 | `toastDuration` | `5000` | Duração dos avisos na tela (ms) |
+| `janelaCorrecaoHoraMin` | `180` | Janela (min) da correção automática de horário das gerenciais, de 5 a 720 (veja [Correção automática de horário](#correção-automática-de-horário)) |
 | `maxLogLines` | `5000` | Linhas mantidas no `relatorio.log` |
 | `logDebug` | `false` | Registra detalhes de rotina (tempos de consulta etc.) |
 | `favicon` | `""` | Ícone personalizado (arquivo dentro da pasta do sistema) |
@@ -251,9 +252,11 @@ Relógios de PDV adiantados ou atrasados e vendas abertas há muito tempo gravam
 
 | Documento | Regra |
 |---|---|
-| **Gerencial** | Hora no futuro, ou entre 3 min e 1 h atrás → passa a ser a hora atual. Até 3 min atrás → aceita. Mais de 1 h → ignora. |
+| **Gerencial** | Hora no futuro, ou entre 3 min e a **janela de correção** atrás → passa a ser a hora atual. Até 3 min atrás → aceita. Mais antiga que a janela → ignora. A janela é configurável e o padrão é **3 horas**. |
 | **NFC-e / NF-e e pagamentos** | Só documentos que **aparecem** no banco já com mais de 1 min de atraso são corrigidos. O que já existia quando o servidor iniciou nunca é alterado. |
 | **Exibição** | A hora fixada fica guardada em `hora-fixada-cache.json`, para a venda não "pular" de posição a cada atualização. |
+
+A **janela de correção** fica em *Configurações → Janela de correção de horário (min)*, no relatório ou em `/config`, ou na chave `janelaCorrecaoHoraMin` do `config.json`. O padrão é 180 min (3 horas), o mínimo é 5 min e o máximo é 720 min (12 horas). A mudança vale na hora, sem reiniciar. Perto da meia-noite a janela começa às 00:00 (nunca alcança vendas do dia anterior) e as correções continuam ativas.
 
 Cada correção é registrada no log e avisada na tela.
 
@@ -276,7 +279,7 @@ Cada correção é registrada no log e avisada na tela.
 Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja e instalador, no formato `[DD-MM-AAAA] [HH:MM:SS] mensagem`. A primeira linha de cada dia mostra as versões em uso:
 
 ```
-[05-10-2026] [08:00:01] === Servidor iniciado 05/10/2026 === Servidor v2.9.1 | Gerador v3.2.2
+[05-10-2026] [08:00:01] === Servidor iniciado 05/10/2026 === Servidor v2.10.0 | Gerador v3.3.0
 ```
 
 - Chamadas à API vindas de **outros computadores** são registradas com IP e nome da máquina.
@@ -292,7 +295,7 @@ Os testes rodam **sem Firebird real**: um banco simulado em `test/mock-firebird`
 npm test
 ```
 
-Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos, o painel de duplicatas, a regra de correção de horário e a validação das rotas da API.
+Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos, o painel de duplicatas, a regra de correção de horário (incluindo a janela configurável) e a validação das rotas da API.
 
 ---
 

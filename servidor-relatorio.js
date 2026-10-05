@@ -2,19 +2,18 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.9.1
+ * @version 2.10.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.9.1 - 2026-10-05 17:30 - Chave do hora-fixada-cache.json no mesmo
- *                        formato do gerador ("YYYY-MM-DD|numero" sem zeros à
- *                        esquerda). Antes o servidor gravava o número cru do
- *                        banco ("061449") e o gerador "61449" — a mesma venda
- *                        podia ter duas entradas. A busca confere os dois
- *                        formatos, então entradas antigas continuam valendo
- *                        (nenhuma gerencial é corrigida de novo na atualização).
- *                        Testes automáticos em test/ (npm test).
+ *   2.10.0 - 2026-10-05 21:45 - Janela de correção de horário das gerenciais
+ *                        configurável ("janelaCorrecaoHoraMin" no config.json,
+ *                        editável em /config e no modal do relatório). Padrão
+ *                        passa de 1 h para 3 h (180 min); aceita 5 a 720 min e
+ *                        vale sem reiniciar. Perto da meia-noite a janela agora
+ *                        é recortada em 00:00 em vez de suspender as correções
+ *                        (com 3 h, ficariam desligadas de 00:00 a 03:00).
  */
 
 
@@ -22,7 +21,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.9.1";
+const SERVER_VERSION = "2.10.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2360,7 +2359,19 @@ var _HORA_VELHA_MS               =  1 * 60 * 1000; // 1 minuto  — corrige hor�
 // pedido do usuário. Define até quando olhar para trás procurando vendas
 // com horário a corrigir. Vendas mais antigas que isso são deixadas em paz
 // (assume-se que o horário delas é o correto, não um relógio adiantado).
-var _HORA_GERENCIAL_JANELA_MS    = 60 * 60 * 1000; // 1 hora — janela de verificação retroativa para gerenciais
+// CONFIGURÁVEL (v2.10.0): a janela agora vem de "janelaCorrecaoHoraMin" no
+// config.json (editável nas telas de configurações). Padrão: 180 min (3 h);
+// limites: 5 min a 720 min (12 h). O gerador lê a mesma chave, então os dois
+// lados sempre aplicam a mesma janela.
+var JANELA_HORA_PADRAO_MIN = 180;
+var JANELA_HORA_MIN_MIN    = 5;
+var JANELA_HORA_MAX_MIN    = 720;
+var _normalizarJanelaHoraMin = function(v) {
+    var n = parseInt(v, 10);
+    if (!(n >= JANELA_HORA_MIN_MIN && n <= JANELA_HORA_MAX_MIN)) return JANELA_HORA_PADRAO_MIN;
+    return n;
+};
+var _HORA_GERENCIAL_JANELA_MS    = _normalizarJanelaHoraMin(appCfg.janelaCorrecaoHoraMin) * 60 * 1000; // janela de verificação retroativa para gerenciais
 var _HORA_GERENCIAL_TOLERANCIA_MS =  3 * 60 * 1000; // 3 minutos  — notas com hora dentro desse intervalo passam sem ajuste
 
 // Throttle das funções de correção de horário.
@@ -2665,21 +2676,26 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
     // Bug anterior: usava agoraAjustado() com _clientTzOffsetMs=0 → hora UTC errada.
     var _nowMs    = Date.now();
     var _agoraD   = new Date(_nowMs);
-    var _threshD30 = new Date(_nowMs - _HORA_GERENCIAL_JANELA_MS);    // 30 min atrás — limite da janela
+    var _threshD30 = new Date(_nowMs - _HORA_GERENCIAL_JANELA_MS);    // início da janela (janelaCorrecaoHoraMin atrás)
     var _threshD3  = new Date(_nowMs - _HORA_GERENCIAL_TOLERANCIA_MS); //  3 min atrás — limite da tolerância
     var horaAtual   = padDois(_agoraD.getHours())    + ":" + padDois(_agoraD.getMinutes())    + ":" + padDois(_agoraD.getSeconds());
     var horaLimite30 = padDois(_threshD30.getHours()) + ":" + padDois(_threshD30.getMinutes()) + ":" + padDois(_threshD30.getSeconds());
     var horaLimite3  = padDois(_threshD3.getHours())  + ":" + padDois(_threshD3.getMinutes())  + ":" + padDois(_threshD3.getSeconds());
 
-    // Guard meia-noite: usa _threshD30 (mais conservador dos dois) para detectar
-    // cruzamento do dia local. Idêntico à lógica de _corrigirHorariosVelhos.
-    var _agoraDiaStr  = _agoraD.getFullYear() + "-" + padDois(_agoraD.getMonth()+1) + "-" + padDois(_agoraD.getDate());
-    var _threshDiaStr = _threshD30.getFullYear() + "-" + padDois(_threshD30.getMonth()+1) + "-" + padDois(_threshD30.getDate());
-    if (_threshDiaStr < _agoraDiaStr) {
-        // guard meia-noite — silencioso para não inundar o log
+    // Meia-noite. AJUSTE (v2.10.0): antes, se o INÍCIO da janela caísse no
+    // dia anterior, a função inteira era suspensa — com a janela de 1 h isso
+    // desligava as correções de 00:00 a 01:00; com 3 h desligaria até 03:00.
+    // Agora a janela só é recortada na meia-noite ("00:00:00"), pois horas do
+    // dia anterior não existem nas vendas de hoje. A suspensão fica apenas
+    // para os primeiros minutos da tolerância (horaLimite3 ainda "ontem"), em
+    // que a comparação de texto "23:5x" > "00:0x" inverteria a regra.
+    var _diaDe = function(d) { return d.getFullYear() + "-" + padDois(d.getMonth()+1) + "-" + padDois(d.getDate()); };
+    var _agoraDiaStr = _diaDe(_agoraD);
+    if (_diaDe(_threshD3) < _agoraDiaStr) {
         _corriGerencialEmAndamento = false;
         return;
     }
+    if (_diaDe(_threshD30) < _agoraDiaStr) horaLimite30 = "00:00:00";
 
     // NÃO loga no início — chamado a cada poll (200ms).
     // Logs apenas quando efetivamente corrige ou ocorre erro.
@@ -3972,6 +3988,7 @@ var server=http.createServer(function(req,res){
             favicon:               _config.favicon              || "",
             toastDuration:         _config.toastDuration        || 5000, // CONTRATO FIX: padrão unificado com filho (era 4000)
             spawnTimeoutMs:        _SPAWN_TIMEOUT_MS,
+            janelaCorrecaoHoraMin: Math.round(_HORA_GERENCIAL_JANELA_MS / 60000),
             proibidos:             Array.isArray(_config.proibidos) ? _config.proibidos : [],
             teclasPersonalizadas:  Array.isArray(_config.teclasPersonalizadas) ? _config.teclasPersonalizadas : []
         });
@@ -4010,6 +4027,15 @@ var server=http.createServer(function(req,res){
                     obj.favicon = _favChk.valor;
                 }
                 if(p.toastDuration !== undefined){ var td=parseInt(p.toastDuration,10);   if(td>=500&&td<=60000) obj.toastDuration=td; }
+                if(p.janelaCorrecaoHoraMin !== undefined){
+                    var jh=parseInt(p.janelaCorrecaoHoraMin,10);
+                    if(!(jh>=JANELA_HORA_MIN_MIN && jh<=JANELA_HORA_MAX_MIN)){
+                        res.writeHead(400,{"Content-Type":"application/json; charset=utf-8"});
+                        res.end(JSON.stringify({ok:false,erro:"Janela de correção de horário deve ficar entre "+JANELA_HORA_MIN_MIN+" e "+JANELA_HORA_MAX_MIN+" minutos."}));
+                        return;
+                    }
+                    obj.janelaCorrecaoHoraMin=jh;
+                }
                 // VALIDAÇÃO FIX (v2.9.0): antes qualquer array era gravado como veio
                 // (inclusive [1,{},null]); teclas exigiam "comando" mesmo quando o
                 // modal envia só "acao". Mesma regra de /api/proibidos agora.
@@ -4086,6 +4112,12 @@ var server=http.createServer(function(req,res){
                     _FAVICON_CACHE = null; // invalida o cache em memória do favicon servido
                 }
                 if(obj.toastDuration&&parseInt(obj.toastDuration,10)>=500) TOAST_DURATION=parseInt(obj.toastDuration,10);
+                // Vale já no próximo ciclo de correção — sem reiniciar o servidor.
+                var _janelaAnteriorMin = Math.round(_HORA_GERENCIAL_JANELA_MS / 60000);
+                _HORA_GERENCIAL_JANELA_MS = _normalizarJanelaHoraMin(obj.janelaCorrecaoHoraMin) * 60000;
+                if (Math.round(_HORA_GERENCIAL_JANELA_MS / 60000) !== _janelaAnteriorMin) {
+                    logTs("Janela de correção de horário alterada: " + _janelaAnteriorMin + " → " + Math.round(_HORA_GERENCIAL_JANELA_MS / 60000) + " min.");
+                }
 
                 // Sincroniza _config em memória com o objeto já processado (sem novo readFileSync).
                 try { Object.assign(_config, obj); appCfg = _config; cfg = _config; } catch(_sc) {}
@@ -4115,6 +4147,7 @@ var server=http.createServer(function(req,res){
             var _pi=parseInt(cc.pollInterval||POLL_INTERVAL,10);
             var _ml=parseInt(cc.maxLogLines||MAX_LOG_LINES,10);
             var _td=parseInt(cc.toastDuration||TOAST_DURATION||5000,10);
+            var _jh=Math.round(_HORA_GERENCIAL_JANELA_MS/60000);
             var _fv=escH(cc.favicon||"");
             // XSS FIX (v2.9.0): JSON.stringify não escapa "</script>" — um termo
             // proibido com esse texto executava código nesta página.
@@ -4150,6 +4183,7 @@ var server=http.createServer(function(req,res){
             "<div class=\"field\"><label>Intervalo de polling (ms)</label><input type=\"number\" id=\"pollInterval\" value=\""+_pi+"\" min=\"200\" step=\"100\"><p class=\"hint\">Minimo: 200 ms</p></div>"+
             "<div class=\"field\"><label>Maximo de linhas de log</label><input type=\"number\" id=\"maxLogLines\" value=\""+_ml+"\" min=\"100\" step=\"100\"><p class=\"hint\">Minimo: 100 linhas</p></div>"+
             "</div>"+
+            "<div class=\"field\"><label>Janela de correcao de horario (min)</label><input type=\"number\" id=\"janelaHora\" value=\""+_jh+"\" min=\""+JANELA_HORA_MIN_MIN+"\" max=\""+JANELA_HORA_MAX_MIN+"\" step=\"5\"><p class=\"hint\">Vendas gerenciais com hora no futuro ou entre 3 min e este tempo atras passam a usar a hora atual; mais antigas sao ignoradas. Padrao: 180 (3 horas). Minimo "+JANELA_HORA_MIN_MIN+", maximo "+JANELA_HORA_MAX_MIN+".</p></div>"+
             "<div class=\"field\"><label>Duracao do toast (ms)</label><input type=\"number\" id=\"toastDuration\" value=\""+_td+"\" min=\"500\" max=\"60000\" step=\"500\"><p class=\"hint\">Tempo que a notificacao de mudanca fica visivel. Minimo: 500 ms, maximo: 60 000 ms.</p></div>"+
             "<div class=\"field\">"+
               "<label>Ícone (favicon)</label>"+
@@ -4188,6 +4222,7 @@ var server=http.createServer(function(req,res){
             "var pi=parseInt(document.getElementById('pollInterval').value,10)||200;"+
             "var ml=parseInt(document.getElementById('maxLogLines').value,10)||1000;"+
             "var td=parseInt(document.getElementById('toastDuration').value,10)||4000;"+
+            "var jh=parseInt(document.getElementById('janelaHora').value,10);"+
             "var fv=document.getElementById('favicon').value.trim();"+
             "var praw=document.getElementById('proibidos').value;"+
             "var pr=praw.split('\\n').map(function(s){return s.trim();}).filter(function(s){return s.length>0;});"+
@@ -4196,9 +4231,10 @@ var server=http.createServer(function(req,res){
             "if(pi<200){showMsg('Intervalo minimo e 200 ms.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(ml<100){showMsg('Maximo de linhas minimo e 100.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(td<500||td>60000){showMsg('Duracao do toast deve estar entre 500 e 60 000 ms.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
+            "if(!(jh>="+JANELA_HORA_MIN_MIN+"&&jh<="+JANELA_HORA_MAX_MIN+")){showMsg('Janela de correcao de horario deve ficar entre "+JANELA_HORA_MIN_MIN+" e "+JANELA_HORA_MAX_MIN+" minutos.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "var doSave=function(){"+
             "fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},"+
-            "body:JSON.stringify({appName:an,pollInterval:pi,maxLogLines:ml,toastDuration:td,favicon:fv,proibidos:pr})})"+
+            "body:JSON.stringify({appName:an,pollInterval:pi,maxLogLines:ml,toastDuration:td,janelaCorrecaoHoraMin:jh,favicon:fv,proibidos:pr})})"+
             ".then(function(r){return r.json();})"+
             ".then(function(d){"+
             "if(d.ok){showMsg('Configuracoes salvas com sucesso! O relatorio sera atualizado.','ok');}"+
