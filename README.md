@@ -56,6 +56,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
   - vendedor ou forma de pagamento preenchidos depois da venda.
 - **Atualização automática do navegador por SSE** (Server-Sent Events), com polling HTTP como reserva.
 - Avisos na tela (toasts) para correções de horário.
+- **Aviso claro de servidor encerrado:** quando o servidor é encerrado ou a conexão cai por mais de 4 s, o relatório aberto mostra uma faixa no topo ("Servidor de relatórios encerrado", "Servidor reiniciando..." ou "Sem conexão com o servidor") e recarrega sozinho quando o servidor volta.
 
 ### Interface
 - **16 temas de cores** (10 escuros e 6 claros), com prévia no menu; a escolha fica salva no navegador.
@@ -225,6 +226,7 @@ Todas as rotas respondem na porta configurada (padrão `7734`).
 | `/api/navigate/hoje` · `/config` · `/selecionar-fdb` · `/periodo/INI/FIM` · `/hash/{config\|periodo}` · `/foco` | GET | Comandam as abas abertas via SSE |
 | `/api/sse-clients` | GET | Número de abas conectadas |
 | `/api/restart` | GET | Reinicia o servidor (apenas rede local) |
+| `/api/encerrar[?reiniciar=1&origem=texto]` | GET | Encerramento ordenado: registra no log, avisa as abas abertas e sai (apenas rede local) |
 | `/api/log-error`, `/api/hora-usuario` | POST | Uso interno do navegador |
 
 ---

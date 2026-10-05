@@ -2,18 +2,24 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.10.0
+ * @version 2.11.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.10.0 - 2026-10-05 21:45 - Janela de correção de horário das gerenciais
- *                        configurável ("janelaCorrecaoHoraMin" no config.json,
- *                        editável em /config e no modal do relatório). Padrão
- *                        passa de 1 h para 3 h (180 min); aceita 5 a 720 min e
- *                        vale sem reiniciar. Perto da meia-noite a janela agora
- *                        é recortada em 00:00 em vez de suspender as correções
- *                        (com 3 h, ficariam desligadas de 00:00 a 03:00).
+ *   2.11.0 - 2026-10-05 22:30 - Encerramento com mensagem clara. Antes, ao
+ *                        encerrar (tray, Ctrl+C, /api/restart, queda), nada
+ *                        avisava: o log não registrava e o relatório aberto
+ *                        ficava parado na tela como se estivesse funcionando.
+ *     - Encerramento único (_encerrarServidor): registra "=== Servidor
+ *       encerrado: motivo ===" no relatorio.log, avisa as abas abertas por SSE,
+ *       mata os subprocessos e sai. Usado por Ctrl+C/SIGTERM/SIGBREAK/SIGHUP,
+ *       /api/restart e pela nova rota /api/encerrar (chamada pelo tray).
+ *     - Saídas fora desse caminho registram "Servidor finalizado (código N)".
+ *     - Relatório aberto: faixa fixa no topo "Servidor de relatórios
+ *       encerrado" / "Servidor reiniciando..." / "Sem conexão com o servidor"
+ *       (conexão perdida por mais de 4 s); a página recarrega sozinha quando o
+ *       servidor volta.
  */
 
 
@@ -21,7 +27,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.10.0";
+const SERVER_VERSION = "2.11.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -1839,6 +1845,28 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             // Estado interno — _loadTs marca quando esta página foi carregada
             "var _q="+qt+",_t="+(Math.round(tot*100)/100)+",_loadTs=Date.now();" +
             "console.log('[srv] auto-reload ativo | qt='+_q+' tot='+_t+' loadTs='+_loadTs);" +
+            // Aviso de servidor encerrado/sem conexão (v2.11.0) — faixa fixa no
+            // topo. Aparece quando o servidor avisa que vai encerrar (SSE
+            // "encerrando") ou quando a conexão fica perdida por mais de 4 s
+            // (servidor derrubado à força, rede caiu). Some e a página recarrega
+            // sozinha assim que o servidor volta a responder.
+            "var _srvFora=false,_srvErroDesde=0;" +
+            "var _srvAviso=function(titulo,detalhe,cor){try{" +
+            "var b=document.getElementById('__srv_fora');" +
+            "if(!b){b=document.createElement('div');b.id='__srv_fora';b.setAttribute('role','alert');" +
+            "b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:12px 18px;" +
+            "font:600 14px Inter,Arial,sans-serif;color:#fff;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5)';" +
+            "document.body.appendChild(b);}" +
+            "b.style.background=cor;b.textContent='';" +
+            "var t=document.createElement('div');t.textContent=titulo;b.appendChild(t);" +
+            "var d=document.createElement('div');d.textContent=detalhe;" +
+            "d.style.cssText='font-weight:400;font-size:12px;opacity:.9;margin-top:3px';b.appendChild(d);" +
+            "_srvFora=true;}catch(_){}};" +
+            "var _srvAvisoEncerrado=function(reiniciando){_srvAviso(" +
+            "reiniciando?'Servidor reiniciando...':'Servidor de relatórios encerrado'," +
+            "reiniciando?'O relatório volta sozinho em alguns segundos.':" +
+            "'Os dados desta tela pararam de ser atualizados. A página recarrega sozinha quando o servidor for iniciado de novo.'," +
+            "reiniciando?'#b45309':'#b91c1c');};" +
             // SSE (primário)
             "var _es=null,_connTry=0;" +
             "var _conn=function(){" +
@@ -1852,6 +1880,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             // aceita caminho relativo ao próprio servidor ("/..." e não "//").
             "if(d.type==='navigate'){var _u=String(d.url||'/');if(_u.charAt(0)!=='/'||_u.charAt(1)==='/')_u='/';window.location.assign(_u);}" +
             "if(d.type==='foco'){try{window.focus();}catch(_){}}" +
+            "if(d.type==='encerrando'){_srvAvisoEncerrado(!!d.reiniciando);}" +
             "if(d.type==='navigate-hash'&&d.hash){" +
             "if(typeof __abrirModalConfig==='function'&&d.hash==='config'){__abrirModalConfig();}" +
             "else if(typeof __abrirModalPeriodo==='function'&&d.hash==='periodo'){__abrirModalPeriodo();}" +
@@ -1880,7 +1909,10 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "fetch('/api/status',{cache:'no-store'})" +
             ".then(function(r){return r.ok?r.json():Promise.reject(r.status);})" +
             ".then(function(d){" +
-            "_pollErros=0;" +
+            "_pollErros=0;_srvErroDesde=0;" +
+            // Servidor voltou depois de ter caído/encerrado: recarrega para
+            // mostrar os dados atuais (e tirar o aviso).
+            "if(_srvFora){window.location.replace(window.location.href);return;}" +
             "if(d.correcoes&&d.correcoes.length){" +
             "var _deveReload=false;" +
             "d.correcoes.forEach(function(c){" +
@@ -1919,6 +1951,9 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             ")" +
             ".catch(function(err){_pollErros++;" +
             "if(_pollErros<=3)console.log('[srv] poll erro #'+_pollErros+': '+err);" +
+            "if(!_srvErroDesde)_srvErroDesde=Date.now();" +
+            "if(!_srvFora&&Date.now()-_srvErroDesde>4000)_srvAviso('Sem conexão com o servidor de relatórios'," +
+            "'O servidor pode ter sido encerrado ou a rede caiu. Os dados desta tela pararam de ser atualizados; a página recarrega sozinha quando a conexão voltar.','#b91c1c');" +
             "});};" +
             "setInterval(_poll,"+pollMs+");"
             ) : "") +
@@ -3612,6 +3647,19 @@ var aplicarNovoFdb = function(caminhoBruto, cb) {
 // ---------------------------------------------------------------------------
 // Servidor HTTP
 // ---------------------------------------------------------------------------
+// IP de origem da requisição, sem o prefixo IPv4-mapeado-em-IPv6.
+var _ipDaRequisicao = function(req) {
+    return String((req.socket && req.socket.remoteAddress) || "local").replace(/^::ffff:/, "");
+};
+// Rede local (ou a própria máquina). Endereços de fora da rede local não
+// podem reiniciar nem encerrar o servidor.
+var _requisicaoDaRedeLocal = function(req) {
+    var bruto = (req.socket && req.socket.remoteAddress) || "";
+    var ip = bruto.replace(/^::ffff:/, "");
+    var local = /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || bruto === "::1";
+    return local || !_maquinaIP || BIND_ADDR !== "0.0.0.0";
+};
+
 var server=http.createServer(function(req,res){
     
     if(/^\/(favicon\.(ico|png)|apple-touch-icon\.png)/.test(req.url)){
@@ -3737,26 +3785,35 @@ var server=http.createServer(function(req,res){
         // fechado protegia pouco e atrapalhava muito.
         // Endereços FORA da rede local continuam bloqueados: nenhuma máquina
         // de outra rede consegue derrubar o servidor.
-        var _remoteIp = (req.socket && req.socket.remoteAddress) || "";
-        var _remoteIpLimpo = _remoteIp.replace(/^::ffff:/, ""); // normaliza IPv4-mapeado-em-IPv6
-        var _ehRedeLocal = /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(_remoteIpLimpo)
-            || _remoteIp === "::1";
-        if (!_ehRedeLocal && _maquinaIP && BIND_ADDR === "0.0.0.0") {
+        if (!_requisicaoDaRedeLocal(req)) {
             res.writeHead(403, {"Content-Type":"application/json; charset=utf-8"});
             res.end(JSON.stringify({ok:false,erro:"Acesso negado — restart disponível apenas a partir da rede local."}));
             return;
         }
-        logTs("Reinicialização solicitada via API ("
-            + (req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "local")
-            + "). Encerrando em 1s...");
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
         res.end(JSON.stringify({ok:true,msg:"Servidor encerrando. O tray reiniciará em ~10s."}));
-        setTimeout(function(){
-            // BUG FIX: usava loop inline sem /T (kill tree) no Windows, diferente de
-            // _matarTodosFilhos que usa /F /T. Agora reutiliza a função centralizada.
-            _matarTodosFilhos();
-            setTimeout(function(){ process.exit(0); }, 400);
-        }, 1000);
+        // Encerramento único (v2.11.0): registra no log, avisa as abas abertas
+        // e mata os subprocessos antes de sair.
+        _encerrarServidor("reinício solicitado via API por " + _ipDaRequisicao(req), 0, true);
+        return;
+    }
+
+    // /api/encerrar[?reiniciar=1&origem=texto] — encerramento ordenado (v2.11.0).
+    // Usado pelo tray em "Sair" e "Reiniciar servidor": antes ele matava o
+    // processo direto (taskkill /F), sem chance de o servidor registrar no log
+    // nem avisar as telas abertas — o relatório ficava parado na tela sem
+    // nenhuma indicação de que o servidor tinha sido encerrado.
+    if(rota==="/api/encerrar"){
+        if (!_requisicaoDaRedeLocal(req)) {
+            res.writeHead(403, {"Content-Type":"application/json; charset=utf-8"});
+            res.end(JSON.stringify({ok:false,erro:"Acesso negado — encerramento disponível apenas a partir da rede local."}));
+            return;
+        }
+        var _reiniciar = parsed.searchParams.get("reiniciar") === "1";
+        var _origem = _textoSeguroLog(parsed.searchParams.get("origem") || "", 40) || _ipDaRequisicao(req);
+        res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
+        res.end(JSON.stringify({ok:true,msg:_reiniciar ? "Servidor reiniciando." : "Servidor encerrando."}));
+        _encerrarServidor((_reiniciar ? "reinício" : "encerramento") + " solicitado por " + _origem, 0, _reiniciar);
         return;
     }
 
@@ -4693,7 +4750,7 @@ server.on("error",function(err){
         logTs("Servidor ja rodando na porta "+PORT+". Encerrando.");
         setTimeout(function(){process.exit(0);},300);
     } else {
-        console.error("Erro: "+err.message);process.exit(1);
+        logTs("ERRO ao iniciar o servidor HTTP: "+err.message);process.exit(1);
     }
 });
 
@@ -4707,4 +4764,46 @@ process.on("exit", function() {
     try { if (typeof _fpDb !== "undefined" && _fpDb) _matarConexao(_fpDb); } catch(_) {}
 });
 
-process.on("SIGINT",function(){console.log("\nServidor encerrado.\n");process.exit(0);});
+// ---------------------------------------------------------------------------
+// Encerramento único (v2.11.0)
+// Antes, cada caminho de saída fazia uma coisa diferente — Ctrl+C só imprimia
+// no console, /api/restart saía em silêncio, e o tray matava o processo à
+// força. Ninguém (log, abas abertas, operador) ficava sabendo com clareza
+// que o servidor tinha parado. Agora todo encerramento passa por aqui:
+//   1. registra "=== Servidor encerrado: motivo ===" no relatorio.log;
+//   2. avisa as abas abertas via SSE (o relatório mostra um aviso fixo e
+//      recarrega sozinho quando o servidor voltar);
+//   3. para de aceitar conexões, mata os subprocessos e sai.
+// ---------------------------------------------------------------------------
+var _encerrando = false;
+function _encerrarServidor(motivo, codigoSaida, reiniciando) {
+    if (_encerrando) return;
+    _encerrando = true;
+    logTs("=== Servidor " + (reiniciando ? "reiniciando" : "encerrado") + ": " + motivo + " ===");
+    try { broadcastSSE({ type: "encerrando", reiniciando: !!reiniciando }); } catch(_) {}
+    try { clearTimeout(_logFlushTimer); _flushLog(); } catch(_) {}
+    try { server.close(); } catch(_) {}
+    // Pequena espera para o aviso SSE sair pela rede antes de fechar tudo.
+    setTimeout(function() {
+        try { _matarTodosFilhos(); } catch(_) {}
+        setTimeout(function() { process.exit(codigoSaida || 0); }, 300);
+    }, 400);
+}
+
+// Sinais de encerramento: Ctrl+C (SIGINT), Ctrl+Break e fechamento da janela
+// do console no Windows (SIGBREAK/SIGHUP), e kill comum (SIGTERM).
+["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"].forEach(function(sinal) {
+    try { process.on(sinal, function() { _encerrarServidor("sinal " + sinal + " recebido", 0, false); }); } catch(_) {}
+});
+
+// Saída por qualquer outro caminho (erro fatal, process.exit fora do
+// encerramento único): deixa registrado que o servidor parou e com qual código.
+// O kill forçado do sistema (taskkill /F) não passa por aqui — esse caso é
+// registrado pelo tray, que é quem o executa.
+process.on("exit", function(codigo) {
+    if (_encerrando) return;
+    try {
+        logTs("=== Servidor finalizado (código de saída " + codigo + ") ===");
+        clearTimeout(_logFlushTimer); _flushLog();
+    } catch(_) {}
+});
