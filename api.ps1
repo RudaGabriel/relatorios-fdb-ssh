@@ -10,6 +10,7 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
 @version 1.4.0
+@author Ruda Gabriel
 @changelog
   1.4.0 - 2026-10-05 16:24 - Revisao completa.
     - Invoke-ApiCall repetia (com espera exponencial) ate' respostas 4xx do

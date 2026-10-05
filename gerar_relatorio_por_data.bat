@@ -5,6 +5,7 @@ chcp 65001 >nul 2>&1
 
 :: =========================================================
 ::  Relatorio por Data Especifica                    v1.5.0
+::  Autor: Ruda Gabriel
 ::  - Verifica / instala Node.js automaticamente
 ::  - Verifica / instala modulo node-firebird automaticamente
 ::  - Inicia servidor se necessario

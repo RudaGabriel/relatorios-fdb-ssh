@@ -1,7 +1,8 @@
 {
   "name": "relatorios-fdb",
   "private": true,
-  "description": "Servidor de relatórios de vendas (Firebird / Small Commerce)",
+  "description": "Painel de vendas em tempo real (Gerencial, NFC-e e NF-e) para Small Commerce sobre Firebird",
+  "author": "Ruda Gabriel",
   "scripts": {
     "test": "node --test test/relatorio.test.js"
   },
