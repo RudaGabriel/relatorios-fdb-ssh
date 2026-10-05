@@ -98,6 +98,17 @@ test("gerador: janela de correção de horário — padrão 3 h e valor configur
     assert.strictEqual(cache60[chave], undefined, "com janela de 60 min a venda de 2 h atrás deveria ser ignorada");
 });
 
+test("padrão de fábrica: config.json do repositório sem dados de loja e sem proibidos embutidos", () => {
+    const cfg = JSON.parse(fs.readFileSync(path.join(RAIZ_PROJETO, "config.json"), "utf8"));
+    assert.strictEqual(cfg.appName, "Relatorios");
+    assert.deepStrictEqual(cfg.proibidos, []);
+    assert.deepStrictEqual(cfg.teclasPersonalizadas, []);
+    for (const k of ["fbHost", "fdbPath", "maquinaIP", "fbUser", "fbPass", "favicon"]) assert.strictEqual(cfg[k], "", k + " deveria estar vazio");
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(RAIZ_PROJETO, "hora-fixada-cache.json"), "utf8")), {});
+    const html = gerar(montarPasta());
+    assert.ok(html.includes("const proibidosPadrao=[];"), "a lista padrão de proibidos deveria vir vazia");
+});
+
 test("gerador: duplicata gerencial→NFC-e vai para o painel e sai da tabela", () => {
     const dir = montarPasta({}, { nfce: [
         { numero: "300", hora: "10:00", modelo: 99 },
