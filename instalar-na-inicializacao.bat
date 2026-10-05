@@ -142,10 +142,17 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.11.0
+:: instalar-na-inicializacao.bat                       v1.11.1
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
-:: CHANGELOG 1.11.0 - 2026-08-12 22:30 - bootstrap.vbs deixou de ser GERADO
+:: CHANGELOG 1.11.1 - 2026-10-05 17:30 - O nome do sistema perdia TODOS os
+::   espacos ("Loja Silva" virava "LojaSilva") no titulo, no nome da tarefa
+::   agendada, do atalho e da regra de firewall: o "!APP_NAME: =!" que so'
+::   deveria TESTAR se o nome estava vazio sobrescrevia a propria variavel.
+::   Agora o teste usa uma variavel separada, e a tarefa/atalho/regra com o
+::   nome antigo (sem espacos) sao removidos para nao ficarem duplicados.
+::
+:: CHANGELOG (anterior) 1.11.0 - 2026-08-12 22:30 - bootstrap.vbs deixou de ser GERADO
 ::                                         e passou a ser COPIADO.
 ::  - Gerar o arquivo linha a linha com "echo" exigia escapar ( ) & < > e
 ::    conviver com as regras de expansao do cmd. Falhou de tres formas
@@ -258,10 +265,14 @@ powershell -NoProfile -Command ^
     "try{(Get-Content '%CFG%' -Raw -Encoding UTF8 | ConvertFrom-Json).appName}catch{''}" ^
     > "!_TMP!" 2>nul
 if exist "!_TMP!" ( set /p APP_NAME= < "!_TMP!" & del "!_TMP!" >nul 2>&1 )
-set "APP_NAME=!APP_NAME: =!"
+rem Nome sem espacos: usado so' para testar se o nome esta vazio e para
+rem limpar tarefa/atalho/regra de firewall criados por versoes anteriores.
+rem Substituicao so' com a variavel definida: em variavel indefinida o cmd
+rem devolve o texto literal da expressao em vez de vazio.
+set "APP_NAME_LEGADO="
+if defined APP_NAME set "APP_NAME_LEGADO=!APP_NAME: =!"
 
-if not defined APP_NAME goto :pedir_nome
-if "!APP_NAME!"=="" goto :pedir_nome
+if not defined APP_NAME_LEGADO goto :pedir_nome
 goto :nome_ok
 
 :pedir_nome
@@ -455,6 +466,7 @@ echo.
 ::    - O delay de 2 min da tempo ao Windows de montar drives de rede
 :: ---------------------------------------------------------------------------
 schtasks /delete /tn "!TASK_NAME!" /f >nul 2>&1
+if defined APP_NAME_LEGADO if not "!APP_NAME_LEGADO!"=="!APP_NAME!" schtasks /delete /tn "!APP_NAME_LEGADO! - Relatorios" /f >nul 2>&1
 
 schtasks /create /tn "!TASK_NAME!" ^
     /tr "wscript.exe \"!BOOTSTRAP_FILE!\"" ^
@@ -494,6 +506,7 @@ rem motivo do bootstrap - um atalho velho apontando para um caminho antigo
 rem sobreviveria a uma gravacao que falhasse, e a checagem "if exist" logo
 rem abaixo confirmaria sucesso olhando para o arquivo ERRADO.
 if exist "!SHORTCUT!" del /f /q "!SHORTCUT!" >nul 2>&1
+if defined APP_NAME_LEGADO if exist "!STARTUP!\!APP_NAME_LEGADO! Relatorios.vbs" if not "!APP_NAME_LEGADO!"=="!APP_NAME!" del /f /q "!STARTUP!\!APP_NAME_LEGADO! Relatorios.vbs" >nul 2>&1
 
 (
     echo Dim sh
@@ -533,6 +546,7 @@ for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "try{$p=(Get-C
 echo Liberando porta !PORTA! no Firewall do Windows...
 set "FW_NOME=!APP_NAME! - Relatorios (porta !PORTA!)"
 netsh advfirewall firewall delete rule name="!FW_NOME!" >nul 2>&1
+if defined APP_NAME_LEGADO if not "!APP_NAME_LEGADO!"=="!APP_NAME!" netsh advfirewall firewall delete rule name="!APP_NAME_LEGADO! - Relatorios (porta !PORTA!)" >nul 2>&1
 netsh advfirewall firewall add rule name="!FW_NOME!" dir=in action=allow protocol=TCP localport=!PORTA! profile=any >nul 2>&1
 if %errorlevel% equ 0 (
     echo   [OK] Porta !PORTA! liberada em todos os perfis de rede.

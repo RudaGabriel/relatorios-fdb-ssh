@@ -2,40 +2,18 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.9.0
+ * @version 2.9.1
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.9.0 - 2026-10-05 16:24 - Revisão completa (corretude, segurança, desempenho):
- *     - CRÍTICO: _corrigirHorariosVelhos reescrevia no banco a hora de TODAS
- *       as NFC-e/pagamentos do dia a cada reinício (Set volátil vazio) e
- *       deslocava toda venda nova em ~1 min (qualquer venda vira "velha" 1 min
- *       depois). Agora usa regra de "primeira visão": a 1ª varredura após
- *       boot/troca de banco só registra o que já existe (linha de base) e
- *       apenas documentos que APARECEM já com hora velha são corrigidos.
- *     - hora-fixada-cache.json: gravação passa a mesclar com o disco
- *       (servidor e gerador sobrescreviam as entradas um do outro).
- *     - Gerações supersedidas: timeout/erro de uma geração antiga não
- *       sobrescreve mais o cache nem agenda retentativa sobre a geração nova.
- *     - Troca de banco (/api/salvar-fdb) e reset de cache matam as gerações
- *       em voo; banco salvo sem conexão agora reconecta sozinho em segundo
- *       plano (antes ficava parado até reiniciar o servidor).
- *     - Credenciais: lidas de config.json (fbUser/fbPass, antes ignoradas) e
- *       repassadas ao gerador por variável de ambiente, não mais por
- *       argumento de linha de comando (visível na lista de processos).
- *     - Segurança: JSON embutido em <script> escapado (XSS em /config),
- *       teclasPersonalizadas/proibidos validados em /api/config, /api/log-error
- *       saneado contra injeção de linhas no log, seletor de FDB com uma única
- *       instância por vez, validação de data de calendário em /periodo.
- *     - Rotas /api/navigate/hash/{config|periodo} e /api/navigate/foco, que o
- *       tray já chamava mas não existiam (menu "Gerar por período" não fazia
- *       nada com aba aberta).
- *     - Desempenho: agendarRegen deixa de criar um processo Node a cada
- *       ~0,5 s sem nenhuma mudança; regera de imediato só sem HTML válido e,
- *       com HTML válido, a cada _REGEN_SEGURANCA_MS (mudanças reais continuam
- *       sendo detectadas em ~50 ms pelo fast-poll).
- *     - Logger: fila de linhas pendentes limitada se o disco falhar.
- *     - Removido código morto (agoraAjustado).
+ *   2.9.1 - 2026-10-05 17:30 - Chave do hora-fixada-cache.json no mesmo
+ *                        formato do gerador ("YYYY-MM-DD|numero" sem zeros à
+ *                        esquerda). Antes o servidor gravava o número cru do
+ *                        banco ("061449") e o gerador "61449" — a mesma venda
+ *                        podia ter duas entradas. A busca confere os dois
+ *                        formatos, então entradas antigas continuam valendo
+ *                        (nenhuma gerencial é corrigida de novo na atualização).
+ *                        Testes automáticos em test/ (npm test).
  */
 
 
@@ -43,7 +21,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.9.0";
+const SERVER_VERSION = "2.9.1";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -1038,6 +1016,15 @@ var _horaFixadaCache = _lerHoraFixadaCacheDisco();
 // Chaves removidas de propósito desde a última gravação (UPDATE que falhou e
 // foi revertido). Sem este registro, a mescla com o disco ressuscitaria a
 // entrada que já tinha sido gravada num flush anterior.
+// Chave "YYYY-MM-DD|numero" com o número SEM zeros à esquerda — o mesmo
+// formato que gerar-relatorio-html.js usa (ele normaliza os ids com
+// replace(/^0+/,"")). Antes este arquivo gravava o número cru do banco
+// ("061449") e o gerador "61449": a mesma venda podia ter duas entradas.
+var _chaveHoraCache = function(dh, id) {
+    var s = String(id == null ? "" : id).trim();
+    return dh + "|" + (s.replace(/^0+/, "") || s);
+};
+
 var _horaCacheRemovidas = new Set();
 var _removerHoraFixadaCache = function(chave) {
     delete _horaFixadaCache[chave];
@@ -2765,7 +2752,10 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
             rows.forEach(function(r) {
                 var id = String(r.NUMERO || r.numero || "").trim();
                 if (!id) return;
-                if (_horaFixadaCache[dh + "|" + id]) return; // já processado (fixado ou marcado ok)
+                // já processado (fixado ou marcado ok) — confere nos dois formatos de
+                // chave: o legado (número como veio do banco, ex: "061449") e o
+                // atual, sem zeros à esquerda (mesmo formato do gerador).
+                if (_horaFixadaCache[dh + "|" + id] || _horaFixadaCache[_chaveHoraCache(dh, id)]) return;
                 var canc = String(r.CANC || r.canc || "N").trim().toUpperCase();
                 var tot  = parseFloat(r.TOT !== undefined ? r.TOT : r.tot);
                 // AJUSTE (v2.7.1): 'S' e 'T' agora são distinguidos no cache em vez de
@@ -2791,7 +2781,7 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
             // ── Registro de canceladas/convertidas/sem valor (sem tocar no banco) ──
             if (novosSemHora.length) {
                 novosSemHora.forEach(function(item) {
-                    _horaFixadaCache[dh + "|" + item.id] = { tipo: "gerencial", hora: item.marcador };
+                    _horaFixadaCache[_chaveHoraCache(dh, item.id)] = { tipo: "gerencial", hora: item.marcador };
                 });
                 _salvarHoraFixadaCache();
                 var _resumo = {};
@@ -2806,7 +2796,7 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
             // comentário completo na declaração de HORA_CACHE_OK.
             if (novosParaMarcar.length) {
                 novosParaMarcar.forEach(function(id) {
-                    _horaFixadaCache[dh + "|" + id] = { tipo: "gerencial", hora: HORA_CACHE_OK };
+                    _horaFixadaCache[_chaveHoraCache(dh, id)] = { tipo: "gerencial", hora: HORA_CACHE_OK };
                 });
                 _salvarHoraFixadaCache();
                 logTs("Poll: " + novosParaMarcar.length + " gerencial(is) dentro da tolerância (≤3 min) — marcado(s) sem ajuste.");
@@ -2823,7 +2813,7 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
             // comparam formatos diferentes para o mesmo horário.
             var horaAtualCache = horaAtual.substring(0, 5);
             novosParaFixar.forEach(function(id) {
-                _horaFixadaCache[dh + "|" + id] = { tipo: "gerencial", hora: horaAtualCache };
+                _horaFixadaCache[_chaveHoraCache(dh, id)] = { tipo: "gerencial", hora: horaAtualCache };
             });
             _salvarHoraFixadaCache();
 
@@ -2838,7 +2828,7 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
             db.query(sqlUpd, [horaAtual].concat(novosParaFixar), function(errU) {
                 if (errU) {
                     // Reverte entradas do cache — poderá tentar novamente depois
-                    novosParaFixar.forEach(function(id) { _removerHoraFixadaCache(dh + "|" + id); });
+                    novosParaFixar.forEach(function(id) { _removerHoraFixadaCache(_chaveHoraCache(dh, id)); });
                     _salvarHoraFixadaCache();
                     logTs("Poll: ERRO ao corrigir gerencial." + campo + ": " + errU.message);
                 } else {

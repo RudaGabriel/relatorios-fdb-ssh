@@ -1,0 +1,11 @@
+{
+  "name": "relatorios-fdb",
+  "private": true,
+  "description": "Servidor de relatórios de vendas (Firebird / Small Commerce)",
+  "scripts": {
+    "test": "node --test test/relatorio.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

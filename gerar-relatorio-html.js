@@ -1,23 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 2.9.1
+ * @version 2.9.2
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog
- *   2.9.1 - 2026-10-05 17:05 - Mescla da v2.9.0 (painel "Duplicatas" com
- *                        decisão do usuário) com a revisão de segurança e
- *                        concorrência feita sobre a v2.7.9:
- *     - XSS: __TECLAS_PERSONALIZADAS__ e o JSON de dados passam por
- *       _jsonParaScript (escape de "</script>", U+2028, U+2029); modal de
- *       configurações escapa caminho do favicon e nome do sistema.
- *     - hora-fixada-cache.json: grava só as chaves alteradas nesta execução,
- *       mesclando com o disco (não apaga entradas do servidor/outras gerações).
- *     - Credenciais por variável de ambiente RELATORIO_FB_USER/RELATORIO_FB_PASS;
- *       aviso de credencial de fábrica só quando é de fato SYSDBA/masterkey.
- *     - Painel "Duplicatas" (v2.9.0) preservado, com 2 correções:
- *       qs("#...", el) ignorava o modal ainda fora da página → TypeError que
- *       impedia o relatório inteiro de renderizar quando havia duplicata
- *       pendente; linhas reconstituídas ("manter") sem _idx/_busca → clique
- *       e busca não funcionavam nelas; fechar() usado antes de declarado.
+ *   2.9.2 - 2026-10-05 17:30 - Atalhos de proibidos (Delete → [-proibidos],
+ *                        Insert / CapsLock+P → [proibidos]) deixam de agir
+ *                        dentro de campos de texto: a tecla Delete não
+ *                        apagava mais nada na busca, na lista de proibidos e
+ *                        nas configurações, e digitar "P" com CapsLock ligado
+ *                        em qualquer campo aplicava o filtro. Na busca, o
+ *                        Delete só vira atalho quando não há nada à frente
+ *                        do cursor. Cliques automáticos do atalho protegidos
+ *                        contra elemento ausente.
  */
 
 (function() {
@@ -25,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "2.9.1";
+    const SCRIPT_VERSION = "2.9.2";
     const Firebird = require("node-firebird");
     const fs = require("node:fs");
     const process = require("node:process");
@@ -3944,24 +3938,47 @@ document.addEventListener("keydown",e=>{
     }
 });
 
+// Atalhos de proibidos: Delete → [-proibidos], Insert / CapsLock+P → [proibidos].
+// BUG FIX (v2.9.2): o atalho era capturado na página INTEIRA, inclusive dentro
+// de campos de texto — com preventDefault, a tecla Delete deixava de apagar
+// (na busca, na lista de proibidos, nas configurações) e digitar "P" com
+// CapsLock ligado em qualquer campo disparava o filtro em vez de escrever a
+// letra. Agora: fora de campos de texto funciona como antes; dentro da busca
+// (#q) o Delete só vira atalho quando não há nada à frente do cursor para
+// apagar, e CapsLock+P digita normalmente; nos demais campos, nunca dispara.
+const _ehCampoEditavel = el => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ""));
+// Cliques de conveniência do atalho (aba Gerencial + vendedor "Todos") —
+// protegidos: elemento ausente não pode derrubar o handler.
+const _atalhoSelecionarGerencialTodos = () => {
+    try { const r = document.querySelector(".radio#radioLblGer"); if (r) r.click(); } catch(_) {}
+    try {
+        const n = document.evaluate("//div[@id='lista']//div[contains(@class, 'item')]//div[contains(@class, 'nome') and normalize-space()='Todos']",
+            document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        if (n) n.click();
+    } catch(_) {}
+};
 document.addEventListener("keydown",e=>{
     const k=String(e.key||""); const isInsert=k==="Insert"; const isCapsP=(k.toLowerCase()==="p"&&e.getModifierState&&e.getModifierState("CapsLock")); const isDelete=k==="Delete";
     if(!isInsert&&!isCapsP&&!isDelete)return;
+    if(e.ctrlKey||e.altKey||e.metaKey)return; // combinações ficam para as teclas personalizadas
+    const alvo=e.target;
+    if(_ehCampoEditavel(alvo)){
+        if(alvo.id!=="q")return;
+        if(isCapsP)return; // digitação normal de "P" na busca
+        if(isDelete){
+            const tam=String(alvo.value||"").length;
+            const semSelecao=alvo.selectionStart===alvo.selectionEnd;
+            if(!(semSelecao&&alvo.selectionEnd>=tam))return; // há o que apagar: Delete normal
+        }
+    }
     e.preventDefault(); const inp=qs("#q"); if(!inp)return;
     let v=String(inp.value||"");
     if(isDelete){
         if(v.toLowerCase().indexOf("[-proibidos]")<0)v=(v+" [-proibidos]").trim();
         inp.value=v; qAtual=v.trim(); const p=parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc); calcSomaSel(); renderTabela(); _atualizarXLimpar(); toast("Filtro","Aplicado [-proibidos].");
-		document.querySelector(".radio#radioLblGer").click();
-		document.evaluate("//div[@id='lista']//div[contains(@class, 'item')]//div[contains(@class, 'nome') and normalize-space()='Todos']",
-		document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click();
-		
-	}else{
-		if(k=="Insert"){
-			document.querySelector(".radio#radioLblGer").click();
-			document.evaluate("//div[@id='lista']//div[contains(@class, 'item')]//div[contains(@class, 'nome') and normalize-space()='Todos']",
-			document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click();
-		}
+        _atalhoSelecionarGerencialTodos();
+    }else{
+        if(k==="Insert") _atalhoSelecionarGerencialTodos();
         if(v.toLowerCase().indexOf("[proibidos]")<0)v=(v+" [proibidos]").trim();
         inp.value=v; qAtual=v.trim(); const p=parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc); calcSomaSel(); renderTabela(); _atualizarXLimpar(); toast("Filtro","Aplicado [proibidos].");
     }
