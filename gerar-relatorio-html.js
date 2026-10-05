@@ -1,17 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 2.9.2
+ * @version 3.2.2
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
- * @changelog
- *   2.9.2 - 2026-10-05 17:30 - Atalhos de proibidos (Delete → [-proibidos],
- *                        Insert / CapsLock+P → [proibidos]) deixam de agir
- *                        dentro de campos de texto: a tecla Delete não
- *                        apagava mais nada na busca, na lista de proibidos e
- *                        nas configurações, e digitar "P" com CapsLock ligado
- *                        em qualquer campo aplicava o filtro. Na busca, o
- *                        Delete só vira atalho quando não há nada à frente
- *                        do cursor. Cliques automáticos do atalho protegidos
- *                        contra elemento ausente.
+ * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
+ *   3.2.2 - 2026-10-05 21:30 - Mescla da v3.2.1 (16 temas, data junto da hora no detalhe e demais recursos)
+ *     com as correções que já estavam no GitHub (v2.9.2): escape de JSON em <script> contra XSS
+ *     (_jsonParaScript), mescla do hora-fixada-cache.json gravando só as chaves alteradas, credenciais
+ *     por variável de ambiente (RELATORIO_FB_USER/RELATORIO_FB_PASS do servidor e FIREBIRD_USER/
+ *     FIREBIRD_PASSWORD da v3.2.1), atalhos Delete/Insert/CapsLock+P sem agir dentro de campos de texto,
+ *     e linhas de duplicata reconstituídas com _idx/_busca (clique e busca funcionam nelas).
  */
 
 (function() {
@@ -19,7 +16,28 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "2.9.2";
+    const SCRIPT_VERSION = "3.2.2";
+    // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
+    // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
+    // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
+    const TEMAS_RELATORIO = [
+        { id: "ultra-dark",      nome: "Ultra Dark",       grupo: "escuro" },
+        { id: "dark",            nome: "Dark Original",    grupo: "escuro" },
+        { id: "midnight",        nome: "Meia-noite",       grupo: "escuro" },
+        { id: "nord",            nome: "Nord",             grupo: "escuro" },
+        { id: "dracula",         nome: "Drácula",          grupo: "escuro" },
+        { id: "monokai",         nome: "Monokai",          grupo: "escuro" },
+        { id: "solarized-dark",  nome: "Solarized Escuro", grupo: "escuro" },
+        { id: "forest",          nome: "Floresta",         grupo: "escuro" },
+        { id: "ember",           nome: "Brasa",            grupo: "escuro" },
+        { id: "neon",            nome: "Neon",             grupo: "escuro" },
+        { id: "light",           nome: "Claro",            grupo: "claro" },
+        { id: "solarized-light", nome: "Solarized Claro",  grupo: "claro" },
+        { id: "paper",           nome: "Papel",            grupo: "claro" },
+        { id: "mint",            nome: "Menta",            grupo: "claro" },
+        { id: "lavender",        nome: "Lavanda",          grupo: "claro" },
+        { id: "sky",             nome: "Céu",              grupo: "claro" }
+    ];
     const Firebird = require("node-firebird");
     const fs = require("node:fs");
     const process = require("node:process");
@@ -66,17 +84,20 @@
     const dataFimISO = parseISO(dataFimRaw);
 
     const saida = pegar("--saida");
-    // Credenciais: --user/--pass (uso manual) > variáveis de ambiente
-    // RELATORIO_FB_USER/RELATORIO_FB_PASS (como o servidor repassa — fora da
-    // linha de comando, que é visível na lista de processos) > padrão de fábrica.
-    const usuario = pegar("--user") || String(process.env.RELATORIO_FB_USER || "").trim() || "SYSDBA";
-    const senha   = pegar("--pass") || String(process.env.RELATORIO_FB_PASS || "")         || "masterkey";
+    // Credenciais: --user/--pass (uso manual) > variáveis de ambiente (fora da
+    // linha de comando, que é visível na lista de processos do SO) > padrão de
+    // fábrica. Aceita as duas convenções: RELATORIO_FB_USER/RELATORIO_FB_PASS
+    // (repassadas pelo servidor-relatorio.js) e FIREBIRD_USER/FIREBIRD_PASSWORD.
+    const _envUsuario = String(process.env.RELATORIO_FB_USER || process.env.FIREBIRD_USER || "").trim();
+    const _envSenha   = String(process.env.RELATORIO_FB_PASS || process.env.FIREBIRD_PASSWORD || "");
+    const usuario = pegar("--user") || _envUsuario || "SYSDBA";
+    const senha   = pegar("--pass") || _envSenha   || "masterkey";
     // Aviso de segurança: SYSDBA/masterkey são as credenciais de fábrica do
     // Firebird — se o banco de produção nunca teve a senha trocada, isso
-    // conecta com privilégios de DBA completos. Só avisa em execução manual:
-    // quando o servidor repassa as credenciais (variável de ambiente), ele
-    // mesmo já registra esse aviso uma vez — repetir a cada geração enchia o log.
-    if (usuario.toUpperCase() === "SYSDBA" && senha === "masterkey" && !process.env.RELATORIO_FB_PASS) {
+    // conecta com privilégios de DBA completos. Só avisa quando é o caso e a
+    // senha não veio do servidor (ele mesmo já registra esse aviso uma vez —
+    // repetir a cada geração enchia o log).
+    if (usuario.toUpperCase() === "SYSDBA" && senha === "masterkey" && !_envSenha) {
         console.warn("[AVISO] Usando credenciais padrão do Firebird (SYSDBA/masterkey). Se o banco de produção usa outras, defina fbUser/fbPass no config.json.");
     }
     const FIREBIRD_PORT = 3050; // porta padrão Firebird — única fonte da verdade
@@ -120,7 +141,7 @@
     // === LÓGICA DE IDENTIFICAÇÃO DE REDE DO FIREBIRD ===
     let host = "127.0.0.1";
     let dbPath = fdbRaw;
-    const matchIP = fdbRaw.match(/^([0-9\.]+|[a-zA-Z0-9_-]+):([a-zA-Z]:\\.*|\/.*)/);
+    const matchIP = fdbRaw.match(/^([0-9.]+|[a-zA-Z0-9_-]+):([a-zA-Z]:\\.*|\/.*)/);
     if (matchIP) {
         host = matchIP[1];
         dbPath = matchIP[2];
@@ -148,6 +169,195 @@
         .replace(/\u2029/g, "\\u2029");
 
     const decoder = new TextDecoder("windows-1252");
+
+    // Limpeza em "melhor esforço" (detach de conexão, remoção de arquivo temporário):
+    // usada SÓ onde uma falha secundária não pode mascarar o erro principal que já
+    // está sendo reportado ao operador. Nomear o padrão evita catch vazio espalhado
+    // e deixa a intenção explícita em cada ponto de uso.
+    const tentarSilencioso = (fn) => { try { return fn(); } catch (_) { return undefined; } };
+
+    // Soma de valores monetários em ponto flutuante acumula resíduo (ex.:
+    // 444.28999999999996). Arredonda para centavos antes de gravar no JSON.
+    const arredondarCentavos = (valor) => Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
+
+    // Nomes de coluna descobertos no schema (rdb$relation_fields) são interpolados
+    // em SQL. Não são entrada do usuário, mas aceitar só identificadores simples
+    // não-quotados é defesa em profundidade: um nome exótico é descartado em vez
+    // de virar fragmento de SQL.
+    const IDENTIFICADOR_SQL_SEGURO = /^[A-Z_][A-Z0-9_$]*$/;
+
+    // <AUTOTESTE-INICIO>
+    // ── AUTO-TESTE (v3.1.0) ──────────────────────────────────────────────────────
+    // Roda a CADA geração, sem ação do usuário, sobre o resultado final já montado, e só
+    // se manifesta quando acha algo (log + caixa de mensagem no relatório). Nunca derruba
+    // a geração: qualquer exceção interna vira o achado AUTOTESTE_FALHOU.
+    // Transforma em verificação permanente os defeitos já vistos neste sistema: total que
+    // não fecha, venda contada duas vezes, NF-e que some, leitura do banco que falha em
+    // silêncio. Bloco autônomo (sem dependência externa) para poder ser testado isolado.
+    const executarAutoTeste = (ctx) => {
+        const TOLERANCIA_CENTAVO = 0.005;
+        const achados = [];
+        let verificacoes = 0;
+        const alertar = (nivel, codigo, msg) => { achados.push({ nivel, codigo, msg }); };
+        const verificar = (ok, nivel, codigo, msg) => { verificacoes++; if (!ok) alertar(nivel, codigo, msg); };
+        const reais = (v) => "R$ " + Number(v || 0).toFixed(2).replace(".", ",");
+        const semZeros = (n) => String(n == null ? "" : n).trim().replace(/^0+/, "");
+        const lista = (itens, max) => itens.slice(0, max).join(", ") + (itens.length > max ? " e mais " + (itens.length - max) : "");
+        const minutos = (h) => {
+            const m = String(h || "").trim().match(/^(\d{1,2}):(\d{2})/);
+            return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : null;
+        };
+
+        const linhas = Array.isArray(ctx.linhas) ? ctx.linhas : [];
+        const totais = ctx.totais || {};
+        const totaisDia = ctx.totaisDia || {};
+        const porVendedor = Array.isArray(ctx.vendTotaisDia) ? ctx.vendTotaisDia : [];
+        const dup = ctx.duplicatas || {};
+        const falhasLeitura = Array.isArray(ctx.falhasLeitura) ? ctx.falhasLeitura : [];
+        const nfeRejeitadas = Array.isArray(ctx.nfeRejeitadas) ? ctx.nfeRejeitadas : [];
+        const dedupAmbiguos = Array.isArray(ctx.dedupAmbiguos) ? ctx.dedupAmbiguos : [];
+        const dedupFundidas = Array.isArray(ctx.dedupFundidas) ? ctx.dedupFundidas : [];
+        const toleranciaMin = Number.isFinite(ctx.toleranciaMinutos) ? ctx.toleranciaMinutos : 20;
+
+        try {
+            // 1) Leitura do banco: falha aqui é silenciosa na geração (o relatório sai, só que incompleto).
+            verificacoes++;
+            for (const f of falhasLeitura) {
+                alertar("critico", "LEITURA_FALHOU", "Falha ao ler " + f.fonte + " (" + f.detalhe + "): parte das vendas pode estar faltando e o total do dia pode estar abaixo do real.");
+            }
+
+            // 2) Valores e totais que precisam fechar.
+            const invalidas = linhas.filter((l) => !Number.isFinite(Number(l.total)) || Number(l.total) <= 0);
+            verificar(invalidas.length === 0, "critico", "VALOR_INVALIDO",
+                invalidas.length + " venda(s) com valor inválido ou zerado: " + lista(invalidas.map((l) => l.tipo + " " + l.numero), 5) + ".");
+            const soma = linhas.reduce((a, l) => a + (Number(l.total) || 0), 0);
+            verificar(Math.abs(Number(totais.total || 0) - soma) <= TOLERANCIA_CENTAVO, "critico", "TOTAL_DIA_DIVERGE",
+                "O total do dia (" + reais(totais.total) + ") não bate com a soma das vendas listadas (" + reais(soma) + ").");
+            verificar(Number(totais.qtd) === linhas.length, "critico", "QTD_DIVERGE",
+                "A quantidade de vendas (" + totais.qtd + ") não bate com as linhas listadas (" + linhas.length + ").");
+            if (totaisDia.ok) {
+                const porTipo = Number(totaisDia.gerencial || 0) + Number(totaisDia.nfce || 0) + Number(totaisDia.nfe || 0);
+                verificar(Math.abs(porTipo - soma) <= TOLERANCIA_CENTAVO, "critico", "TOTAL_TIPO_DIVERGE",
+                    "Gerencial + NFC-e + NF-e (" + reais(porTipo) + ") não bate com a soma das vendas (" + reais(soma) + ").");
+                const qtdTipos = Number(totaisDia.qtd_gerencial || 0) + Number(totaisDia.qtd_nfce || 0) + Number(totaisDia.qtd_nfe || 0);
+                verificar(qtdTipos === linhas.length, "critico", "QTD_TIPO_DIVERGE",
+                    "A contagem por tipo (" + qtdTipos + ") não bate com as linhas listadas (" + linhas.length + ").");
+            }
+            const somaVendedores = porVendedor.reduce((a, v) => a + (Number(v.geral) || 0), 0);
+            verificar(Math.abs(somaVendedores - soma) <= TOLERANCIA_CENTAVO, "critico", "TOTAL_VENDEDOR_DIVERGE",
+                "A soma por vendedor (" + reais(somaVendedores) + ") não bate com a soma das vendas (" + reais(soma) + ").");
+            // Exato de propósito: 444.28999999999996 difere de 444.29 por ~4e-14, então qualquer
+            // tolerância "folgada" deixaria passar justamente o resíduo que se quer pegar.
+            const totalDia = Number(totais.total || 0);
+            verificar(totalDia === Math.round(totalDia * 100) / 100, "aviso", "RESIDUO_FLUTUANTE",
+                "O total do dia tem resíduo de ponto flutuante (" + totais.total + ").");
+
+            // 3) Duplicidade: a mesma venda contada duas vezes.
+            const vistos = new Set();
+            const repetidos = [];
+            for (const l of linhas) {
+                const chave = l.tipo + "|" + semZeros(l.numero) + "|" + (l._dtKey || "");
+                if (vistos.has(chave)) repetidos.push(l.tipo + " " + l.numero); else vistos.add(chave);
+            }
+            verificar(repetidos.length === 0, "critico", "DOCUMENTO_REPETIDO",
+                "Documento listado mais de uma vez: " + lista(repetidos, 5) + ".");
+
+            const suprimidas = new Set([].concat(dup.confirmadas || [], dup.provaveis || [])
+                .map((d) => semZeros(d.gerencial)).filter(Boolean));
+            const fantasmas = linhas.filter((l) => l.tipo === "recebimento" && suprimidas.has(semZeros(l.numero)));
+            verificar(fantasmas.length === 0, "critico", "RECEBIMENTO_FANTASMA",
+                "Gerencial já convertida voltou como recebimento e está sendo contada em dobro: " + lista(fantasmas.map((l) => l.numero + " (" + reais(l.total) + ")"), 5) + ".");
+            const reaparecidas = linhas.filter((l) => l.tipo === "gerencial" && suprimidas.has(semZeros(l.numero)));
+            verificar(reaparecidas.length === 0, "critico", "GERENCIAL_SUPRIMIDA_NA_LISTA",
+                "Gerencial marcada como convertida continua na lista: " + lista(reaparecidas.map((l) => l.numero), 5) + ".");
+
+            // Gerencial e NFC-e/NF-e de mesmo valor, emitida logo depois, que a reconciliação não ligou.
+            const docsFiscais = linhas.filter((l) => l.tipo === "nfc-e" || l.tipo === "nf-e");
+            const usados = new Set();
+            const pares = [];
+            for (const g of linhas.filter((l) => l.tipo === "gerencial")) {
+                const gm = minutos(g.hora);
+                if (gm === null) continue;
+                for (let i = 0; i < docsFiscais.length; i++) {
+                    const d = docsFiscais[i];
+                    const dm = minutos(d.hora);
+                    if (usados.has(i) || dm === null || d._dtKey !== g._dtKey) continue;
+                    if (Math.abs(Number(d.total) - Number(g.total)) > 0.01 || dm - gm < 0 || dm - gm > toleranciaMin) continue;
+                    usados.add(i);
+                    pares.push("gerencial " + g.numero + " × " + d.tipo + " " + d.numero + " (" + reais(g.total) + ")");
+                    break;
+                }
+            }
+            verificar(pares.length === 0, "aviso", "POSSIVEL_DUPLICIDADE",
+                pares.length + " possível(is) duplicidade(s) Gerencial × NFC-e/NF-e (mesmo valor, até " + toleranciaMin + " min depois): " + lista(pares, 4) + ". Confira se a gerencial já foi convertida.");
+
+            verificar(dedupAmbiguos.length === 0, "info", "NFE_MESMO_VALOR",
+                dedupAmbiguos.length + " grupo(s) de NF-e com mesmo valor e data mantidos separados (" + lista(dedupAmbiguos.map((g) => g.join(" / ")), 3) + "): confira se alguma é duplicada.");
+
+            verificar(dedupFundidas.length === 0, "info", "NFE_FUNDIDA",
+                dedupFundidas.length + " NF-e fundida(s) por virem das duas tabelas com números diferentes (" + lista(dedupFundidas.map((f) => f.de + " → " + f.para + " " + reais(f.total)), 3) + ").");
+
+            // 4) Situação fiscal que o operador precisa saber.
+            verificar(nfeRejeitadas.length === 0, "aviso", "NFE_REJEITADA",
+                nfeRejeitadas.length + " NF-e rejeitada(s) pela SEFAZ fora do relatório: " + lista(nfeRejeitadas.map((r) => r.numero + " (" + reais(r.total) + ")"), 4) + ". Reemita ou confira a venda.");
+        } catch (erroInterno) {
+            alertar("aviso", "AUTOTESTE_FALHOU", "O auto-teste não conseguiu terminar: " + String((erroInterno && erroInterno.message) || erroInterno));
+        }
+        return { verificacoes, achados };
+    };
+    // <AUTOTESTE-FIM>
+
+    // Registra o resultado no log SÓ quando muda (uma geração acontece a cada venda nova;
+    // repetir o mesmo alerta em cada uma empurraria o que importa para fora do relatorio.log).
+    // O estado fica num arquivo ao lado do script; falha de leitura/gravação é tolerada —
+    // o pior caso é repetir uma linha de log.
+    const registrarAutoTeste = (resultado, opcoes) => {
+        const MAX_CHAVES_ESTADO = 30;
+        const arquivoEstado = require("node:path").join(__dirname, "autoteste-estado.json");
+        const alertas = resultado.achados.filter((a) => a.nivel !== "info");
+        const assinatura = alertas.map((a) => a.codigo + ":" + a.msg).join("|");
+        const estado = Object.create(null);
+        tentarSilencioso(() => {
+            const bruto = JSON.parse(fs.readFileSync(arquivoEstado, "utf8").replace(/^\uFEFF/, ""));
+            if (bruto && typeof bruto === "object") {
+                for (const [k, v] of Object.entries(bruto)) if (typeof v === "string") estado[k] = v;
+            }
+        });
+        const anterior = estado[opcoes.chave];
+        const mudou = anterior === undefined ? assinatura !== "" : anterior !== assinatura;
+        if (mudou) {
+            if (alertas.length) {
+                for (const a of alertas) console.log("AUTOTESTE [" + a.nivel.toUpperCase() + "] " + a.codigo + ": " + a.msg);
+            } else {
+                console.log("AUTOTESTE: normalizado — nenhum alerta (" + resultado.verificacoes + " verificações).");
+            }
+            delete estado[opcoes.chave];
+            estado[opcoes.chave] = assinatura;
+            const chaves = Object.keys(estado);
+            for (const k of chaves.slice(0, Math.max(0, chaves.length - MAX_CHAVES_ESTADO))) delete estado[k];
+            const tmp = arquivoEstado + ".tmp";
+            tentarSilencioso(() => {
+                fs.writeFileSync(tmp, JSON.stringify(estado, null, 2), "utf8");
+                fs.renameSync(tmp, arquivoEstado);
+            });
+        } else if (opcoes.debug) {
+            console.log("AUTOTESTE: " + resultado.verificacoes + " verificações, " + alertas.length + " alerta(s) (sem mudança desde a última geração).");
+        }
+        if (opcoes.debug) {
+            for (const a of resultado.achados.filter((x) => x.nivel === "info")) console.log("AUTOTESTE [INFO] " + a.codigo + ": " + a.msg);
+        }
+    };
+
+    // Número de NF-e para exibição: NUMERONF de 12 dígitos = 9 do número + 3 da série.
+    const numeroNfeParaExibir = (bruto) => {
+        const raw = String(bruto || "").trim();
+        if (/^\d{12}$/.test(raw)) {
+            const n = parseInt(raw.substring(0, 9), 10);
+            return isNaN(n) ? raw : String(n).padStart(6, "0");
+        }
+        const semZero = raw.replace(/^0+/, "");
+        return semZero ? semZero.padStart(6, "0") : raw;
+    };
 
     // Converte campo de data do Firebird (pode chegar como Date JS ou string) para ISO YYYY-MM-DD.
     // node-firebird retorna campos DATE como objetos Date cujo .toString() é "Wed Apr 08 2026…",
@@ -369,7 +579,7 @@
 	process.on("unhandledRejection", (reason) => {
 		clearTimeout(_globalTimeout);
 		console.log("\nERRO inesperado: " + String((reason && reason.message) || reason));
-		try { if (_dbRef) { _dbRef.detach(); _dbRef = null; } } catch(_) {}
+		tentarSilencioso(() => { if (_dbRef) { _dbRef.detach(); _dbRef = null; } });
 		process.exit(1);
 	});
 
@@ -406,10 +616,10 @@
 						if (e2) { _settle({ e: e2, rows: [] }); return; }
 						try {
 							const r = await asyncFn(db2);
-							try { db2.detach(); } catch (_) {}
+							tentarSilencioso(() => db2.detach());
 							_settle(r);
 						} catch (eRun) {
-							try { db2.detach(); } catch (_) {}
+							tentarSilencioso(() => db2.detach());
 							_settle({ e: eRun, rows: [] });
 						}
 					});
@@ -449,7 +659,7 @@
 				if (!rr.e && rr.rows)
 					for (const r of rr.rows) {
 						const c = String(r.C ?? "").trim().toUpperCase();
-						if (c) set.add(c);
+						if (c && IDENTIFICADOR_SQL_SEGURO.test(c)) set.add(c);
 					}
 				camposCache.set(n, set);
 				return set;
@@ -569,7 +779,7 @@
 				// engolia a mensagem de erro — se o detach lançasse (cenário provável,
 				// já que a query acabou de falhar e a conexão pode estar morta), o
 				// usuário recebia um stack trace cru em vez da causa real do problema.
-				try { db.detach(); } catch(_) {}
+				tentarSilencioso(() => db.detach());
 				console.log("Erro na consulta NFCE: " + String(rNfce.e.message || rNfce.e));
 				process.exit(1);
 			}
@@ -624,6 +834,11 @@
 			// suprimido/fundido nesta geração).
 			const _duplicatasConfirmadas = [];
 			const _duplicatasProvaveis = [];
+			// Alimentam o auto-teste (executarAutoTeste) com o que a geração vê e o resultado final não mostra.
+			const _nfeRejeitadas = [];  // NF-e rejeitadas pela SEFAZ deixadas de fora
+			const _falhasLeitura = [];  // leituras do banco que falharam sem derrubar a geração
+			const _dedupAmbiguos = [];  // grupos de NF-e de mesmo valor/data mantidos separados
+			const _dedupFundidas = [];   // NF-e fundidas por virem das duas tabelas com números diferentes
 
 			const _gerenciaisAbsorvidasPorDocFiscal = new Map(); // gerencial (id) -> {docNumero, docModelo}
 			if (validCols.includes("GERENCIAL")) {
@@ -744,7 +959,8 @@
 					// Restrito a documento fiscal de propósito: gerencial (modelo 99)
 					// nunca passa por autorização da SEFAZ, então nunca deve receber
 					// esse rótulo (ver correção de escopo acima).
-					pendente_autorizacao: totalNum <= 0 && _ehDocFiscal
+					pendente_autorizacao: totalNum <= 0 && _ehDocFiscal,
+					_fonte: "nfce" // usado só pela deduplicação de NF-e (ver "DEDUPLICAÇÃO NF-e")
 				});
 
 				for (const id of ids) idIndex.set(dt + "|" + id, key);
@@ -758,6 +974,7 @@
 			// consumida logo após o try/catch desta seção. Ver comentário completo
 			// no ponto de uso.
 			const _novasNfeParaReconciliar = [];
+			const _aliasesGerencialAbsorvida = new Set(); // chaves "dt|pedido" cujo ALTERACA deve ser ignorado
 			function _horaParaMinutos(h) {
 				const s = String(h || "").trim();
 				const m = s.match(/^(\d{1,2}):(\d{2})/);
@@ -803,6 +1020,7 @@
 						  AND ${_cVcc} IS NULL
 					`, [dataInicioISO, dataFimISO]);
 					tick("VENDAS NF-e");
+					if (_rV.e) _falhasLeitura.push({ fonte: "VENDAS (NF-e)", detalhe: String(_rV.e.message || _rV.e) });
 					if (!_rV.e && _rV.rows) {
 						for (const vr of _rV.rows) {
 							const _vTotal = Number(vr.TOTAL_V || 0);
@@ -813,16 +1031,12 @@
 							const _statusNorm = String(vr.STATUS_V || "")
 								.toUpperCase()
 								.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-							if (_statusNorm.startsWith("REJEI")) continue;
-							const _nfRaw = String(vr.NF_NUM || "").trim();
-							let _nfExib = _nfRaw;
-							if (/^\d{12}$/.test(_nfRaw)) {
-								const _n = parseInt(_nfRaw.substring(0, 9), 10);
-								_nfExib = isNaN(_n) ? _nfRaw : String(_n).padStart(6, "0");
-							} else {
-								const _s = _nfRaw.replace(/^0+/, "");
-								_nfExib = _s ? _s.padStart(6, "0") : _nfRaw;
+							if (_statusNorm.startsWith("REJEI")) {
+								_nfeRejeitadas.push({ numero: numeroNfeParaExibir(vr.NF_NUM), total: _vTotal, status: String(vr.STATUS_V || "").trim() });
+								continue;
 							}
+							const _nfRaw = String(vr.NF_NUM || "").trim();
+							const _nfExib = numeroNfeParaExibir(_nfRaw);
 							// SAIDAD via cast(…as date) pode retornar objeto Date JS cujo
 						// .toString() é "Wed Apr 08 2026…" — usar toISO() garante YYYY-MM-DD.
 						const _dtV = toISO(vr.DATA_V);
@@ -856,7 +1070,8 @@
 								hora: String(vr.HORA_V || "").trim().substring(0, 8),
 								cliente: String(vr.CLI_V || "").trim(),
 								natureza: String(vr.OP_V || "").trim(),
-								total_nfce: _vTotal, total_pag: 0, formas: []
+								total_nfce: _vTotal, total_pag: 0, formas: [],
+								_fonte: "vendas" // usado só pela deduplicação de NF-e
 							});
 							idIndex.set(_keyV, _keyV);
 							// Alias stripped → chave principal: PAGAMENT busca com número sem zeros
@@ -873,7 +1088,7 @@
 						}
 					}
 				}
-			} catch(eV) { console.log("AVISO VENDAS: " + eV.message); }
+			} catch(eV) { console.log("AVISO VENDAS: " + eV.message); _falhasLeitura.push({ fonte: "VENDAS (NF-e)", detalhe: String(eV.message || eV) }); }
 
 			// ── Reconciliação Gerencial → NF-e sem vínculo no banco (v2.7.9) ──────────
 			// CONTEXTO: para conversão Gerencial→NFC-e (mesma tabela nfce) existe vínculo
@@ -928,8 +1143,18 @@
 					if (!alvo.cliente  && gerVenda.cliente)  alvo.cliente  = gerVenda.cliente;
 					alvo._gerencialOrigemNumero = gerVenda.numero;
 					_nfeJaAbsorveu.add(escolhida.key);
+					// CORREÇÃO (v3.0.0) — recebimento duplicado: antes, o idIndex da gerencial
+					// era apagado. Os pagamentos dela (PAGAMENT) deixavam de achar a venda e o
+					// Pass 2 criava um "recebimento fantasma" (modelo 99, is_recebimento) com o
+					// valor cheio — a mesma venda contada duas vezes no total do dia. Agora
+					// TODOS os aliases que apontavam para a gerencial passam a apontar para a
+					// NF-e: o pagamento é absorvido por ela. Os itens do ALTERACA dessa
+					// gerencial são descartados (_aliasesGerencialAbsorvida) porque a NF-e já
+					// traz os próprios itens via ITENS001 — senão apareceriam em dobro.
+					for (const [alias, alvoKey] of [...idIndex.entries()]) {
+						if (alvoKey === gerKey) { idIndex.set(alias, escolhida.key); _aliasesGerencialAbsorvida.add(alias); }
+					}
 					mapVendas.delete(gerKey);
-					if (idIndex.get(gerKey) === gerKey) idIndex.delete(gerKey);
 					const _obs = candidatas.length > 1 ? ` (${candidatas.length} candidatas disponíveis, escolhida a mais próxima)` : "";
 					console.log(`RECONCILIACAO: Gerencial ${gerVenda.numero} absorvida pela NF-e ${alvo.numero} (mesma data/valor, ${escolhida.horaMin - gerHoraMin}min depois)${_obs}.`);
 					_duplicatasProvaveis.push({
@@ -951,7 +1176,7 @@
 				// PRECISÃO FIX (v2.6.4): mesmo caso do detach em rNfce acima — sem o
 				// try/catch, uma falha ao encerrar a conexão escondia a mensagem que
 				// explica por que a consulta PAGAMENT falhou.
-				try { db.detach(); } catch(_) {}
+				tentarSilencioso(() => db.detach());
 				console.log("Erro na consulta PAGAMENT: " + String(rPag.e.message || rPag.e));
 				process.exit(1);
 			}
@@ -1089,12 +1314,14 @@
 			const altTotalMap = new Map(); // soma itens não-cancelados (total real)
 			const altItensMap = new Map(); // detalhes completos: {desc,qtd,total,cancelado}
 
+			if (rrAlt.e) _falhasLeitura.push({ fonte: "ALTERACA (itens das gerenciais)", detalhe: String(rrAlt.e.message || rrAlt.e) });
 			if (!rrAlt.e && rrAlt.rows && rrAlt.rows.length) {
 				for (const row of rrAlt.rows) {
 					const ped = String(row.PED ?? "").trim().replace(/^0+/, "");
 					if (!ped) continue;
 
 					const searchKey  = toISO(row.DATA) + "|" + ped;
+					if (_aliasesGerencialAbsorvida.has(searchKey)) continue; // itens vêm do ITENS001 da NF-e que absorveu a gerencial
 					const primaryKey = idIndex.get(searchKey) || searchKey;
 
 					const vAlt = String(row.VENDEDOR_ALT || "").trim();
@@ -1158,6 +1385,7 @@
 							  AND v.TOTAL > 0
 						`, [dataInicioISO, dataFimISO]);
 						tick("ITENS001");
+						if (_rI.e) _falhasLeitura.push({ fonte: "ITENS001 (itens das NF-e)", detalhe: String(_rI.e.message || _rI.e) });
 						if (!_rI.e && _rI.rows) {
 							for (const it of _rI.rows) {
 								const _nfI   = String(it.NF_I   || "").trim();
@@ -1182,7 +1410,7 @@
 						}
 					}
 				}
-			} catch(eI) { console.log("AVISO ITENS001: " + eI.message); }
+			} catch(eI) { console.log("AVISO ITENS001: " + eI.message); _falhasLeitura.push({ fonte: "ITENS001 (itens das NF-e)", detalhe: String(eI.message || eI) }); }
 
 			// ── DEDUPLICAÇÃO NF-e ──────────────────────────────────────────────
 			// Problema: NFCE e VENDAS podem gerar duas entradas para a mesma NF-e
@@ -1205,6 +1433,22 @@
 				}
 				for (const [, pares] of _grpNfe.entries()) {
 					if (pares.length < 2) continue;
+					// CORREÇÃO (v3.0.0) — perda de venda: antes, QUALQUER grupo de NF-e com
+					// mesma data + mesmo valor era fundido num único registro. Duas NF-e
+					// DISTINTAS com o mesmo total no dia (comum em varejo: produto de preço
+					// fixo, ex.: R$ 90,00 vendido duas vezes, clientes e horários diferentes)
+					// viravam uma só, e o valor da outra sumia do total do dia. A fusão só é
+					// legítima para o caso que este bloco foi criado para resolver: a MESMA
+					// NF-e vinda de duas fontes (tabela nfce + tabela VENDAS) com números que
+					// não casam. Portanto só funde o par 1-para-1 {1 da nfce, 1 de VENDAS};
+					// qualquer outro arranjo é ambíguo e NADA é removido.
+					const _daNfce   = pares.filter(([, pv]) => pv._fonte === "nfce").length;
+					const _daVendas = pares.filter(([, pv]) => pv._fonte === "vendas").length;
+					if (pares.length !== 2 || _daNfce !== 1 || _daVendas !== 1) {
+						_dedupAmbiguos.push(pares.map(([k]) => k));
+						console.log("AVISO DEDUP NF-e: " + pares.length + " NF-e com mesma data/valor (" + pares.map(([k]) => k).join(", ") + ") — mantidas separadas: não há como provar que são o mesmo documento.");
+						continue;
+					}
 					// Pontua cada entrada: +1 por campo preenchido relevante
 					const pontos = pares.map(([k, v]) =>
 						(v.cliente  ? 2 : 0) +
@@ -1237,6 +1481,7 @@
 						// Transfere itens do altMap se o principal não tem
 						if (!altMap.has(principal) && altMap.has(kDup))
 							altMap.set(principal, [...(altMap.get(kDup) || [])]); // spread: sem array compartilhado
+						_dedupFundidas.push({ de: kDup, para: principal, total: vDup.total_nfce || vDup.total_pag || 0 });
 						console.log("DEDUP NF-e: mesclado " + kDup + " → " + principal);
 						mapVendas.delete(kDup);
 					}
@@ -1442,7 +1687,7 @@
 			//      (NF-E, NFE, NF/E, NF.E, NF E) → NF-e declarada na forma.
 			//
 			// Não restringe por x.modelo===99 — MODELO=NULL chega como 65 via coalesce.
-			const _reNfe = /\bNF[\-\.\s]?E\b/i;
+			const _reNfe = /\bNF[-.\s]?E\b/i;
 			for (const x of linhas) {
 				if (x.modelo === 55) continue; // já correto — pula
 				// Recebimentos de PAGAMENT sem vínculo não são NF-e — forma "Dinheiro NF-e"
@@ -1463,8 +1708,8 @@
 				// Normaliza tokens (remove hifens/pontos) para cobrir: NF-E, NFE, NF.E, NF/E
 				const _formaBruta = String(x.pagamentos || "");
 				const _tokensNorm = _formaBruta
-					.split(/[\s|,\/]+/)
-					.map(s => s.trim().toUpperCase().replace(/[\-\.]/g, ""))
+					.split(/[\s|,/]+/)
+					.map(s => s.trim().toUpperCase().replace(/[-.]/g, ""))
 					.filter(Boolean);
 				if (_reNfe.test(_formaBruta) || _tokensNorm.includes("NFE")) {
 					x.modelo = 55;
@@ -1492,6 +1737,10 @@
 				else if (x.modelo === 55) { totaisDia.nfe       += x.total; totaisDia.qtd_nfe++; }
 			}
 
+			for (const campo of ["gerencial", "nfce", "nfe", "geral"]) {
+				totaisDia[campo] = arredondarCentavos(totaisDia[campo]);
+				for (const vt of mpVend.values()) vt[campo] = arredondarCentavos(vt[campo]);
+			}
 			totaisDia.selecionado = totaisDia.geral;
 			if (totaisDia.gerencial > 0) totaisDia.modelos.push({modelo: 99, total: totaisDia.gerencial});
 			if (totaisDia.nfce      > 0) totaisDia.modelos.push({modelo: 65, total: totaisDia.nfce});
@@ -1504,6 +1753,19 @@
 			const totalGeral = totaisDia.geral;
 			const qtdGeral = linhas.length;
 
+			// ── AUTO-TESTE: roda sobre o resultado final, nunca derruba a geração ──────────
+			let _resultadoAutoTeste;
+			try {
+				_resultadoAutoTeste = executarAutoTeste({
+					linhas, totais: { qtd: qtdGeral, total: totalGeral }, totaisDia, vendTotaisDia,
+					duplicatas: { confirmadas: _duplicatasConfirmadas, provaveis: _duplicatasProvaveis },
+					nfeRejeitadas: _nfeRejeitadas, falhasLeitura: _falhasLeitura, dedupAmbiguos: _dedupAmbiguos, dedupFundidas: _dedupFundidas,
+					toleranciaMinutos: TOLERANCIA_MINUTOS
+				});
+			} catch (eAuto) {
+				_resultadoAutoTeste = { verificacoes: 0, achados: [{ nivel: "aviso", codigo: "AUTOTESTE_FALHOU", msg: "O auto-teste não conseguiu rodar: " + String((eAuto && eAuto.message) || eAuto) }] };
+			}
+			tentarSilencioso(() => registrarAutoTeste(_resultadoAutoTeste, { chave: dataInicioISO + "|" + dataFimISO, debug: _DEBUG_LOG }));
 			const dados = {
 				data: dataInicioISO === dataFimISO ? dataInicioISO : `${dataInicioISO} a ${dataFimISO}`,
 				gerado_ts: Date.now(),
@@ -1519,16 +1781,23 @@
 				// Duplicatas Gerencial↔documento fiscal suprimidas/fundidas nesta geração
 				// (ver painel "Duplicatas" no HTML) — puramente informativo/auditoria,
 				// não afeta o cálculo já feito acima.
-				duplicatas: { confirmadas: _duplicatasConfirmadas, provaveis: _duplicatasProvaveis }
+				duplicatas: { confirmadas: _duplicatasConfirmadas, provaveis: _duplicatasProvaveis },
+				// Resultado do auto-teste desta geração — o navegador mostra botão + caixa de mensagem se houver alerta.
+				autoteste: { versao: SCRIPT_VERSION, verificacoes: _resultadoAutoTeste.verificacoes, achados: _resultadoAutoTeste.achados }
 			};
 			const dadosJSON = _jsonParaScript(dados);
 			tick("JSON montado — gerando HTML...");
+			// Lista de temas embutida no HTML (mesmo escape do dadosJSON: "<" vira \u003c).
+			const temasJSON = JSON.stringify(TEMAS_RELATORIO).replace(/</g, "\\u003c");
+			const temasIdsJSON = JSON.stringify(TEMAS_RELATORIO.map(t => t.id)).replace(/</g, "\\u003c");
 			const html = String.raw`<!doctype html><!-- gerar-relatorio-html.js v${SCRIPT_VERSION} --><html lang="pt-br" data-report-version="${SCRIPT_VERSION}"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName)} ${escHtml(dataBR)}</title>
 <script>
       (function(){
         try {
-          var TEMAS_VALIDOS = ["ultra-dark", "dark", "light"];
-          var t = localStorage.getItem("fdb_theme") || (document.cookie.match(/fdb_theme=([^;]+)/)||[])[1] || "ultra-dark";
+          var TEMAS_VALIDOS = ${temasIdsJSON};
+          var t = "";
+          try { t = localStorage.getItem("fdb_theme") || ""; } catch (e1) {}
+          if (!t) { try { t = (document.cookie.match(/(?:^|;\s*)fdb_theme=([^;]+)/) || [])[1] || ""; } catch (e2) {} }
           if (TEMAS_VALIDOS.indexOf(t) < 0) t = "ultra-dark";
           document.documentElement.setAttribute("data-theme", t);
         } catch(e){}
@@ -1549,6 +1818,10 @@
   --text-main: #f4f4f5; --text-muted: #a1a1aa;
   --accent: #3b82f6; --accent-hover: #2563eb; --accent-bg: rgba(59, 130, 246, 0.1);
   --danger: #ef4444; --success: #10b981;
+  /* v3.2.0 — antes eram cores fixas no código; agora por tema (padrão = valores antigos) */
+  --on-accent: var(--text-main);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
   --top-bg: rgba(24, 24, 27, 0.75); --top-blur: blur(10px);
   --th-bg: rgba(24, 24, 27, 0.95); --mhead-bg: rgba(24, 24, 27, 0.95); --ov-bg: rgba(0, 0, 0, 0.7);
   --chip-bg: transparent; --chip-bg-hover: rgba(255,255,255,0.05);
@@ -1608,6 +1881,246 @@
   --scroll-thumb: rgba(0, 0, 0, 0.15); --scroll-thumb-hover: rgba(0, 0, 0, 0.25);
   --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
   --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
+  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
+  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+/* ── TEMAS ADICIONAIS (v3.2.0) ─────────────────────────────────────────────
+   Cada bloco define o conjunto COMPLETO de variáveis (nada herdado do tema "dark" por
+   esquecimento). O mesmo seletor [data-theme="id"] também pinta a prévia do menu de temas —
+   por isso a prévia nunca destoa do tema real. Lista/ordem dos ids: TEMAS_RELATORIO (topo do arquivo). */
+[data-theme="midnight"] {
+  --bg-app: #0b1020; --bg-panel: #121936; --bg-hover: #1c2550;
+  --border: rgba(230, 233, 245, 0.1); --border-focus: rgba(230, 233, 245, 0.18);
+  --text-main: #e6e9f5; --text-muted: #a3acd0;
+  --accent: #818cf8; --accent-hover: #6366f1; --accent-bg: rgba(129, 140, 248, 0.14); --on-accent: #0b1020;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(18, 25, 54, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(18, 25, 54, 0.95); --mhead-bg: rgba(18, 25, 54, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(230, 233, 245, 0.04); --chip-bg-hover: rgba(230, 233, 245, 0.08);
+  --scroll-thumb: rgba(230, 233, 245, 0.18); --scroll-thumb-hover: rgba(230, 233, 245, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="nord"] {
+  --bg-app: #2e3440; --bg-panel: #3b4252; --bg-hover: #434c5e;
+  --border: rgba(236, 239, 244, 0.1); --border-focus: rgba(236, 239, 244, 0.18);
+  --text-main: #eceff4; --text-muted: #bcc5d6;
+  --accent: #88c0d0; --accent-hover: #81a1c1; --accent-bg: rgba(136, 192, 208, 0.14); --on-accent: #2e3440;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(59, 66, 82, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(59, 66, 82, 0.95); --mhead-bg: rgba(59, 66, 82, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(236, 239, 244, 0.04); --chip-bg-hover: rgba(236, 239, 244, 0.08);
+  --scroll-thumb: rgba(236, 239, 244, 0.18); --scroll-thumb-hover: rgba(236, 239, 244, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="dracula"] {
+  --bg-app: #21222c; --bg-panel: #282a36; --bg-hover: #363949;
+  --border: rgba(248, 248, 242, 0.1); --border-focus: rgba(248, 248, 242, 0.18);
+  --text-main: #f8f8f2; --text-muted: #a9b0d4;
+  --accent: #bd93f9; --accent-hover: #a97df0; --accent-bg: rgba(189, 147, 249, 0.14); --on-accent: #21222c;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(40, 42, 54, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(40, 42, 54, 0.95); --mhead-bg: rgba(40, 42, 54, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(248, 248, 242, 0.04); --chip-bg-hover: rgba(248, 248, 242, 0.08);
+  --scroll-thumb: rgba(248, 248, 242, 0.18); --scroll-thumb-hover: rgba(248, 248, 242, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="monokai"] {
+  --bg-app: #1c1d19; --bg-panel: #272822; --bg-hover: #3a3b30;
+  --border: rgba(248, 248, 242, 0.1); --border-focus: rgba(248, 248, 242, 0.18);
+  --text-main: #f8f8f2; --text-muted: #adab9a;
+  --accent: #a6e22e; --accent-hover: #8fc926; --accent-bg: rgba(166, 226, 46, 0.14); --on-accent: #1c1d19;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(39, 40, 34, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(39, 40, 34, 0.95); --mhead-bg: rgba(39, 40, 34, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(248, 248, 242, 0.04); --chip-bg-hover: rgba(248, 248, 242, 0.08);
+  --scroll-thumb: rgba(248, 248, 242, 0.18); --scroll-thumb-hover: rgba(248, 248, 242, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="solarized-dark"] {
+  --bg-app: #002b36; --bg-panel: #073642; --bg-hover: #0c4452;
+  --border: rgba(238, 232, 213, 0.1); --border-focus: rgba(238, 232, 213, 0.18);
+  --text-main: #eee8d5; --text-muted: #a3b5b5;
+  --accent: #3fb6ad; --accent-hover: #2aa198; --accent-bg: rgba(63, 182, 173, 0.14); --on-accent: #002b36;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(7, 54, 66, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(7, 54, 66, 0.95); --mhead-bg: rgba(7, 54, 66, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(238, 232, 213, 0.04); --chip-bg-hover: rgba(238, 232, 213, 0.08);
+  --scroll-thumb: rgba(238, 232, 213, 0.18); --scroll-thumb-hover: rgba(238, 232, 213, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="forest"] {
+  --bg-app: #0b130e; --bg-panel: #12201a; --bg-hover: #1b3026;
+  --border: rgba(228, 239, 232, 0.1); --border-focus: rgba(228, 239, 232, 0.18);
+  --text-main: #e4efe8; --text-muted: #9db6a8;
+  --accent: #34d399; --accent-hover: #10b981; --accent-bg: rgba(52, 211, 153, 0.14); --on-accent: #06130d;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(18, 32, 26, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(18, 32, 26, 0.95); --mhead-bg: rgba(18, 32, 26, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(228, 239, 232, 0.04); --chip-bg-hover: rgba(228, 239, 232, 0.08);
+  --scroll-thumb: rgba(228, 239, 232, 0.18); --scroll-thumb-hover: rgba(228, 239, 232, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="ember"] {
+  --bg-app: #120d0a; --bg-panel: #221811; --bg-hover: #33241b;
+  --border: rgba(245, 235, 228, 0.1); --border-focus: rgba(245, 235, 228, 0.18);
+  --text-main: #f5ebe4; --text-muted: #bba898;
+  --accent: #fb923c; --accent-hover: #f97316; --accent-bg: rgba(251, 146, 60, 0.14); --on-accent: #1a0e06;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(34, 24, 17, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(34, 24, 17, 0.95); --mhead-bg: rgba(34, 24, 17, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(245, 235, 228, 0.04); --chip-bg-hover: rgba(245, 235, 228, 0.08);
+  --scroll-thumb: rgba(245, 235, 228, 0.18); --scroll-thumb-hover: rgba(245, 235, 228, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="neon"] {
+  --bg-app: #07060d; --bg-panel: #15112b; --bg-hover: #221b44;
+  --border: rgba(243, 240, 255, 0.1); --border-focus: rgba(243, 240, 255, 0.18);
+  --text-main: #f3f0ff; --text-muted: #aea6cf;
+  --accent: #ff4ddb; --accent-hover: #e62ec3; --accent-bg: rgba(255, 77, 219, 0.14); --on-accent: #07060d;
+  --danger: #ef4444; --success: #10b981;
+  --top-bg: rgba(21, 17, 43, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(21, 17, 43, 0.95); --mhead-bg: rgba(21, 17, 43, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
+  --chip-bg: rgba(243, 240, 255, 0.04); --chip-bg-hover: rgba(243, 240, 255, 0.08);
+  --scroll-thumb: rgba(243, 240, 255, 0.18); --scroll-thumb-hover: rgba(243, 240, 255, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
+  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
+  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+[data-theme="solarized-light"] {
+  --bg-app: #eee8d5; --bg-panel: #fdf6e3; --bg-hover: #e4ddc6;
+  --border: rgba(7, 54, 66, 0.12); --border-focus: rgba(7, 54, 66, 0.22);
+  --text-main: #073642; --text-muted: #475f66;
+  --accent: #1a6699; --accent-hover: #13537d; --accent-bg: rgba(26, 102, 153, 0.1); --on-accent: #fdf6e3;
+  --danger: #b42318; --success: #4d7c0f;
+  --top-bg: rgba(253, 246, 227, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(253, 246, 227, 0.92); --mhead-bg: rgba(253, 246, 227, 0.92); --ov-bg: rgba(7, 54, 66, 0.38);
+  --chip-bg: rgba(7, 54, 66, 0.03); --chip-bg-hover: rgba(7, 54, 66, 0.06);
+  --scroll-thumb: rgba(7, 54, 66, 0.18); --scroll-thumb-hover: rgba(7, 54, 66, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
+  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
+  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+[data-theme="paper"] {
+  --bg-app: #f1eadc; --bg-panel: #fbf8f1; --bg-hover: #e8dfcb;
+  --border: rgba(43, 33, 24, 0.12); --border-focus: rgba(43, 33, 24, 0.22);
+  --text-main: #2b2118; --text-muted: #6a5a49;
+  --accent: #a8470a; --accent-hover: #7c3306; --accent-bg: rgba(168, 71, 10, 0.1); --on-accent: #fff8ee;
+  --danger: #b91c1c; --success: #047857;
+  --top-bg: rgba(251, 248, 241, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(251, 248, 241, 0.92); --mhead-bg: rgba(251, 248, 241, 0.92); --ov-bg: rgba(43, 33, 24, 0.38);
+  --chip-bg: rgba(43, 33, 24, 0.03); --chip-bg-hover: rgba(43, 33, 24, 0.06);
+  --scroll-thumb: rgba(43, 33, 24, 0.18); --scroll-thumb-hover: rgba(43, 33, 24, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
+  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
+  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+[data-theme="mint"] {
+  --bg-app: #ecf6f0; --bg-panel: #ffffff; --bg-hover: #ddeee4;
+  --border: rgba(15, 42, 32, 0.12); --border-focus: rgba(15, 42, 32, 0.22);
+  --text-main: #0f2a20; --text-muted: #4a6a5b;
+  --accent: #0f766e; --accent-hover: #115e59; --accent-bg: rgba(15, 118, 110, 0.1); --on-accent: #ffffff;
+  --danger: #b91c1c; --success: #047857;
+  --top-bg: rgba(255, 255, 255, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(255, 255, 255, 0.92); --mhead-bg: rgba(255, 255, 255, 0.92); --ov-bg: rgba(15, 42, 32, 0.38);
+  --chip-bg: rgba(15, 42, 32, 0.03); --chip-bg-hover: rgba(15, 42, 32, 0.06);
+  --scroll-thumb: rgba(15, 42, 32, 0.18); --scroll-thumb-hover: rgba(15, 42, 32, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
+  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
+  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+[data-theme="lavender"] {
+  --bg-app: #f3f0fb; --bg-panel: #ffffff; --bg-hover: #e8e2f6;
+  --border: rgba(35, 25, 66, 0.12); --border-focus: rgba(35, 25, 66, 0.22);
+  --text-main: #231942; --text-muted: #5f5880;
+  --accent: #6d28d9; --accent-hover: #5b21b6; --accent-bg: rgba(109, 40, 217, 0.1); --on-accent: #ffffff;
+  --danger: #b91c1c; --success: #047857;
+  --top-bg: rgba(255, 255, 255, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(255, 255, 255, 0.92); --mhead-bg: rgba(255, 255, 255, 0.92); --ov-bg: rgba(35, 25, 66, 0.38);
+  --chip-bg: rgba(35, 25, 66, 0.03); --chip-bg-hover: rgba(35, 25, 66, 0.06);
+  --scroll-thumb: rgba(35, 25, 66, 0.18); --scroll-thumb-hover: rgba(35, 25, 66, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
+  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
+  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+[data-theme="sky"] {
+  --bg-app: #ecf5fc; --bg-panel: #ffffff; --bg-hover: #dcebf8;
+  --border: rgba(12, 42, 69, 0.12); --border-focus: rgba(12, 42, 69, 0.22);
+  --text-main: #0c2a45; --text-muted: #45657f;
+  --accent: #0369a1; --accent-hover: #075985; --accent-bg: rgba(3, 105, 161, 0.1); --on-accent: #ffffff;
+  --danger: #b91c1c; --success: #047857;
+  --top-bg: rgba(255, 255, 255, 0.78); --top-blur: blur(10px);
+  --th-bg: rgba(255, 255, 255, 0.92); --mhead-bg: rgba(255, 255, 255, 0.92); --ov-bg: rgba(12, 42, 69, 0.38);
+  --chip-bg: rgba(12, 42, 69, 0.03); --chip-bg-hover: rgba(12, 42, 69, 0.06);
+  --scroll-thumb: rgba(12, 42, 69, 0.18); --scroll-thumb-hover: rgba(12, 42, 69, 0.3);
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
+  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
+  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: light;
 }
@@ -1720,7 +2233,7 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 .itensChips { display: flex; flex-wrap: wrap; gap: 6px; flex-direction: column; }
 .itensChip { display: inline-flex; align-items: center; background: var(--chip-bg); border: 1px solid var(--border-focus); padding: 4px 10px 4px 4px; border-radius: 99px; font-size: 12px; font-weight: 500; color: var(--text-muted); transition: var(--transition-fast); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cardRow:hover .itensChip, .kv:hover .itensChip { border-color: var(--text-muted); color: var(--text-main); background: var(--chip-bg-hover); }
-.itensQtd { color: var(--text-main); background: var(--accent); margin-right: 6px; padding: 2px 6px; border-radius: 99px; font-size: 12px; font-weight: 700; font-family: 'JetBrains Mono', Consolas, monospace; box-shadow: var(--shadow-sm); letter-spacing: 1px; }
+.itensQtd { color: var(--on-accent); background: var(--accent); margin-right: 6px; padding: 2px 6px; border-radius: 99px; font-size: 12px; font-weight: 700; font-family: 'JetBrains Mono', Consolas, monospace; box-shadow: var(--shadow-sm); letter-spacing: 1px; }
 span#vendTopTxt {
 	margin-top: 2.5px;
     /*max-width: 52px;
@@ -1831,6 +2344,9 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 .kv.kvCompact { grid-template-columns:68px 1fr; padding:8px 12px; gap:8px; align-items:center; }
 .kv.kvCompact .k { font-size:10.5px; margin-top:0; }
 .kv.kvCompact .v { font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* v3.2.1: o campo Hora agora leva hora + data ("16:43 19/05/26", ~14 caracteres); no celular a célula de meia
+   largura só comporta ~7 e cortaria a data — ocupa a linha inteira; dense deixa o campo seguinte preencher o vão. */
+@media (max-width: 680px) { .kvCompactGrid { grid-auto-flow: dense; } .kvCompactGrid .kvHora { grid-column: 1 / -1; } }
 /* kvItens ocupa o espaço restante com scroll interno + footer fixo */
 .mbody .kvItens { overflow:hidden; display:flex; flex-direction:column; }
 .kvItens .v { overflow:hidden; min-height:0; display:flex; flex-direction:column; }
@@ -1876,6 +2392,42 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
      produzir nenhum efeito visual (zero diferença perceptível removendo). */
 }
 #__tip.on { opacity: 1; transform: translateY(0) scale(1); }
+/* ── Menu suspenso de temas (v3.2.0) ───────────────────────────────────────
+   Fica no <body> (não dentro da barra): .top tem backdrop-filter, que viraria o
+   "bloco de contenção" de qualquer filho position:fixed e deslocaria o menu.
+   Mesmo padrão de oculto/visível do .ov (opacity + visibility), anima ao abrir e ao fechar. */
+#btnTema .tmChev { margin-left: -2px; opacity: 0.7; transition: transform 0.18s var(--easing); }
+#btnTema[aria-expanded="true"] { background: var(--bg-hover); border-color: var(--accent); }
+#btnTema[aria-expanded="true"] .tmChev { transform: rotate(180deg); }
+.tmMenu { position: fixed; top: 0; left: 0; z-index: 9000; width: 700px; max-width: calc(100vw - 24px); max-height: 80vh; overflow-y: auto; overscroll-behavior: contain; padding: 14px 14px 16px; background: var(--bg-panel); color: var(--text-main); border: 1px solid var(--border-focus); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-6px) scale(0.98); transform-origin: top right; transition: opacity 0.16s var(--easing), transform 0.16s var(--easing), visibility 0s linear 0.16s; }
+.tmMenu.on { opacity: 1; visibility: visible; pointer-events: auto; transform: translateY(0) scale(1); transition: opacity 0.2s var(--easing), transform 0.2s var(--easing), visibility 0s linear 0s; }
+.tmHead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 2px 12px; }
+.tmTitulo { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+.tmAtual { font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* Grade única (escuros primeiro, claros depois): 4 colunas = 4×4 com os 16 temas, sem sobra de linha. */
+.tmGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tmCard { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; padding: 8px; font: inherit; text-align: left; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; transition: var(--transition-fast); }
+.tmCard:hover { border-color: var(--text-muted); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.tmCard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tmCard[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-bg); }
+.tmFoot { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 2px; }
+.tmName { min-width: 0; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tmCheck { flex-shrink: 0; width: 14px; height: 14px; color: var(--accent); opacity: 0; transform: scale(0.6); transition: opacity 0.15s var(--easing), transform 0.15s var(--easing); }
+.tmCard[aria-checked="true"] .tmCheck { opacity: 1; transform: scale(1); }
+/* Prévia: miniatura da tela pintada com as variáveis do PRÓPRIO tema (atributo data-theme no elemento). */
+.tmPrev { display: flex; height: 64px; overflow: hidden; border-radius: 8px; background: var(--bg-app); border: 1px solid var(--border-focus); color: var(--text-main); }
+.tmPSide { display: flex; flex-direction: column; justify-content: center; gap: 5px; width: 36%; padding: 6px 7px; background: var(--bg-panel); border-right: 1px solid var(--border); }
+.tmPAa { font-size: 15px; font-weight: 800; line-height: 1; color: var(--text-main); }
+.tmPMuted { display: block; width: 72%; height: 3px; border-radius: 2px; background: var(--text-muted); }
+.tmPPill { display: block; width: 58%; height: 7px; border-radius: 4px; background: var(--accent); }
+.tmPMain { display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 4px; min-width: 0; padding: 6px; }
+.tmPRow { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 4px; }
+.tmPHov { background: var(--bg-hover); }
+.tmPDot { flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.tmPLn { display: block; flex: 1; height: 3px; border-radius: 2px; background: var(--text-muted); }
+.tmPVal { display: block; flex-shrink: 0; width: 14px; height: 3px; border-radius: 2px; background: var(--text-main); }
+@media (max-width: 640px) { .tmGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 440px) { .tmGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tmMenu { padding: 12px 12px 14px; } }
 </style>
 </head>
 <body>
@@ -1900,8 +2452,9 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 <button id="ajuda" class="btn btnLabel" type="button" data-tip="Coringas de busca disponíveis" aria-label="Ajuda com coringas"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg>Ajuda</button>
 <button id="proibidos" class="btn btnLabel btnProibidos" type="button" data-tip="Aplicar filtro [proibidos] — ocultar vendas com itens proibidos" aria-label="Filtrar proibidos"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>Proibidos</button>
 <button id="btnDuplicatas" class="btn btnLabel" type="button" style="display:none" data-tip="Ver gerenciais que foram automaticamente ocultadas nesta geração por já terem virado NFC-e/NF-e" aria-label="Ver duplicatas"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Duplicatas <span id="badgeDuplicatas" style="opacity:.75"></span></button>
+<button id="btnAutoteste" class="btn btnLabel" type="button" style="display:none" data-tip="Resultado do auto-teste desta atualização: totais, duplicidades e leitura do banco" aria-label="Ver auto-teste"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>Auto-teste <span id="badgeAutoteste" style="opacity:.85"></span></button>
 <button id="atualizar" class="btn btnLabel" type="button" data-tip="Recarregar relatório do dia atual" aria-label="Atualizar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>Atualizar</button>
-<button id="btnTema" class="btn btnLabel" type="button" data-tip="Alternar tema de cores (Ultra Dark / Dark / Claro)" aria-label="Alternar tema"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>Tema</button>
+<button id="btnTema" class="btn btnLabel" type="button" data-tip="Escolher tema de cores" aria-label="Escolher tema de cores" aria-haspopup="menu" aria-expanded="false"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>Tema<svg class="tmChev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
 <button id="btnModalPeriodo" class="btn btnLabel" type="button" data-tip="Gerar relatório para um intervalo de datas" aria-label="Gerar por período"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>Por período</button>
 <button id="acoes" class="btn btnLabel" type="button" data-tip="Editar configurações do sistema" aria-label="Editar configurações"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Configurações</button>
 </div>
@@ -2204,6 +2757,15 @@ const fmt=v=>new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).fo
 // Valor sem símbolo de moeda — usado na exibição de formas no modal
 const fmtN=v=>new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(v||0));
 const fmtCopia=v=>new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2,useGrouping:false}).format(Number(v||0));
+// "2026-05-19" (ou "2026-05-19T10:00") -> "19/05/26" (dd/mm/aa). Vazio se a data faltar ou não for válida:
+// quem usa decide o que mostrar — nunca se inventa uma data.
+const _dataCurta=iso=>{
+    const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso==null?"":iso));
+    if(!m)return "";
+    const mes=Number(m[2]),dia=Number(m[3]);
+    if(mes<1||mes>12||dia<1||dia>31)return "";
+    return m[3]+"/"+m[2]+"/"+m[1].slice(2);
+};
 // ATENÇÃO — espelha escHtml() do lado servidor (procure por "const escHtml"
 // no topo do arquivo, dentro da função Node.js). Duplicação intencional —
 // runtimes diferentes (navegador aqui, Node.js lá). Mudou um, muda o outro.
@@ -2220,21 +2782,209 @@ const _fetchJSON = (url, opts) => fetch(url, opts).then(r => {
     return r.json();
 });
 
-const temasOpcoes = ["ultra-dark", "dark", "light"];
+// ── Temas de cores ───────────────────────────────────────────────────────────
+// A lista (id, nome, grupo) vem do servidor — TEMAS_RELATORIO, no topo do gerar-relatorio-html.js —
+// e é a MESMA que valida o tema salvo no <head>. O CSS de cada id é o bloco [data-theme="id"].
+const TEMAS = (function(){ var t = ${temasJSON}; return Array.isArray(t) ? t : []; })();
+const TEMA_PADRAO = "ultra-dark";
+const _temaPorId = (id) => { for (let i = 0; i < TEMAS.length; i++) { if (TEMAS[i].id === id) return TEMAS[i]; } return null; };
+// Tema salvo: localStorage primeiro, cookie como reserva (o cookie vale para qualquer porta do mesmo
+// host; o localStorage não). try/catch em cada leitura: com armazenamento bloqueado o acesso LANÇA erro.
+const _lerTemaSalvo = () => {
+    let t = "";
+    try { t = localStorage.getItem("fdb_theme") || ""; } catch(e) {}
+    if (!t) { try { t = (document.cookie.match(/(?:^|;\s*)fdb_theme=([^;]+)/) || [])[1] || ""; } catch(e) {} }
+    return _temaPorId(t) ? t : TEMA_PADRAO;
+};
+// O que está NA TELA (atributo do <html>) é a verdade — não o que está salvo.
+const _temaAtual = () => {
+    const a = document.documentElement.getAttribute("data-theme");
+    return _temaPorId(a) ? a : TEMA_PADRAO;
+};
 const _salvarTema = (t) => {
     try { localStorage.setItem("fdb_theme", t); } catch(e) {}
     try { document.cookie = "fdb_theme=" + t + ";path=/;max-age=31536000;SameSite=Strict"; } catch(e) {}
     document.documentElement.setAttribute("data-theme", t);
 };
-const btnTema = qs("#btnTema");
-if(btnTema) {
-    btnTema.addEventListener("click", () => {
-        let temaAtual = localStorage.getItem("fdb_theme") || (document.cookie.match(/fdb_theme=([^;]+)/)||[])[1] || "ultra-dark";
-        let proximoTema = temasOpcoes[(temasOpcoes.indexOf(temaAtual) + 1) % temasOpcoes.length];
-        _salvarTema(proximoTema);
-        toast("Tema Alterado", proximoTema === "light" ? "Modo Claro" : (proximoTema === "dark" ? "Modo Dark Original" : "Modo Ultra Dark"));
-    });
+// Se o script do <head> falhou/foi bloqueado, o atributo pode estar ausente ou inválido: sincroniza.
+if (!_temaPorId(document.documentElement.getAttribute("data-theme"))) {
+    document.documentElement.setAttribute("data-theme", _lerTemaSalvo());
 }
+const btnTema = qs("#btnTema");
+let _tmMenu = null;
+let _tmAberto = false;
+const _tmNomeAtual = () => { const t = _temaPorId(_temaAtual()); return t ? t.nome : ""; };
+
+// Botão: aria-expanded + tooltip. Com o menu aberto o tooltip fica em branco (o tooltip flutuante
+// apareceria por cima do menu se o mouse saísse e voltasse ao botão); fechado, mostra o tema atual.
+const _tmAtualizarBotao = () => {
+    if (!btnTema) return;
+    btnTema.setAttribute("aria-expanded", _tmAberto ? "true" : "false");
+    btnTema.setAttribute("data-tip", _tmAberto ? "" : "Escolher tema de cores — atual: " + _tmNomeAtual());
+};
+const _tmMarcarAtual = () => {
+    if (!_tmMenu) return;
+    const atual = _temaAtual();
+    const cards = _tmMenu.querySelectorAll(".tmCard");
+    for (let i = 0; i < cards.length; i++) {
+        cards[i].setAttribute("aria-checked", cards[i].getAttribute("data-tema") === atual ? "true" : "false");
+    }
+    const lbl = _tmMenu.querySelector(".tmAtual");
+    if (lbl) lbl.textContent = "Atual: " + _tmNomeAtual();
+};
+const _tmConstruir = () => {
+    if (_tmMenu && _tmMenu.isConnected) return _tmMenu;
+    _tmMenu = null;
+    // Prévia: o span .tmPrev leva o data-theme do tema — as variáveis CSS dentro dele são as do tema.
+    const linhaPrev = '<span class="tmPRow"><span class="tmPDot"></span><span class="tmPLn"></span><span class="tmPVal"></span></span>';
+    const cardHtml = (t) =>
+        '<button type="button" class="tmCard" role="menuitemradio" aria-checked="false" tabindex="-1" data-tema="' + esc(t.id) + '">'
+        + '<span class="tmPrev" data-theme="' + esc(t.id) + '" aria-hidden="true">'
+        +   '<span class="tmPSide"><span class="tmPAa">Aa</span><span class="tmPMuted"></span><span class="tmPPill"></span></span>'
+        +   '<span class="tmPMain">' + linhaPrev + linhaPrev.replace('class="tmPRow"', 'class="tmPRow tmPHov"') + linhaPrev + '</span>'
+        + '</span>'
+        + '<span class="tmFoot"><span class="tmName">' + esc(t.nome) + '</span>'
+        + '<svg class="tmCheck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg></span>'
+        + '</button>';
+    const m = document.createElement("div");
+    m.id = "tmMenu"; m.className = "tmMenu";
+    m.innerHTML = '<div class="tmHead"><span class="tmTitulo">Tema de cores</span><span class="tmAtual"></span></div>'
+        + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>';
+    m.addEventListener("click", (e) => {
+        const alvo = e.target;
+        const c = alvo && alvo.closest ? alvo.closest(".tmCard") : null;
+        if (!c || !m.contains(c)) return;
+        _escolherTema(c.getAttribute("data-tema"));
+        _tmFechar(true);
+    });
+    document.body.appendChild(m);
+    _tmMenu = m;
+    _tmMarcarAtual();
+    return m;
+};
+// Posição: abaixo do botão, borda direita alinhada com a dele e sempre dentro da janela; se abaixo
+// não cabe (janela baixa) e acima tem mais espaço, abre para cima. Altura limitada, com rolagem interna.
+const _tmPosicionar = () => {
+    if (!_tmMenu || !btnTema) return;
+    const vw = document.documentElement.clientWidth || window.innerWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const margem = 12;
+    const larg = Math.max(160, Math.min(700, vw - margem * 2));
+    const r = btnTema.getBoundingClientRect();
+    const semAncora = !(r.width > 0 || r.height > 0);
+    let left = semAncora ? vw - larg - margem : r.right - larg;
+    left = Math.max(margem, Math.min(left, vw - larg - margem));
+    const baseTop = semAncora ? 56 : r.bottom;
+    const abaixo = vh - baseTop - margem - 8;
+    const acima = semAncora ? 0 : r.top - margem - 8;
+    _tmMenu.style.width = larg + "px";
+    _tmMenu.style.left = left + "px";
+    if (abaixo >= 300 || abaixo >= acima) {
+        _tmMenu.style.top = (baseTop + 8) + "px";
+        _tmMenu.style.bottom = "auto";
+        _tmMenu.style.maxHeight = Math.max(160, abaixo) + "px";
+        _tmMenu.style.transformOrigin = "top right";
+    } else {
+        _tmMenu.style.top = "auto";
+        _tmMenu.style.bottom = (vh - r.top + 8) + "px";
+        _tmMenu.style.maxHeight = Math.max(160, acima) + "px";
+        _tmMenu.style.transformOrigin = "bottom right";
+    }
+};
+const _tmAbrir = () => {
+    if (_tmAberto) return;
+    _tmConstruir();
+    _tmMarcarAtual();
+    _tmAberto = true;
+    _tmAtualizarBotao();
+    _tmPosicionar();
+    _tmMenu.classList.add("on");
+    void _tmMenu.offsetWidth;
+    const alvo = _tmMenu.querySelector('.tmCard[aria-checked="true"]') || _tmMenu.querySelector(".tmCard");
+    if (alvo) { try { alvo.focus(); } catch(e) {} }
+};
+const _tmFechar = (devolverFoco) => {
+    if (!_tmAberto) return;
+    _tmAberto = false;
+    if (_tmMenu) _tmMenu.classList.remove("on");
+    _tmAtualizarBotao();
+    if (devolverFoco && btnTema) { try { btnTema.focus(); } catch(e) {} }
+};
+// Aplica um tema (salva, marca no menu, avisa). Id inválido ou já ativo: não faz nada.
+const _escolherTema = (id) => {
+    const t = _temaPorId(id);
+    if (!t || id === _temaAtual()) return false;
+    _salvarTema(id);
+    _tmMarcarAtual();
+    _tmAtualizarBotao();
+    toast("Tema alterado", t.nome);
+    return true;
+};
+// Próximo/anterior na ordem da lista (usado pelas ações de atalho "tema:proximo" / "tema:anterior").
+const _ciclarTema = (delta) => {
+    const n = TEMAS.length;
+    if (!n) return;
+    const atual = _temaAtual();
+    let i = 0;
+    for (let k = 0; k < n; k++) { if (TEMAS[k].id === atual) { i = k; break; } }
+    _escolherTema(TEMAS[(((i + delta) % n) + n) % n].id);
+};
+// Vizinho de cima/baixo na grade (pelas posições reais na tela — funciona com 2 ou 3 colunas).
+const _tmVizinhoVertical = (cards, atual, dir) => {
+    const ra = atual.getBoundingClientRect();
+    let melhor = null, melhorD = Infinity;
+    for (let i = 0; i < cards.length; i++) {
+        const c = cards[i];
+        if (c === atual) continue;
+        const r = c.getBoundingClientRect();
+        const dy = dir > 0 ? r.top - ra.top : ra.top - r.top;
+        if (dy < ra.height / 2) continue;
+        const dx = Math.abs((r.left + r.width / 2) - (ra.left + ra.width / 2));
+        const d = dy * 4 + dx;
+        if (d < melhorD) { melhorD = d; melhor = c; }
+    }
+    return melhor;
+};
+if (btnTema) {
+    btnTema.addEventListener("click", () => { if (_tmAberto) _tmFechar(false); else _tmAbrir(); });
+    _tmAtualizarBotao();
+}
+// Fora do menu e do botão: fecha (pointerdown em captura — pega mouse, toque e caneta).
+document.addEventListener("pointerdown", (e) => {
+    if (!_tmAberto) return;
+    const alvo = e.target;
+    if (_tmMenu && _tmMenu.contains(alvo)) return;
+    if (btnTema && btnTema.contains(alvo)) return;
+    _tmFechar(false);
+}, true);
+// Teclado (captura, só com o menu aberto): Esc fecha SÓ o menu (stopPropagation impede o Esc global de
+// fechar também um modal); Tab fecha e segue; setas/Home/End movem o foco; Enter/Espaço = clique nativo.
+document.addEventListener("keydown", (e) => {
+    if (!_tmAberto || !_tmMenu) return;
+    const k = e.key;
+    if (k === "Escape") { e.preventDefault(); e.stopPropagation(); _tmFechar(true); return; }
+    if (k === "Tab") { _tmFechar(true); return; }
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (k !== "ArrowRight" && k !== "ArrowLeft" && k !== "ArrowDown" && k !== "ArrowUp" && k !== "Home" && k !== "End") return;
+    const cards = Array.prototype.slice.call(_tmMenu.querySelectorAll(".tmCard"));
+    const n = cards.length;
+    if (!n) return;
+    e.preventDefault();
+    const i = cards.indexOf(document.activeElement);
+    let alvo = null;
+    if (k === "Home") alvo = cards[0];
+    else if (k === "End") alvo = cards[n - 1];
+    else if (i < 0) alvo = _tmMenu.querySelector('.tmCard[aria-checked="true"]') || cards[0];
+    else if (k === "ArrowRight") alvo = cards[(i + 1) % n];
+    else if (k === "ArrowLeft") alvo = cards[(i - 1 + n) % n];
+    else alvo = _tmVizinhoVertical(cards, cards[i], k === "ArrowDown" ? 1 : -1) || cards[i];
+    if (alvo) { try { alvo.focus(); } catch(err) {} }
+}, true);
+let _tmRaf = 0;
+window.addEventListener("resize", () => {
+    if (!_tmAberto || _tmRaf) return;
+    _tmRaf = requestAnimationFrame(() => { _tmRaf = 0; if (_tmAberto) _tmPosicionar(); });
+});
 
 const rmAcento=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
 const normP=v=>rmAcento(v).trim().toUpperCase().replace(/\s+/g," ");
@@ -2251,13 +3001,13 @@ const proibidosPadrao=["FARO","BIOFRESH","OPTIMUM","CIBAU","ATACAMA","GOLDEN","P
 const PROIB_FIXOS=["DESCONTO","<CANCELADO>","CANCELADO", "ACRÉSCIMO", "ACR�SCIMO" ];
 const PROIB_FIXOS_N=new Set(PROIB_FIXOS.map(normP));
 const uniq=a=>[...new Set(a)];
-const escRe=s=>String(s||"").replace(/[-\/\\^$*+?.()|[\]{}]/g,"\\$&");
+const escRe=s=>String(s||"").replace(/[-/\\^$*+?.()|[\]{}]/g,"\\$&");
 
 // Detecta se uma entrada proibida é um filtro de valor (ex: >100, <50, >=200, =7000>150)
 const _reValorProib = /^(>=|<=|>|<)[0-9]/;
 const _isValorProib = v => {
     const s = String(v||"").trim();
-    return _reValorProib.test(s) || /^\d[\d\.,]*$/.test(s);
+    return _reValorProib.test(s) || /^\d[\d.,]*$/.test(s);
 };
 
 // Verifica se um valor numérico bate com um filtro de valor de proibido
@@ -2274,7 +3024,9 @@ const _valorBateProib=(expr,total)=>{
 };
 
 const lerProibidos=()=>{
-    const raw=String(localStorage.getItem(LS_KEY)||"").trim();
+    // v3.2.0: try/catch — com o armazenamento bloqueado o acesso LANÇA erro e a página inteira (tabela
+    // incluída) deixava de carregar; agora cai nos proibidos embutidos/padrão.
+    let raw=""; try{ raw=String(localStorage.getItem(LS_KEY)||"").trim(); }catch(_){ raw=""; }
     if(!raw)return proibidosPadrao.slice();
     let arr=[];
     if(raw.startsWith("[")){
@@ -2301,7 +3053,7 @@ _recompileProibidos();
 
 const setProibidosUser=(lista)=>{
     const limpo=uniq((lista||[]).map(s=>s.trim()).filter(Boolean));
-    localStorage.setItem(LS_KEY,limpo.join('\n'));
+    try{ localStorage.setItem(LS_KEY,limpo.join('\n')); }catch(_){ /* sem armazenamento: vale só nesta sessão */ }
     valoresProibidos=limpo.length?limpo:proibidosPadrao.slice();
     _recompileProibidos();
 };
@@ -2419,9 +3171,12 @@ const _dupInjetarNaTabela = (d) => {
 // ── Aplica decisões já salvas (localStorage) ANTES de qualquer render ──
 let _dupManterTodasAtivo = _dupLerManterTodas();
 const _dupPendentes = [];
+// Precedência: a decisão ESPECÍFICA ("não perguntar mais sobre essa") vence a GERAL
+// ("manter todas"). É a mesma regra do clique ao vivo em "Manter todas", que só atua
+// sobre as pendentes — assim carga e clique nunca divergem.
 for (const d of _dupTodas) {
+    if (_dupEstaOculto(d)) continue;
     if (_dupManterTodasAtivo) { _dupInjetarNaTabela(d); continue; }
-    if (_dupEstaOculto(d)) continue; // "não perguntar mais" já escolhido antes
     _dupPendentes.push(d); // sem decisão — vai pro modal
 }
 
@@ -2435,83 +3190,85 @@ for (const d of _dupTodas) {
     }
 })();
 
-const abrirDuplicatas=(itensPendentes)=>{
-    if (document.getElementById("ovDup")) return; // guarda contra listener duplicado
+const abrirDuplicatas=(itens)=>{
+    if (document.getElementById("ovDup")) return; // guarda contra abertura dupla
     const bg=document.createElement("div"); bg.className="ov"; bg.id="ovDup"; bg.setAttribute("aria-hidden","false");
-    // BUG FIX (v2.9.1): fechar/escKey precisam existir ANTES de render(), que
-    // os registra nos botões — antes, render() rodava primeiro e caía em
-    // "Cannot access 'fechar' before initialization" (TDZ do const).
-    function escKey(e){ if(e.key==="Escape") fechar(); }
-    const fechar=()=>{ document.removeEventListener("keydown",escKey); _fecharOverlayAnimado(bg); };
-    render(bg, itensPendentes);
-    document.body.appendChild(bg);
-    void bg.offsetWidth;
-    bg.classList.add("on");
-    document.addEventListener("keydown",escKey);
 
-    function render(el, itens) {
-        const linhaItem = d => {
-            const rotulo = d._tipo === "confirmado"
-                ? '<span style="color:#7ee787">● confirmado</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+(d.docModelo===65?'NFC-e':'NF-e')+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
-                : '<span style="color:#e3b341">● provável</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → NF-e <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(mesmo valor/data, +'+esc(d.diffMin)+'min'+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
-            return '<div class="dupItem" data-chave="'+esc(_dupChaveItem(d))+'" style="padding:10px;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px">'
-                + '<div style="margin-bottom:6px">'+rotulo+'</div>'
-                + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-                + '<div class="btn dupBtnDepois" style="font-size:12px;padding:4px 10px">Perguntar depois sobre essa</div>'
-                + '<div class="btn dupBtnNunca" style="font-size:12px;padding:4px 10px">Não perguntar mais sobre essa</div>'
-                + '</div></div>';
-        };
+    // Ordem importa: fechar/escKey são definidos ANTES de qualquer render(), porque o
+    // render() liga handlers que leem "fechar" na hora (const em zona morta lançaria
+    // ReferenceError). Todas as consultas são ESCOPADAS em bg (bg.querySelector) — o
+    // qs() global ignora o 2º argumento e o bg só entra no documento depois do render.
+    const escKey=(e)=>{ if(e.key==="Escape") fechar(); };
+    const fechar=()=>{ document.removeEventListener("keydown",escKey); _fecharOverlayAnimado(bg); };
+
+    const linhaItem = d => {
+        const rotulo = d._tipo === "confirmado"
+            ? '<span style="color:var(--st-ok)">● confirmado</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+(d.docModelo===65?'NFC-e':'NF-e')+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
+            : '<span style="color:var(--st-warn)">● provável</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → NF-e <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(mesmo valor/data, +'+esc(d.diffMin)+'min'+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
+        return '<div class="dupItem" data-chave="'+esc(_dupChaveItem(d))+'" style="padding:10px;border-bottom:1px solid var(--line-soft);font-size:13px">'
+            + '<div style="margin-bottom:6px">'+rotulo+'</div>'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+            + '<div class="btn dupBtnDepois" style="font-size:12px;padding:4px 10px">Perguntar depois sobre essa</div>'
+            + '<div class="btn dupBtnNunca" style="font-size:12px;padding:4px 10px">Não perguntar mais sobre essa</div>'
+            + '</div></div>';
+    };
+
+    const render=()=>{
         const corpoHtml = itens.length === 0
             ? '<div style="padding:16px;opacity:.7;font-size:13px">Nenhuma duplicata pendente de decisão.'
               + (_dupManterTodasAtivo ? '<br><br>Modo <b>"manter todas"</b> está ativo — toda duplicata encontrada é exibida e somada automaticamente.' : '')
               + '</div>'
             : itens.map(linhaItem).join("");
-        const _btnManterTodasTxt = _dupManterTodasAtivo ? "Desativar \"manter todas\"" : "Manter todas as duplicatas";
-        el.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais já convertidas em NFC-e/NF-e — escolha o que fazer com cada uma.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
+        const txtManterTodas = _dupManterTodasAtivo ? 'Desativar "manter todas"' : "Manter todas as duplicatas";
+        bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais já convertidas em NFC-e/NF-e — escolha o que fazer com cada uma.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
             + '<div class="mbody" style="padding-bottom:0">'
-            + '<div class="btn" id="dupBtnTodas" style="margin-bottom:10px;width:100%;justify-content:center">'+_btnManterTodasTxt+'</div>'
+            + '<div class="btn" id="dupBtnTodas" style="margin-bottom:10px;width:100%;justify-content:center">'+txtManterTodas+'</div>'
             + '</div>'
             + '<div class="mbody" id="dupLista" style="max-height:50vh;overflow:auto;padding-top:0">'+corpoHtml+'</div></div>';
 
-        // BUG FIX (v2.9.1): qs() só aceita o seletor e busca no document — na
-        // 1ª renderização o modal ainda não foi inserido na página, então
-        // qs("#dupFechar") devolvia null e o TypeError interrompia TODO o
-        // script do relatório (a tabela não era desenhada) sempre que havia
-        // duplicata pendente. Busca dentro do próprio modal.
-        el.querySelector("#dupFechar").addEventListener("click",fechar);
-        el.addEventListener("click",e=>{if(e.target===el)fechar();});
+        bg.querySelector("#dupFechar").addEventListener("click",fechar);
 
-        el.querySelector("#dupBtnTodas").addEventListener("click", () => {
+        bg.querySelector("#dupBtnTodas").addEventListener("click", () => {
             const ligar = !_dupManterTodasAtivo;
             _dupSalvarManterTodas(ligar);
             _dupManterTodasAtivo = ligar;
             if (ligar) {
-                // Injeta agora todas as pendentes (as já ocultas por "não perguntar
-                // mais" continuam respeitadas — não são reabertas por esta ação).
+                // Só as pendentes entram: as marcadas "não perguntar mais" continuam
+                // ocultas (decisão específica vence a geral — ver laço de carga).
                 for (const d of itens) _dupInjetarNaTabela(d);
                 itens.length = 0;
                 renderTabela();
             }
-            render(el, itens);
-            toast("Duplicatas", ligar ? "Todas as duplicatas passam a ser exibidas." : "Modo \"manter todas\" desativado.");
+            render();
+            toast("Duplicatas", ligar ? "Todas as duplicatas passam a ser exibidas." : "Modo \"manter todas\" desativado — vale a partir da próxima atualização do relatório.");
         });
 
-        el.querySelectorAll(".dupBtnDepois").forEach((btn, i) => {
+        bg.querySelectorAll(".dupBtnDepois").forEach((btn, i) => {
             btn.addEventListener("click", () => {
                 itens.splice(i, 1); // some do modal SEM salvar decisão — volta a perguntar na próxima geração
-                render(el, itens);
-                if (itens.length === 0) fechar();
+                if (itens.length === 0) { fechar(); return; }
+                render();
             });
         });
-        el.querySelectorAll(".dupBtnNunca").forEach((btn, i) => {
+        bg.querySelectorAll(".dupBtnNunca").forEach((btn, i) => {
             btn.addEventListener("click", () => {
                 _dupMarcarOculto(itens[i]);
                 itens.splice(i, 1);
-                render(el, itens);
-                if (itens.length === 0) fechar();
+                if (itens.length === 0) { fechar(); return; }
+                render();
             });
         });
-    }
+    };
+
+    // Clique FORA do conteúdo fecha. Ligado uma única vez: o render() só troca o
+    // innerHTML interno e não recria o próprio bg, então o listener sobrevive.
+    bg.addEventListener("click",e=>{ if(e.target===bg) fechar(); });
+
+    render();
+    document.body.appendChild(bg);
+    void bg.offsetWidth;          // força reflow p/ a transição de opacidade rodar
+    bg.classList.add("on");
+    document.addEventListener("keydown",escKey);
 };
 { const _b = document.getElementById("btnDuplicatas"); if (_b) _b.addEventListener("click", () => abrirDuplicatas(_dupPendentes)); }
 // Abre automaticamente se houver duplicata pendente de decisão nesta geração —
@@ -2608,7 +3365,7 @@ const agruparItensUI=it=>{
         if(!l||l==="…"||l==="...")continue;
         let nome=l;
         let qtd=1;
-        const mm=l.match(/^(\d+(?:[\.,]\d+)?)x\s*(.*)$/i);
+        const mm=l.match(/^(\d+(?:[.,]\d+)?)x\s*(.*)$/i);
         if(mm){
             qtd=numQtd(mm[1]);
             nome=String(mm[2]||"").trim()||nome;
@@ -2646,7 +3403,7 @@ const itensTdHTML=itensRaw=>{
     const visiveis = linhas.slice(0, MAX_ITENS_TD);
     const extras   = linhas.length - visiveis.length;
     for(const l of visiveis){
-        const mm=l.match(/^(\d+(?:[,\.]\d+)?)x\s+(.+)$/i);
+        const mm=l.match(/^(\d+(?:[,.]\d+)?)x\s+(.+)$/i);
         if(mm){
             const qtd=mm[1].replace(".",",");
             const nome=String(mm[2]||"").trim();
@@ -2927,7 +3684,7 @@ const valorOk=(q,total)=>{
         return total>=Math.min(a,b)&&total<=Math.max(a,b);
     }
     let qv=sx.startsWith("R$")?sx.slice(2):sx;
-    qv=qv.replace(/[\.,]/g,""); const tv=tStr.replace(/[\.,]/g,"");
+    qv=qv.replace(/[.,]/g,""); const tv=tStr.replace(/[.,]/g,"");
     if(!qv)return null; return tv.indexOf(qv)>=0;
 };
 
@@ -2935,7 +3692,7 @@ const parseSomaQuery=raw=>{
     const s=semWS(String(raw||""));
     if(!s.startsWith("=")&&!s.match(/^(>=?)\d/))return null;
     // Suporta =ALVO>MIN ou =ALVO>=MIN: soma exata alvo com filtro mínimo por venda
-    const mComMin=s.match(/^=([0-9,\.]+)(>=?)([0-9,\.]+)$/);
+    const mComMin=s.match(/^=([0-9,.]+)(>=?)([0-9,.]+)$/);
     if(mComMin){
         const alvo=soNumeroBr(mComMin[1]); if(alvo===null)return null;
         const minVal=soNumeroBr(mComMin[3]); if(minVal===null)return null;
@@ -2943,7 +3700,7 @@ const parseSomaQuery=raw=>{
     }
     // Suporta >MIN=ALVO ou >=MIN=ALVO (ordem invertida — equivalente ao anterior)
     // Ex: ">50=1200" → minPorVenda=50, alvo=1200
-    const mMinFirst=s.match(/^(>=?)(\d[0-9,\.]*)=(\d[0-9,\.]*)$/);
+    const mMinFirst=s.match(/^(>=?)(\d[0-9,.]*)=(\d[0-9,.]*)$/);
     if(mMinFirst){
         const minVal=soNumeroBr(mMinFirst[2]); if(minVal===null)return null;
         const alvo=soNumeroBr(mMinFirst[3]);   if(alvo===null)return null;
@@ -2957,7 +3714,7 @@ const parseSomaQuery=raw=>{
     return{alvo,tol,minPorVenda:null,minOp:null};
 };
 
-let vendAtual="",vendFiltro="",qAtual="",qInc="",qIgn=[],qValor=false,tipoBusca="todos",linhaAtual=null,somaSel=null,somaKey="";
+let vendAtual="",vendFiltro="",qAtual="",qInc="",tipoBusca="todos",linhaAtual=null,somaSel=null,somaKey="";
 const tipoLinhaOk=x=>{
     if(tipoBusca==="todos")return true;
     const m=Number(x&&x.modelo||0);
@@ -3030,7 +3787,7 @@ const _construirCtxFiltro = (rawQuery, vend) => {
     const _qs = semWS(q);
     ctx.ehSoma = _qs.startsWith("=")
         || (/^>=?\d/.test(_qs) && _qs.indexOf("=") > 0)
-        || /^>=?[\d,\.]+=[\d]/.test(_qs);
+        || /^>=?[\d,.]+=[\d]/.test(_qs);
     if (ctx.ehSoma) return ctx; // soma não usa incParts/excParts
 
     // ── Divide por + respeitando "frases entre aspas" ────────────────────
@@ -3503,7 +4260,13 @@ const abrirModal=x=>{
     if(x.modelo===55&&x.cliente) kvGrid.appendChild(mk("Cliente", x.cliente));
     if(x.modelo===55&&x.natureza) kvGrid.appendChild(mk("Natureza", x.natureza));
     if(x.caixa) kvGrid.appendChild(mk("Caixa", String(x.caixa||"")));
-    if(x.hora)  kvGrid.appendChild(mk("Hora",  String(x.hora||"").substring(0,5)));
+    if(x.hora){
+        // Hora + data do documento (ex.: "16:43 19/05/26"); sem data válida, só a hora.
+        const _dtDoc=_dataCurta(x._dtKey);
+        const _kvHora=mk("Hora", String(x.hora||"").substring(0,5)+(_dtDoc?" "+_dtDoc:""));
+        _kvHora.classList.add("kvHora"); // no celular ocupa a linha inteira (ver CSS .kvHora)
+        kvGrid.appendChild(_kvHora);
+    }
     kvGrid.appendChild(mk("Total", fmt(x.total||0)));
     // Formas: se tiver valores por forma, exibe "PIX: R$ X | Dinheiro: R$ Y"
     const _fv = x.formasValores || {};
@@ -3703,7 +4466,7 @@ const abrirEditorProibidos=()=>{
     // de memória progressivo).
     if (document.getElementById("ovProib")) return;
     const bg=document.createElement("div"); bg.className="ov"; bg.id="ovProib"; bg.setAttribute("aria-hidden","false");
-    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Salvo no servidor (config.json).</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
+    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Salvo no servidor (config.json).</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid var(--field-border);background:var(--field-bg);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
     document.body.appendChild(bg);
     // Fix de transição: className precisa entrar no DOM SEM "on" e ganhar a
     // classe depois (com reflow forçado no meio) — se "on" já vier junto no
@@ -3845,7 +4608,7 @@ qs("#q").addEventListener("input",e=>{
     debounceBusca = setTimeout(() => {
         qAtual=String(e.target.value||"").trim();
         _invalidarCtxCache();
-        const p=parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc);
+        const p=parseBusca(qAtual); qInc=p.inc;
         calcSomaSel();
         renderTabela();
     }, delay);
@@ -3860,7 +4623,7 @@ document.querySelectorAll('input[name="tipoBusca"]').forEach(el=>el.addEventList
     }
     calcSomaSel(); renderTabela();
 }));
-const _fnLimpar=()=>{vendAtual="";qAtual="";qInc="";qIgn=[];qValor=false;tipoBusca="todos";_invalidarCtxCache();qs("#q").value="";const rb=qs('input[name="tipoBusca"][value="todos"]');if(rb)rb.checked=true;calcSomaSel();renderTabela();atualizarSelecaoVendedores();_atualizarXLimpar();toast("Filtro limpo","Mostrando todos.");};
+const _fnLimpar=()=>{vendAtual="";qAtual="";qInc="";tipoBusca="todos";_invalidarCtxCache();qs("#q").value="";const rb=qs('input[name="tipoBusca"][value="todos"]');if(rb)rb.checked=true;calcSomaSel();renderTabela();atualizarSelecaoVendedores();_atualizarXLimpar();toast("Filtro limpo","Mostrando todos.");};
 qs("#limpar").addEventListener("click",_fnLimpar);
 const _btnLimTab=qs("#limparTabela");if(_btnLimTab)_btnLimTab.addEventListener("click",_fnLimpar);
 
@@ -3877,7 +4640,7 @@ qs("#q").addEventListener("input", _atualizarXLimpar);
 // Estado inicial (pode haver valor pré-preenchido)
 _atualizarXLimpar();
 qs("#ajuda").addEventListener("click",abrirAjuda);
-const btnPro=qs("#proibidos");if(btnPro)btnPro.addEventListener("click",()=>{const inp=qs("#q");if(!inp)return;let v=String(inp.value||"");if(v.toLowerCase().indexOf("[proibidos]")<0)v=(v+" [proibidos]").trim();inp.value=v;qAtual=v.trim();_invalidarCtxCache();const p=parseBusca(qAtual);qInc=p.inc;qIgn=p.ign;qValor=consultaPareceValor(qInc);calcSomaSel();renderTabela();_atualizarXLimpar();toast("Filtro","Aplicado [proibidos].");});
+const btnPro=qs("#proibidos");if(btnPro)btnPro.addEventListener("click",()=>{const inp=qs("#q");if(!inp)return;let v=String(inp.value||"");if(v.toLowerCase().indexOf("[proibidos]")<0)v=(v+" [proibidos]").trim();inp.value=v;qAtual=v.trim();_invalidarCtxCache();const p=parseBusca(qAtual);qInc=p.inc;calcSomaSel();renderTabela();_atualizarXLimpar();toast("Filtro","Aplicado [proibidos].");});
 
 qs("#copiarTudo").addEventListener("click",()=>{copiarTexto(montarTextoCopia(false,false));toast("Copiado","Conteúdo completo (com dinheiro).");});
 qs("#copiarTudoItens").addEventListener("click",()=>{copiarTexto(montarTextoCopiaItens(false,false));toast("Copiado","Conteúdo completo + itens.");});
@@ -3975,12 +4738,12 @@ document.addEventListener("keydown",e=>{
     let v=String(inp.value||"");
     if(isDelete){
         if(v.toLowerCase().indexOf("[-proibidos]")<0)v=(v+" [-proibidos]").trim();
-        inp.value=v; qAtual=v.trim(); const p=parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc); calcSomaSel(); renderTabela(); _atualizarXLimpar(); toast("Filtro","Aplicado [-proibidos].");
+        inp.value=v; qAtual=v.trim(); const p=parseBusca(qAtual); qInc=p.inc; calcSomaSel(); renderTabela(); _atualizarXLimpar(); toast("Filtro","Aplicado [-proibidos].");
         _atalhoSelecionarGerencialTodos();
     }else{
         if(k==="Insert") _atalhoSelecionarGerencialTodos();
         if(v.toLowerCase().indexOf("[proibidos]")<0)v=(v+" [proibidos]").trim();
-        inp.value=v; qAtual=v.trim(); const p=parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc); calcSomaSel(); renderTabela(); _atualizarXLimpar(); toast("Filtro","Aplicado [proibidos].");
+        inp.value=v; qAtual=v.trim(); const p=parseBusca(qAtual); qInc=p.inc; calcSomaSel(); renderTabela(); _atualizarXLimpar(); toast("Filtro","Aplicado [proibidos].");
     }
 });
 
@@ -3995,7 +4758,9 @@ const ACOES_DISPONIVEIS = [
     { value: "click:#aVendedores",        label: "\u25b8 Filtrar por vendedor" },
     { value: "click:#aAjuda",             label: "\u25b8 Ajuda de coringas" },
     { value: "click:#aLimpar",            label: "\u25b8 Limpar filtros" },
-    { value: "click:#btnTema",            label: "\u25b8 Alternar tema" },
+    { value: "click:#btnTema",            label: "\u25b8 Abrir menu de temas" },
+    { value: "tema:proximo",              label: "\u25b8 Próximo tema (alternar)" },
+    { value: "tema:anterior",             label: "\u25b8 Tema anterior" },
     { value: "click:#btnModalPeriodo",    label: "\u25b8 Gerar por período" },
     { value: "radio:tipoBusca:todos",     label: "\u25cf Tipo: Todos" },
     { value: "radio:tipoBusca:gerencial", label: "\u25cf Tipo: Gerencial" },
@@ -4013,6 +4778,10 @@ const _executarAcao = (v) => {
     // de atalho personalizadas, não só esta).
     try {
         if (tipo === "click") { const el = qs(resto); if (el) el.click(); }
+        else if (tipo === "tema") {
+            if (resto === "proximo") _ciclarTema(1);
+            else if (resto === "anterior") _ciclarTema(-1);
+        }
         else if (tipo === "radio") {
             const pts = resto.split(":"); if (pts.length < 2) return;
             const el = document.querySelector('input[name="' + pts[0] + '"][value="' + pts[1] + '"]');
@@ -4055,7 +4824,7 @@ document.addEventListener("keydown", function _tpHandler(e) {
     inp.value = _cmd;
     qAtual = _cmd;
     _invalidarCtxCache();
-    var p = parseBusca(qAtual); qInc=p.inc; qIgn=p.ign; qValor=consultaPareceValor(qInc);
+    var p = parseBusca(qAtual); qInc=p.inc;
     calcSomaSel(); renderTabela(); _atualizarXLimpar();
     var _temAcao = !!String(_entrada.acao || "").trim();
     toast("Atalho " + String(_entrada.tecla||""), _cmd || (_temAcao ? "Ação executada." : "Busca limpa."));
@@ -4090,11 +4859,11 @@ var __abrirModalPeriodo = function() {
           '<div class="mbody" style="gap:16px;padding-bottom:24px">' +
             '<div class="kv">' +
               '<div class="k">Data inicial</div>' +
-              '<input type="date" id="perInicio" value="' + _hojeISO + '" class="input" style="flex:1;color-scheme:dark">' +
+              '<input type="date" id="perInicio" value="' + _hojeISO + '" class="input" style="flex:1">' +
             '</div>' +
             '<div class="kv">' +
               '<div class="k">Data final</div>' +
-              '<input type="date" id="perFim" value="' + _hojeISO + '" class="input" style="flex:1;color-scheme:dark">' +
+              '<input type="date" id="perFim" value="' + _hojeISO + '" class="input" style="flex:1">' +
             '</div>' +
             '<div id="perStatus" style="display:none;text-align:center;padding:8px 0;font-size:13px;color:var(--text-muted)">Gerando relatorio, aguarde...</div>' +
             '<button class="btn" id="perGerar" type="button" style="width:100%;min-height:48px;height:auto;padding:12px 18px;font-size:15px;font-weight:700;white-space:normal;line-height:1.3;gap:10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Gerar relatório</button>' +
@@ -4233,7 +5002,6 @@ var __abrirModalConfig = function() {
             ? cfg.teclasPersonalizadas.map(function(t){ return {tecla:String(t.tecla||""),comando:String(t.comando||""),acao:String(t.acao||"")}; })
             : (Array.isArray(window.__teclasPersonalizadas) ? window.__teclasPersonalizadas.map(function(t){ return {tecla:String(t.tecla||""),comando:String(t.comando||""),acao:String(t.acao||"")}; }) : []);
 
-        var _escAttr = function(s){ return String(s||"").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;"); };
 
         var _teclaValida = function(k, ctrl, alt) {
             if (!k) return false;
@@ -4661,6 +5429,125 @@ if (typeof window.__nc_iniciarResize === "function") {
     window.__nc_iniciarResize();
     delete window.__nc_iniciarResize;
 }
+// ── AUTO-TESTE no navegador (v3.1.0) ─────────────────────────────────────
+// Junta o resultado do auto-teste do servidor (DADOS.autoteste, calculado na geração) com
+// uma conferência do que ESTÁ NA TELA agora — que pode diferir do servidor depois das
+// decisões do painel "Duplicatas" (linhas reconstituídas + totais ajustados à mão).
+// Sem ação do usuário: avisa por caixa de mensagem (toast) só quando o conjunto de alertas
+// muda, e mantém o botão "Auto-teste" para rever a lista a qualquer momento.
+// Nunca pode derrubar o relatório: tudo em try/catch.
+const LS_AUTOTESTE_VISTO = "__autoteste_visto__::";
+const executarAutoTesteCliente = () => {
+    const achados = [];
+    const vendas = Array.isArray(DADOS.vendas) ? DADOS.vendas : [];
+    const fmtR = n => "R$ " + Number(n || 0).toFixed(2).replace(".", ",");
+    const tol = 0.005;
+    const soma = vendas.reduce((a, v) => a + (Number(v && v.total) || 0), 0);
+    const totais = DADOS.totais || {};
+    if (Math.abs(Number(totais.total || 0) - soma) > tol) {
+        achados.push({ nivel: "critico", codigo: "TOTAL_DIA_DIVERGE_NAVEGADOR",
+            msg: "Na tela, o total do dia (" + fmtR(totais.total) + ") não bate com a soma das vendas listadas (" + fmtR(soma) + ")." });
+    }
+    const td = DADOS.totaisDia;
+    if (td && td.ok) {
+        const porTipo = Number(td.gerencial || 0) + Number(td.nfce || 0) + Number(td.nfe || 0);
+        if (Math.abs(porTipo - soma) > tol) {
+            achados.push({ nivel: "critico", codigo: "TOTAL_TIPO_DIVERGE_NAVEGADOR",
+                msg: "Na tela, Gerencial + NFC-e + NF-e (" + fmtR(porTipo) + ") não bate com a soma das vendas (" + fmtR(soma) + ")." });
+        }
+    }
+    const porVend = Array.isArray(DADOS.vendTotaisDia) ? DADOS.vendTotaisDia : [];
+    const somaVend = porVend.reduce((a, x) => a + (Number(x && x.geral) || 0), 0);
+    if (porVend.length && Math.abs(somaVend - soma) > tol) {
+        achados.push({ nivel: "critico", codigo: "TOTAL_VENDEDOR_DIVERGE_NAVEGADOR",
+            msg: "Na tela, a soma por vendedor (" + fmtR(somaVend) + ") não bate com a soma das vendas (" + fmtR(soma) + ")." });
+    }
+    const vistos = new Set(), repetidos = [];
+    for (const v of vendas) {
+        const chave = String(v && v.tipo) + "|" + String((v && v.numero) || "").replace(/^0+/, "") + "|" + String((v && v._dtKey) || "");
+        if (vistos.has(chave)) repetidos.push(v.tipo + " " + v.numero); else vistos.add(chave);
+    }
+    if (repetidos.length) {
+        achados.push({ nivel: "critico", codigo: "DOCUMENTO_REPETIDO_NAVEGADOR",
+            msg: "Na tela, documento listado mais de uma vez: " + repetidos.slice(0, 5).join(", ") + "." });
+    }
+    return achados;
+};
+
+const abrirAutoTeste = (todos, verificacoes) => {
+    if (document.getElementById("ovAuto")) return; // guarda contra abertura dupla
+    const bg = document.createElement("div"); bg.className = "ov"; bg.id = "ovAuto"; bg.setAttribute("aria-hidden", "false");
+    // fechar/escKey ANTES de qualquer uso; consultas escopadas em bg (o bg só entra no
+    // documento depois de montado) — mesma ordem do painel de Duplicatas.
+    const escKey = e => { if (e.key === "Escape") fechar(); };
+    const fechar = () => { document.removeEventListener("keydown", escKey); _fecharOverlayAnimado(bg); };
+    const cor = { critico: "var(--st-crit)", aviso: "var(--st-warn)", info: "var(--st-info)" };
+    const rotulo = { critico: "crítico", aviso: "aviso", info: "informativo" };
+    const ordem = { critico: 0, aviso: 1, info: 2 };
+    const itens = todos.slice().sort((a, b) => (ordem[a.nivel] - ordem[b.nivel]));
+    const linha = a => '<div style="padding:9px 10px;border-bottom:1px solid var(--line-soft);font-size:13px">'
+        + '<span style="color:' + (cor[a.nivel] || cor.info) + '">● ' + esc(rotulo[a.nivel] || a.nivel) + '</span> '
+        + '<b>' + esc(a.codigo) + '</b> <span style="opacity:.55">(' + esc(a.origem) + ')</span>'
+        + '<div style="margin-top:3px;opacity:.9">' + esc(a.msg) + '</div></div>';
+    const corpo = itens.length === 0
+        ? '<div style="padding:16px;opacity:.75;font-size:13px">Nenhum problema encontrado nesta geração.</div>'
+        : itens.map(linha).join("");
+    bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Auto-teste</div>'
+        + '<div class="msub">' + esc(verificacoes) + ' verificações no servidor + conferência da tela. Roda sozinho a cada atualização.</div></div>'
+        + '<div class="btn" id="autoFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
+        + '<div class="mbody" style="max-height:60vh;overflow:auto;padding-top:0">' + corpo + '</div></div>';
+    bg.querySelector("#autoFechar").addEventListener("click", fechar);
+    bg.addEventListener("click", e => { if (e.target === bg) fechar(); });
+    document.body.appendChild(bg);
+    void bg.offsetWidth;
+    bg.classList.add("on");
+    document.addEventListener("keydown", escKey);
+};
+
+const iniciarAutoTeste = () => {
+    const doServidor = (DADOS.autoteste && Array.isArray(DADOS.autoteste.achados)) ? DADOS.autoteste.achados : [];
+    const verificacoes = (DADOS.autoteste && Number(DADOS.autoteste.verificacoes)) || 0;
+    const doNavegador = executarAutoTesteCliente();
+    const todos = doServidor.map(a => ({ nivel: a.nivel, codigo: a.codigo, msg: a.msg, origem: "servidor" }))
+        .concat(doNavegador.map(a => ({ nivel: a.nivel, codigo: a.codigo, msg: a.msg, origem: "navegador" })));
+    const alertas = todos.filter(a => a.nivel !== "info");
+    const btn = document.getElementById("btnAutoteste");
+    if (btn) {
+        btn.addEventListener("click", () => abrirAutoTeste(todos, verificacoes));
+        if (alertas.length) {
+            btn.style.display = "";
+            const temCritico = alertas.some(a => a.nivel === "critico");
+            btn.style.color = temCritico ? "var(--st-crit)" : "var(--st-warn)";
+            const badge = document.getElementById("badgeAutoteste");
+            if (badge) badge.textContent = "(" + alertas.length + ")";
+        }
+    }
+    // Aviso por caixa de mensagem só quando o conjunto de alertas MUDA (o relatório
+    // recarrega a cada venda nova — repetir o toast a cada recarga seria ruído).
+    let chaveVisto = LS_AUTOTESTE_VISTO + String(DADOS.data || "");
+    const assinatura = alertas.map(a => a.codigo + ":" + a.msg).join("|");
+    let anterior = null;
+    try { anterior = localStorage.getItem(chaveVisto); } catch (e) { anterior = null; }
+    if (!alertas.length) {
+        try { localStorage.removeItem(chaveVisto); } catch (e) { /* sem storage: só perde a memória do aviso */ }
+        return;
+    }
+    if (anterior === assinatura) return;
+    try { localStorage.setItem(chaveVisto, assinatura); } catch (e) { /* idem */ }
+    const crit = alertas.filter(a => a.nivel === "critico").length;
+    const texto = alertas.length === 1
+        ? (crit ? "⚠ " : "") + alertas[0].msg
+        : (crit ? "⚠ " : "") + alertas.length + " alertas (" + crit + " crítico(s)) — abra o botão Auto-teste para ver";
+    toast("Auto-teste", texto.length > 220 ? texto.slice(0, 217) + "..." : texto);
+    // Problema visto SÓ no navegador não chega ao log do servidor sozinho: reporta uma vez.
+    for (const a of doNavegador) {
+        try {
+            fetch("/api/log-error", { method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ msg: "AUTOTESTE(navegador) " + a.codigo + ": " + a.msg, src: String(location.pathname) }) }).catch(() => {});
+        } catch (e) { /* relatório offline/sem fetch: sem log remoto */ }
+    }
+};
+try { iniciarAutoTeste(); } catch (erroAutoTeste) { console.error("Auto-teste falhou (o relatório segue normal):", erroAutoTeste); }
 </script>
 </body></html>`;
 // PRECISÃO FIX (v2.6.4): gravação atômica do HTML (arquivo temporário +
@@ -4683,12 +5570,12 @@ try {
         // Fallback: se o rename falhar (destino travado por antivírus/indexador
         // do Windows, ou tmp e destino em volumes diferentes), grava direto —
         // melhor um relatório gravado de forma não-atômica que nenhum.
-        try { if (fs.existsSync(_tmpSaida)) fs.unlinkSync(_tmpSaida); } catch(_) {}
+        tentarSilencioso(() => { if (fs.existsSync(_tmpSaida)) fs.unlinkSync(_tmpSaida); });
         fs.writeFileSync(saida, html, "utf8");
     }
 } catch (eWrite) {
     clearTimeout(_globalTimeout); _dbRef = null;
-    try { db.detach(); } catch(_) {}
+    tentarSilencioso(() => db.detach());
     console.log("ERRO ao gravar '" + saida + "': " + eWrite.message);
     process.exit(1);
 }
@@ -4732,7 +5619,7 @@ try {
                 fs.writeFileSync(_tmpCache, _json, "utf8");
                 fs.renameSync(_tmpCache, _horaCacheFile);
             } catch (eAtomicoCache) {
-                try { if (fs.existsSync(_tmpCache)) fs.unlinkSync(_tmpCache); } catch(_) {}
+                tentarSilencioso(() => { if (fs.existsSync(_tmpCache)) fs.unlinkSync(_tmpCache); });
                 fs.writeFileSync(_horaCacheFile, _json, "utf8");
             }
         } catch (e) {
@@ -4754,14 +5641,14 @@ try {
     // esperando por algo que já estava pronto. Fechar a conexão é
     // best-effort: o processo encerra logo em seguida e o SO libera o socket
     // de qualquer forma.
-    try { db.detach(); } catch(_) {}
+    tentarSilencioso(() => db.detach());
     console.log("OK: " + saida);
     });
     };
     rodar().catch(e => {
         clearTimeout(_globalTimeout);
         console.log("ERRO FATAL em rodar(): " + String(e && e.message || e));
-        try { if (_dbRef) { _dbRef.detach(); _dbRef = null; } } catch(_) {}
+        tentarSilencioso(() => { if (_dbRef) { _dbRef.detach(); _dbRef = null; } });
         process.exit(1);
     });
 })();
