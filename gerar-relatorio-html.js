@@ -1,13 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.3.0
+ * @version 3.3.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.3.0 - 2026-10-05 21:45 - Janela de correção de horário configurável: lida de
- *     "janelaCorrecaoHoraMin" no config.json (mesma chave do servidor), padrão 180 min
- *     (3 horas) em vez de 1 hora fixa, limites de 5 a 720 min. Novo campo "Janela de
- *     correção de horário (min)" no modal de configurações, com botão "Padrão (3h)".
+ *   3.3.1 - 2026-10-05 22:00 - Padrão de fábrica sem dados de loja: a lista padrão de
+ *     "proibidos" (marcas fixas de uma loja específica, aplicada automaticamente em toda
+ *     instalação nova e sempre que a lista do usuário ficava vazia) passa a ser vazia —
+ *     "Restaurar padrão" agora limpa a lista. Exemplo do campo de nome trocado para
+ *     "ex: Minha Loja".
  */
 
 (function() {
@@ -15,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.3.0";
+    const SCRIPT_VERSION = "3.3.1";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -3002,7 +3003,11 @@ for(let i=0; i<DADOS.vendas.length; i++){
 }
 
 const LS_KEY="__cupons_proibidos__";
-const proibidosPadrao=["FARO","BIOFRESH","OPTIMUM","CIBAU","ATACAMA","GOLDEN","PIPICAT","SYNTEC","MITZI","ND CAES","ND GATOS","GRANPLUS","PEDIGREE","WHISKAS","PREMIER","GUABI","NATURAL CAES","NATURAL GATOS","PUTZ","GRANEL","ELANCO","VET LIFE","VETLIFE","KONIG","SAN REMO","SANREMO","FN CAE","FN CAO","FN GATO","FN VET","ORIGENS","FUNNY BUNNY","FUNNY BIRDY","SANOL","KELDOG","KDOG","MAGNUS","MAGNO","GENIAL","CANISTER","NATURAL SACHE, FN COOKIES, KITEKAT"];
+// PADRÃO DE FÁBRICA (v3.3.1): vazio. Antes trazia uma lista fixa de marcas de
+// uma loja específica, aplicada automaticamente em qualquer instalação nova
+// (e sempre que a lista do usuário ficasse vazia). Cada loja agora cadastra os
+// próprios termos em Configurações → Proibidos; "Restaurar padrão" limpa a lista.
+const proibidosPadrao=[];
 const PROIB_FIXOS=["DESCONTO","<CANCELADO>","CANCELADO", "ACRÉSCIMO", "ACR�SCIMO" ];
 const PROIB_FIXOS_N=new Set(PROIB_FIXOS.map(normP));
 const uniq=a=>[...new Set(a)];
@@ -4950,7 +4955,7 @@ var __abrirModalConfig = function() {
             '<div class="mbody" style="gap:14px;padding-bottom:24px">' +
               '<div class="kv">' +
                 '<div class="k">Nome do sistema</div>' +
-                '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Pet World" style="flex:1">' +
+                '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Minha Loja" style="flex:1">' +
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Intervalo de atualização automática (ms)</div>' +
