@@ -184,3 +184,28 @@ test("servidor: validações das rotas HTTP", { timeout: 60000 }, async () => {
         assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8")).janelaCorrecaoHoraMin, 240);
     } finally { srv.parar(); }
 });
+
+test("servidor: encerramento ordenado registra no log, avisa as abas e sai com código 0", { timeout: 60000 }, async () => {
+    const dir = montarPasta();
+    const srv = await iniciarServidor(dir);
+    let codigo = null;
+    const saiu = new Promise(r => srv.proc.once("exit", c => { codigo = c; r(); }));
+    try {
+        // Conecta no fluxo SSE para receber o aviso de encerramento.
+        const controle = new AbortController();
+        const sse = await fetch(srv.base + "/api/events", { signal: controle.signal });
+        const leitor = sse.body.getReader();
+        let recebido = "";
+        const lendo = (async () => { try { for (;;) { const { value, done } = await leitor.read(); if (done) break; recebido += Buffer.from(value).toString("utf8"); } } catch (_) {} })();
+
+        const r = await fetch(srv.base + "/api/encerrar?origem=teste-automatico");
+        assert.strictEqual(r.status, 200);
+        await Promise.race([saiu, esperar(8000)]);
+        controle.abort(); await lendo;
+
+        assert.strictEqual(codigo, 0, "o servidor deveria sair com código 0");
+        assert.match(recebido, /"type":"encerrando"/, "as abas deveriam receber o aviso de encerramento");
+        const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
+        assert.match(log, /=== Servidor encerrado: encerramento solicitado por teste-automatico ===/);
+    } finally { srv.parar(); }
+});

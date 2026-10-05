@@ -3,15 +3,17 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.3.0
+# @version 1.4.0
 # @author Ruda Gabriel
 # @changelog
-#   1.3.0 - 2026-10-05 16:24 - Credenciais do Firebird repassadas ao servidor
-#     por variavel de ambiente (RELATORIO_FB_USER / RELATORIO_FB_PASS) em vez de
-#     "--user X --pass Y" na linha de comando: a linha de comando de qualquer
-#     processo e' visivel a todos os usuarios da maquina (Gerenciador de
-#     Tarefas, wmic), e uma senha com espaco quebrava os argumentos (ia sem
-#     aspas). servidor-relatorio.js v2.9.0+ le essas variaveis.
+#   1.4.0 - 2026-10-05 22:30 - Encerramento com mensagem clara. "Sair" e
+#     "Reiniciar servidor" matavam o processo direto (taskkill /F): o servidor
+#     nao tinha chance de registrar nada no log nem avisar as telas abertas, e
+#     o icone simplesmente sumia. Agora o tray pede o encerramento ordenado
+#     (/api/encerrar - servidor registra no relatorio.log e mostra o aviso
+#     "Servidor encerrado" nos relatorios abertos), espera ate 5 s e so' entao
+#     usa taskkill como ultimo recurso. Ao sair, mostra uma janela confirmando
+#     que o servidor foi encerrado e como inicia-lo de novo.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -233,6 +235,46 @@ function Test-PortaLivre {
     } finally {
         try { if ($tc) { $tc.Close() } } catch {}
     }
+}
+
+# ---------------------------------------------------------------------------
+# Encerra o servidor de forma ordenada (v1.4.0):
+#   1) pede /api/encerrar - o servidor registra no relatorio.log, avisa as
+#      telas abertas e encerra sozinho;
+#   2) espera ate 5 s o processo terminar;
+#   3) so' entao usa taskkill /F /T (arvore inteira) como ultimo recurso.
+# Retorna uma descricao de como terminou, para o log do tray.
+# ---------------------------------------------------------------------------
+function Stop-ServidorOrdenado {
+    param([switch]$Reiniciar)
+    $param = if ($Reiniciar) { "reiniciar=1&origem=bandeja" } else { "origem=bandeja" }
+    $pediu = $false
+    try {
+        Invoke-WebRequest "$ADDR_LOCAL/api/encerrar?$param" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+        $pediu = $true
+    } catch {}
+
+    $proc = $script:nodeProc
+    if ($proc -and -not $proc.HasExited) {
+        try { $proc.WaitForExit(5000) | Out-Null } catch {}
+    } elseif ($pediu) {
+        # Servidor iniciado fora do tray: espera a porta liberar.
+        $n = 0
+        while (-not (Test-PortaLivre -Porta $PORT) -and $n -lt 10) { Start-Sleep -Milliseconds 500; $n++ }
+    }
+
+    if ($proc -and -not $proc.HasExited) {
+        $pidAlvo = $proc.Id
+        try {
+            Start-Process -FilePath "taskkill.exe" -ArgumentList "/F","/T","/PID","$pidAlvo" -WindowStyle Hidden -Wait -ErrorAction Stop
+        } catch {
+            try { $proc.Kill() } catch {}
+        }
+        try { $proc.WaitForExit(3000) | Out-Null } catch {}
+        return "forcado (nao respondeu ao pedido de encerramento; PID $pidAlvo)"
+    }
+    if ($pediu) { return "ordenado" }
+    return "processo ja nao estava em execucao"
 }
 
 $script:nodeProc = $null
@@ -476,28 +518,11 @@ $itemReiniciar = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemReiniciar.Text = "Reiniciar servidor"
 $itemReiniciar.Add_Click({
     Write-TrayLog "Reinicio manual solicitado pelo usuario via bandeja."
-    # 1) Mata o processo rastreado pelo tray e toda a sua arvore (inclui
-    #    filhos que ele possa ter deixado orfaos: geracoes de relatorio em
-    #    andamento, PowerShell do seletor de FDB, etc.)
-    #    BUG FIX (seguranca): a versao anterior, apos isso, ainda executava
-    #    "Get-Process -Name node | Kill" - matando TODO processo node.exe da
-    #    maquina, inclusive programas Node.js de terceiros sem nenhuma
-    #    relacao com este relatorio. taskkill /F /T /PID mata apenas a
-    #    arvore do PID especifico que o tray lancou, exatamente como
-    #    servidor-relatorio.js ja faz com seguranca para seus proprios
-    #    subprocessos.
-    try {
-        if ($script:nodeProc -and -not $script:nodeProc.HasExited) {
-            $pidAlvo = $script:nodeProc.Id
-            try {
-                Start-Process -FilePath "taskkill.exe" -ArgumentList "/F","/T","/PID","$pidAlvo" -WindowStyle Hidden -Wait -ErrorAction Stop
-            } catch {
-                Write-TrayLog "taskkill falhou (PID $pidAlvo): $($_.Exception.Message) - tentando Kill() direto." "AVISO"
-                try { $script:nodeProc.Kill() } catch {}
-            }
-            try { $script:nodeProc.WaitForExit(3000) | Out-Null } catch {}
-        }
-    } catch {}
+    # 1) Encerra o servidor de forma ordenada (log + aviso nas telas abertas)
+    #    e, so' se ele nao responder, mata a arvore do PID que o tray lancou
+    #    (taskkill /F /T /PID - nunca "todo node.exe" da maquina).
+    $comoParou = Stop-ServidorOrdenado -Reiniciar
+    Write-TrayLog "Servidor parado para reinicio ($comoParou)."
     $script:nodeProc = $null
 
     # 2) Aguarda a porta ficar livre (ate 10s) antes de relancar
@@ -539,25 +564,18 @@ $itemSair = New-Object System.Windows.Forms.ToolStripMenuItem
 $itemSair.Text = "Sair"
 $itemSair.Add_Click({
     Write-TrayLog "Encerramento solicitado pelo usuario via bandeja."
+    $watchTimer.Stop()   # impede o watchdog de relancar o servidor durante o encerramento
     $tray.Visible = $false
-    # PRECISAO FIX (v1.2.4): usava Kill(), que encerra APENAS o processo do
-    # servidor -- os subprocessos que ele criou (geracoes de relatorio em
-    # andamento) continuavam vivos, orfaos, segurando conexao com o Firebird e
-    # invisiveis para o usuario, que acabou de "sair" do sistema. taskkill /T
-    # derruba a arvore inteira, exatamente como o "Reiniciar servidor" ja fazia
-    # neste mesmo arquivo -- a divergencia entre os dois era descuido, nao
-    # intencao.
-    try {
-        if ($script:nodeProc -and -not $script:nodeProc.HasExited) {
-            $pidAlvo = $script:nodeProc.Id
-            try {
-                Start-Process -FilePath "taskkill.exe" -ArgumentList "/F","/T","/PID","$pidAlvo" -WindowStyle Hidden -Wait -ErrorAction Stop
-            } catch {
-                Write-TrayLog "taskkill falhou ao sair (PID $pidAlvo): $($_.Exception.Message) - usando Kill() direto." "AVISO"
-                try { $script:nodeProc.Kill() } catch {}
-            }
-        }
-    } catch {}
+    $comoParou = Stop-ServidorOrdenado
+    Write-TrayLog "Servidor encerrado pela bandeja ($comoParou). Bandeja finalizada."
+    $script:nodeProc = $null
+    # Mensagem clara: antes o icone so' sumia, sem confirmar nada.
+    [System.Windows.Forms.MessageBox]::Show(
+        "O servidor de relatorios foi encerrado.`n`nOs relatorios abertos no navegador mostram o aviso 'Servidor encerrado' e voltam sozinhos quando o servidor for iniciado de novo.`n`nPara iniciar novamente: abra gerar_relatorio_do_dia.bat ou reinicie o computador.",
+        "$APP_NAME - Servidor encerrado",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    ) | Out-Null
     try { $mutex.ReleaseMutex() } catch {}
     [System.Windows.Forms.Application]::Exit()
 })
