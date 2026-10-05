@@ -1,26 +1,23 @@
 /**
  * gerar-relatorio-html.js
- * @version 2.7.9
+ * @version 2.8.0
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog
- *   2.7.9 - 2026-09-23 - Reativa fusão automática Gerencial→NF-e por valor
- *                        idêntico, a pedido do usuário (regra de negócio:
- *                        gerenciais do filtro [proibidos] são convertidas
- *                        manualmente por fora do fluxo integrado, então
- *                        nunca terão vínculo de coluna — valor idêntico no
- *                        mesmo dia é o sinal correto e deve sempre prevalecer).
- *     - A v2.7.8 tinha rebaixado essa reconciliação para somente aviso,
- *       por causa do risco de colisão (R$118,75 é preço de produto comum
- *       e se repete no dia). Reativada agora com trava adicional: cada
- *       NF-e só pode absorver NO MÁXIMO 1 gerencial — gerenciais candidatas
- *       ao mesmo valor são processadas em ordem de horário e casadas uma
- *       de cada vez, nunca duas desaparecendo em cima do mesmo documento.
- *       Com mais de uma NF-e candidata para a mesma gerencial, escolhe a
- *       mais próxima em horário. Tudo fica registrado via
- *       "RECONCILIACAO: ..." no console para auditoria.
- *     - Mantém a v2.7.8 (vínculo real via coluna GERENCIAL para o caso
- *       Gerencial→NFC-e, sem qualquer heurística) e a v2.7.6 (descarta
- *       NF-e com STATUS de rejeição da SEFAZ antes de virar candidata).
+ *   2.8.0 - 2026-10-05 16:24 - Revisão completa (segurança e concorrência):
+ *     - XSS: __TECLAS_PERSONALIZADAS__ era embutido em <script> com
+ *       JSON.stringify puro — um comando de atalho contendo "</script>"
+ *       executava código em todo relatório aberto. Agora usa o mesmo escape
+ *       do JSON de dados (_jsonParaScript).
+ *     - XSS: modal de configurações inseria o caminho do favicon e o nome do
+ *       sistema no HTML sem escapar "<" e "&".
+ *     - hora-fixada-cache.json: a gravação passa a reler o disco e mesclar só
+ *       as chaves alteradas nesta execução — antes sobrescrevia o arquivo
+ *       inteiro com a cópia lida no início e apagava as entradas gravadas
+ *       nesse meio-tempo pelo servidor ou por outra geração.
+ *     - Credenciais: aceitas por variável de ambiente RELATORIO_FB_USER /
+ *       RELATORIO_FB_PASS (o servidor não as passa mais na linha de comando);
+ *       o aviso de credencial de fábrica só aparece quando elas são de fato
+ *       SYSDBA/masterkey.
  */
 
 (function() {
@@ -28,7 +25,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "2.7.9";
+    const SCRIPT_VERSION = "2.8.0";
     const Firebird = require("node-firebird");
     const fs = require("node:fs");
     const process = require("node:process");
@@ -75,15 +72,18 @@
     const dataFimISO = parseISO(dataFimRaw);
 
     const saida = pegar("--saida");
-    const usuario = pegar("--user") || "SYSDBA";
-    const senha = pegar("--pass") || "masterkey";
+    // Credenciais: --user/--pass (uso manual) > variáveis de ambiente
+    // RELATORIO_FB_USER/RELATORIO_FB_PASS (como o servidor repassa — fora da
+    // linha de comando, que é visível na lista de processos) > padrão de fábrica.
+    const usuario = pegar("--user") || String(process.env.RELATORIO_FB_USER || "").trim() || "SYSDBA";
+    const senha   = pegar("--pass") || String(process.env.RELATORIO_FB_PASS || "")         || "masterkey";
     // Aviso de segurança: SYSDBA/masterkey são as credenciais de fábrica do
-    // Firebird. Mantido como fallback para não quebrar instalações existentes
-    // que dependem dele, mas o operador precisa SABER que está usando o padrão
-    // — se o Firebird de produção nunca teve a senha trocada, isso conecta com
-    // privilégios de DBA completos sem nenhum aviso prévio.
-    if (!pegar("--user") || !pegar("--pass")) {
-        console.warn("[AVISO] --user e/ou --pass não informados — usando credenciais padrão do Firebird (SYSDBA/masterkey). Se o banco de produção usa credenciais diferentes, configure --user e --pass explicitamente.");
+    // Firebird — se o banco de produção nunca teve a senha trocada, isso
+    // conecta com privilégios de DBA completos. Só avisa em execução manual:
+    // quando o servidor repassa as credenciais (variável de ambiente), ele
+    // mesmo já registra esse aviso uma vez — repetir a cada geração enchia o log.
+    if (usuario.toUpperCase() === "SYSDBA" && senha === "masterkey" && !process.env.RELATORIO_FB_PASS) {
+        console.warn("[AVISO] Usando credenciais padrão do Firebird (SYSDBA/masterkey). Se o banco de produção usa outras, defina fbUser/fbPass no config.json.");
     }
     const FIREBIRD_PORT = 3050; // porta padrão Firebird — única fonte da verdade
 
@@ -144,6 +144,14 @@
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+
+    // JSON seguro para embutir em <script>: escapa "<" (impede "</script>"
+    // fechar o bloco) e U+2028/U+2029 (quebram literais em JS antigo).
+    // Fonte única — usada para os dados do relatório e para as teclas de atalho.
+    const _jsonParaScript = v => JSON.stringify(v === undefined ? null : v)
+        .replace(/</g, "\\u003c")
+        .replace(/\u2028/g, "\\u2028")
+        .replace(/\u2029/g, "\\u2029");
 
     const decoder = new TextDecoder("windows-1252");
 
@@ -354,7 +362,13 @@
 			console.warn("[AVISO] hora-fixada-cache.json não pôde ser lido (" + (e.message || e) + ") — cache de hora fixada será reconstruído do zero.");
 		}
 	}
-	let _horaCacheDirty = false;
+	// Chaves criadas/alteradas NESTA execução — só elas são gravadas no fim
+	// (ver a mescla com o disco antes da gravação).
+	const _horaChavesAlteradas = new Set();
+	const _definirHoraCache = (chave, valor) => {
+		_horaCache[chave] = valor;
+		_horaChavesAlteradas.add(chave);
+	};
 	// ──────────────────────────────────────────────────────────────────────────
 
 	let _dbRef = null;
@@ -1295,9 +1309,8 @@
 						// preservado exatamente como estava — a migração é só de formato,
 						// nunca altera o horário já fixado.
 						if (_cached && _cached.tipo === "desconhecido" && _tipoVenda !== "desconhecido") {
-							_horaCache[key] = { tipo: _tipoVenda, hora: _cached.hora };
+							_definirHoraCache(key, { tipo: _tipoVenda, hora: _cached.hora });
 							_cached.tipo = _tipoVenda;
-							_horaCacheDirty = true;
 						}
 						if (_cached && _cached.hora === HORA_CACHE_OK) {
 							/* range ok verificado — usa hora original sem reverificação */
@@ -1315,11 +1328,11 @@
 						} else if (_cached && _cached.hora && _cached.hora !== HORA_CACHE_OK) {
 							/* marcador não-horário (ex: CANCELADA) — mantém a hora original da venda */
 						} else if (_diffMin > 0) {
-							finalHora = horaGeradaBR; _horaCache[key] = { tipo: _tipoVenda, hora: horaGeradaBR }; _horaCacheDirty = true;
+							finalHora = horaGeradaBR; _definirHoraCache(key, { tipo: _tipoVenda, hora: horaGeradaBR });
 						} else if (_diffMin >= -TOLERANCIA_RELOGIO_MIN) {
-							_horaCache[key] = { tipo: _tipoVenda, hora: HORA_CACHE_OK }; _horaCacheDirty = true;
+							_definirHoraCache(key, { tipo: _tipoVenda, hora: HORA_CACHE_OK });
 						} else if (_diffMin >= -MAXIMO_ATRASO_MIN) {
-							finalHora = horaGeradaBR; _horaCache[key] = { tipo: _tipoVenda, hora: horaGeradaBR }; _horaCacheDirty = true;
+							finalHora = horaGeradaBR; _definirHoraCache(key, { tipo: _tipoVenda, hora: horaGeradaBR });
 						}
 						// else: diff < −MAXIMO_ATRASO_MIN → ignora silenciosamente
 					}
@@ -1476,7 +1489,7 @@
 				// o fetch /api/proibidos (que ainda é feito para pegar updates posteriores).
 				proibidosServidor: cfgProibidos
 			};
-			const dadosJSON = JSON.stringify(dados).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+			const dadosJSON = _jsonParaScript(dados);
 			tick("JSON montado — gerando HTML...");
 			const html = String.raw`<!doctype html><!-- gerar-relatorio-html.js v${SCRIPT_VERSION} --><html lang="pt-br" data-report-version="${SCRIPT_VERSION}"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName)} ${escHtml(dataBR)}</title>
 <script>
@@ -1982,7 +1995,7 @@ const _fecharOverlayAnimado = (el) => {
 // Duração do toast (ms) — lida do config.json no momento da geração
 const __TOAST_DURACAO__ = ${cfgToastDuracao};
 // Teclas de atalho personalizadas — lidas do config.json no momento da geração
-const __TECLAS_PERSONALIZADAS__ = ${JSON.stringify(cfgTeclasPersonalizadas)};
+const __TECLAS_PERSONALIZADAS__ = ${_jsonParaScript(cfgTeclasPersonalizadas)};
 // Envia erros JS ao servidor para registro em relatorio.log
 // ── Tooltip customizado ─────────────────────────────────────────────────────
 // Substitui o tooltip nativo do browser (feio, sem estilo) por um flutuante
@@ -3886,7 +3899,9 @@ var __abrirModalConfig = function() {
     _fetchJSON("/api/config", {cache: "no-store"})
     .catch(function(){ return {}; })
     .then(function(cfg) {
-        var _pn  = String(cfg.appName      || "").replace(/"/g, "&quot;");
+        // XSS FIX (v2.8.0): valores do servidor entram no HTML abaixo — escapados
+        // com esc() (& < > "), não só aspas.
+        var _pn  = esc(String(cfg.appName  || ""));
         var _pi  = parseInt(cfg.pollInterval || 800, 10);
         var _ml  = parseInt(cfg.maxLogLines  || 1000, 10);
         var _fv  = String(cfg.favicon        || "");
@@ -3928,12 +3943,12 @@ var __abrirModalConfig = function() {
               '<div class="kv" style="flex-direction:column;gap:8px">' +
                 '<div class="k">Ícone (favicon)</div>' +
                 '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
-                  '<input type="text" id="cfgFaviconPath" value="' + _fv.replace(/"/g,"&quot;") + '" class="input" placeholder="Caminho do arquivo ou vazio para padrão" style="flex:1;min-width:0">' +
+                  '<input type="text" id="cfgFaviconPath" value="' + esc(_fv) + '" class="input" placeholder="Caminho do arquivo ou vazio para padrão" style="flex:1;min-width:0">' +
                   '<button class="btn" type="button" id="cfgFaviconPick" data-tip="Selecionar arquivo de imagem do computador"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Procurar</button>' +
                   '<input type="file" id="cfgFaviconFile" accept=".png,.ico,.jpg,.jpeg" style="display:none">' +
                 '</div>' +
                 '<div id="cfgFaviconInfo" style="font-size:11px;color:var(--text-muted);padding-left:2px">' +
-                  (_fv ? 'Atual: ' + _fv : 'Usando favicon.png padrão da pasta do sistema') +
+                  (_fv ? 'Atual: ' + esc(_fv) : 'Usando favicon.png padrão da pasta do sistema') +
                 '</div>' +
               '</div>' +
               '<div class="kv" style="flex-direction:column;gap:8px">' +
@@ -4429,29 +4444,44 @@ try {
 
     // Persiste cache de horas fixadas somente quando houve nova entrada,
     // evitando escrita desnecessária em disco a cada execução.
-    if (_horaCacheDirty) {
+    if (_horaChavesAlteradas.size > 0) {
         try {
-            // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de gravar — nfc-e,
-            // depois nf-e, depois gerencial; ascendente por hora dentro de cada
-            // grupo. Ver comentário completo em _ordenarHoraCache, acima.
-            _horaCache = _ordenarHoraCache(_horaCache);
-            // PRECISÃO FIX (v2.6.4): gravação atômica (tmp + rename), igualando o
-            // cuidado que servidor-relatorio.js já tem com ESTE MESMO arquivo (lá
-            // via _gravarArquivoAtomico). A assimetria era perigosa: é justamente
-            // este processo que leva kill do fast-poll (kill-and-restart quando
-            // chega venda nova durante a geração). Um kill no meio da escrita
-            // deixava hora-fixada-cache.json truncado — JSON inválido, que os
-            // DOIS processos descartam ao ler, perdendo TODAS as horas fixadas do
-            // dia de uma vez. O efeito visível seria as vendas voltando a
-            // "flutuar" de posição a cada atualização: exatamente o problema que
-            // este cache existe para resolver.
+            // CONCORRÊNCIA FIX (v2.8.0): este arquivo é gravado também pelo
+            // servidor e por outras gerações rodando em paralelo. Antes, aqui
+            // se gravava _horaCache INTEIRO — a cópia lida no início desta
+            // execução — apagando qualquer entrada gravada por outro processo
+            // nesse intervalo. Agora relê o disco (estado mais recente), mantém
+            // só o dia atual e aplica apenas as chaves que ESTA execução criou
+            // ou migrou. Se outro processo já gravou a mesma chave no formato
+            // novo ({tipo,hora}), a dele prevalece: a hora fixada é a da
+            // primeira visão, e reescrevê-la faria a venda "pular" de horário.
+            let _disco = {};
+            try {
+                const _rawDisco = fs.readFileSync(_horaCacheFile, "utf8").replace(/^\uFEFF/, "");
+                const _pDisco = JSON.parse(_rawDisco);
+                if (_pDisco && typeof _pDisco === "object" && !Array.isArray(_pDisco)) _disco = _pDisco;
+            } catch (_) { /* ausente/corrompido: começa só com as chaves desta execução */ }
+            const _final = Object.create(null);
+            for (const [k, val] of Object.entries(_disco)) {
+                if (k.startsWith(_hojeISO + "|")) _final[k] = val;
+            }
+            for (const k of _horaChavesAlteradas) {
+                const _atual = _final[k];
+                const _discoTemFormatoNovo = _atual && typeof _atual === "object" && !Array.isArray(_atual);
+                if (!_discoTemFormatoNovo) _final[k] = _horaCache[k];
+            }
+            // ORDENAÇÃO: reordena por tipo/número antes de gravar — ver
+            // comentário completo em _ordenarHoraCache, acima.
+            const _json = JSON.stringify(_ordenarHoraCache(_final), null, 2);
+            // Gravação atômica (tmp + rename): este processo pode levar kill do
+            // fast-poll no meio da escrita; o arquivo nunca fica pela metade.
             const _tmpCache = _horaCacheFile + ".tmp" + process.pid;
             try {
-                fs.writeFileSync(_tmpCache, JSON.stringify(_horaCache, null, 2), "utf8");
+                fs.writeFileSync(_tmpCache, _json, "utf8");
                 fs.renameSync(_tmpCache, _horaCacheFile);
             } catch (eAtomicoCache) {
                 try { if (fs.existsSync(_tmpCache)) fs.unlinkSync(_tmpCache); } catch(_) {}
-                fs.writeFileSync(_horaCacheFile, JSON.stringify(_horaCache, null, 2), "utf8");
+                fs.writeFileSync(_horaCacheFile, _json, "utf8");
             }
         } catch (e) {
             console.warn("Aviso: não foi possível salvar hora-fixada-cache.json —", e.message);

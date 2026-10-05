@@ -4,18 +4,17 @@ cd /d "%~dp0"
 chcp 65001 >nul 2>&1
 
 :: =========================================================
-::  Relatorio por Periodo                             v1.4.1
+::  Relatorio por Periodo                             v1.5.0
 ::  - Verifica / instala Node.js automaticamente
 ::  - Verifica / instala modulo node-firebird automaticamente
 ::  - Inicia servidor se necessario
 ::  - Abre relatorio no navegador
 ::
-::  CHANGELOG 1.4.1 - 2026-08-08 05:10 - Quebras de linha convertidas para
-::   CRLF, a convencao correta do Windows. Estes arquivos estavam com LF
-::   puro; funcionavam porque so' usam "goto", mas "call :label" quebra
-::   nesse formato (ver instalar-na-inicializacao.bat v1.8.1). Padronizado
-::   em todo o projeto para evitar a armadilha em edicoes futuras.
-::   Se for editar, use um editor que preserve CRLF.
+::  CHANGELOG 1.5.0 - 2026-10-05 16:24 - Ano padrao obtido via PowerShell:
+::   "wmic" foi removido do Windows 11 24H2+, e sem ele o ano ficava com
+::   lixo (nao vazio), passando pelo "if not defined". Ano com 2 digitos
+::   (ex: 01/03/26) agora vira 2026, e o ano tambem e' validado (2000-2099)
+::   antes de montar a URL. Mantem CRLF - edite com editor que preserve CRLF.
 
 call :verificar_node
 if %errorlevel% neq 0 exit /b 1
@@ -26,9 +25,9 @@ if %errorlevel% neq 0 exit /b 1
 call :ler_config
 
 :: Ano padrao
-for /f "tokens=2 delims==" %%a in ('wmic os get LocalDateTime /value ^| find "="') do set "LDT=%%a"
-set "ANO_PADRAO=!LDT:~0,4!"
-if not defined ANO_PADRAO set "ANO_PADRAO=2026"
+set "ANO_PADRAO="
+for /f "usebackq delims=" %%a in (`powershell -NoProfile -Command "(Get-Date).Year" 2^>nul`) do set "ANO_PADRAO=%%a"
+if not defined ANO_PADRAO set "ANO_PADRAO=%DATE:~-4%"
 
 echo.
 echo =======================================================
@@ -86,12 +85,13 @@ for /f "tokens=1-3 delims=/" %%a in ("!INP!") do (
 if not defined _d (set "ERRO=1" & exit /b)
 if not defined _m (set "ERRO=1" & exit /b)
 if not defined _y set "_y=!ANO_PADRAO!"
+if "!_y:~2,1!"=="" set "_y=20!_y!"
 
 :: VALIDACAO FIX: garante que _d/_m sao numericos e estao numa faixa de
 :: calendario plausivel ANTES de montar a URL - sem isso, um erro de
 :: digitacao (ex: "99/13") so' era percebido depois, no processo filho
 :: Node.js, com uma pagina de erro generica em vez de um aviso imediato.
-powershell -NoProfile -Command "$d=0;$m=0;if([int]::TryParse('!_d!',[ref]$d) -and [int]::TryParse('!_m!',[ref]$m) -and $d -ge 1 -and $d -le 31 -and $m -ge 1 -and $m -le 12){exit 0}else{exit 1}" >nul 2>&1
+powershell -NoProfile -Command "$d=0;$m=0;$y=0;if([int]::TryParse('!_d!',[ref]$d) -and [int]::TryParse('!_m!',[ref]$m) -and [int]::TryParse('!_y!',[ref]$y) -and $d -ge 1 -and $d -le 31 -and $m -ge 1 -and $m -le 12 -and $y -ge 2000 -and $y -le 2099){exit 0}else{exit 1}" >nul 2>&1
 if %errorlevel% neq 0 (set "ERRO=1" & exit /b)
 
 if "!_d:~1,1!"=="" set "_d=0!_d!"

@@ -9,21 +9,19 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 - Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
-@version 1.3.1
+@version 1.4.0
 @changelog
-  1.3.1 - 2026-08-12 21:30 - Revisao no eixo precisao (etapa 5/6).
-    - upload-favicon: validava so' a existencia do caminho e ja chamava
-      ReadAllBytes, que le o arquivo INTEIRO de uma vez. Apontar por engano
-      para um video ou ISO travaria a maquina tentando alocar tudo em RAM.
-      Agora confere antes: nao pode ser pasta, nao pode estar vazio, tem que
-      caber no limite de 2 MB do servidor e a extensao precisa ser PNG/ICO/
-      JPG. A validacao real continua no servidor (bytes magicos); esta e' um
-      aviso amigavel e uma protecao contra upload longo fadado a falhar.
-    - navigate-periodo: qualquer texto era interpolado direto na URL. Erro de
-      digitacao so' viraria erro no servidor, com mensagem generica, e um
-      valor com barra ou ".." alteraria o caminho da requisicao. Agora exige
-      AAAA-MM-DD, confirma que a data existe no calendario e que a inicial
-      nao e' posterior a final.
+  1.4.0 - 2026-10-05 16:24 - Revisao completa.
+    - Invoke-ApiCall repetia (com espera exponencial) ate' respostas 4xx do
+      servidor - erros definitivos como 400/403/404, que nunca mudam numa nova
+      tentativa. Agora 4xx falha na hora com "HTTP <codigo>"; so' falhas de
+      rede e 5xx sao repetidas.
+    - PowerShell 7: falha de conexao chega como HttpRequestException (nao
+      WebException) e era rotulada "Erro:" - o fallback do "restart" (iniciar
+      via launcher.vbs quando o servidor esta fora do ar) nunca disparava.
+      Agora as duas formas sao reconhecidas como "Falha de rede".
+    - sse-test consultava /api/sse-clients (JSON comum), nao o fluxo SSE.
+      Agora conecta de fato em /api/events e le a primeira linha do fluxo.
 #>
 [CmdletBinding()]
 param(
@@ -140,10 +138,21 @@ function Invoke-ApiCall {
             } else {
                 $ultimoErro = "HTTP $($res.StatusCode) - $($res.StatusDescription)"
             }
-        } catch [System.Net.WebException] {
-            $ultimoErro = "Falha de rede: $($_.Exception.Message)"
         } catch {
-            $ultimoErro = "Erro: $($_.Exception.Message)"
+            # Codigo HTTP quando o servidor RESPONDEU com erro (PS 5.1: WebException
+            # com .Response; PS 7: HttpResponseException com .Response).
+            $codigoHttp = 0
+            try { if ($_.Exception.Response) { $codigoHttp = [int]$_.Exception.Response.StatusCode } } catch {}
+            if ($codigoHttp -ge 400 -and $codigoHttp -lt 500) {
+                # Erro definitivo do cliente - repetir nao muda o resultado.
+                throw "HTTP $codigoHttp - $($_.Exception.Message)"
+            }
+            $ehFalhaDeRede = ($codigoHttp -eq 0) -and (
+                ($_.Exception -is [System.Net.WebException]) -or
+                ($_.Exception.GetType().FullName -match 'HttpRequestException|SocketException|TaskCanceledException'))
+            if ($codigoHttp -gt 0)   { $ultimoErro = "HTTP $codigoHttp - $($_.Exception.Message)" }
+            elseif ($ehFalhaDeRede) { $ultimoErro = "Falha de rede: $($_.Exception.Message)" }
+            else                    { $ultimoErro = "Erro: $($_.Exception.Message)" }
         }
         $tentativa++
         if ($tentativa -le $MaxRetries) {
@@ -344,17 +353,24 @@ function Executar-Endpoint {
         }
         "sse-test" {
             Write-Host "[SSE] Verificando conexao Server-Sent Events..." -ForegroundColor Cyan
+            $res = $null; $reader = $null
             try {
-                $uri = "${BaseUri}/api/sse-clients"
+                # Conecta no fluxo SSE real; o servidor envia ": connected" logo
+                # apos os cabecalhos. ReadWriteTimeout impede travar se nada vier.
+                $uri = "${BaseUri}/api/events"
                 $req = [System.Net.HttpWebRequest]::Create($uri)
                 $req.Timeout = 8000
+                $req.ReadWriteTimeout = 8000
+                $req.Accept = "text/event-stream"
                 $res = $req.GetResponse()
                 $reader = New-Object System.IO.StreamReader($res.GetResponseStream())
                 $linha = $reader.ReadLine()
-                $reader.Close(); $res.Close()
-                return @{ conectado = $true; primeira_mensagem = $linha }
+                return @{ conectado = $true; tipo = $res.ContentType; primeira_mensagem = $linha }
             } catch {
                 return @{ conectado = $false; erro = $_.Exception.Message }
+            } finally {
+                try { if ($reader) { $reader.Close() } } catch {}
+                try { if ($res) { $res.Close() } } catch {}
             }
         }
         default { throw "Endpoint desconhecido: ${Ep}" }

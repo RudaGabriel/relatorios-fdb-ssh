@@ -3,17 +3,14 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.2.4
+# @version 1.3.0
 # @changelog
-#   1.2.4 - 2026-08-12 21:30 - Revisao no eixo precisao (etapa 5/6).
-#     - "Sair" usava Kill(), que encerra APENAS o processo do servidor. Os
-#       subprocessos criados por ele (geracoes de relatorio em andamento)
-#       continuavam vivos, orfaos, segurando conexao com o Firebird e
-#       invisiveis para quem acabou de sair do sistema. Trocado por
-#       taskkill /F /T, que derruba a arvore inteira -- exatamente o que o
-#       "Reiniciar servidor" ja fazia neste mesmo arquivo. A divergencia
-#       entre os dois caminhos era descuido, nao intencao.
-#     - O encerramento manual passou a ser registrado no log.
+#   1.3.0 - 2026-10-05 16:24 - Credenciais do Firebird repassadas ao servidor
+#     por variavel de ambiente (RELATORIO_FB_USER / RELATORIO_FB_PASS) em vez de
+#     "--user X --pass Y" na linha de comando: a linha de comando de qualquer
+#     processo e' visivel a todos os usuarios da maquina (Gerenciador de
+#     Tarefas, wmic), e uma senha com espaco quebrava os argumentos (ia sem
+#     aspas). servidor-relatorio.js v2.9.0+ le essas variaveis.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -205,7 +202,11 @@ if (-not (Test-Path $serverScript)) {
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName        = "node"
-$psi.Arguments       = "`"$serverScript`" --user $FB_USER --pass $FB_PASS --no-browser"
+$psi.Arguments       = "`"$serverScript`" --no-browser"
+# Credenciais por variavel de ambiente do processo filho (nao aparecem na
+# linha de comando). Requer UseShellExecute = $false (definido abaixo).
+$psi.EnvironmentVariables["RELATORIO_FB_USER"] = $FB_USER
+$psi.EnvironmentVariables["RELATORIO_FB_PASS"] = $FB_PASS
 $psi.WindowStyle     = [System.Diagnostics.ProcessWindowStyle]::Hidden
 $psi.CreateNoWindow  = $true
 $psi.UseShellExecute = $false
