@@ -8,18 +8,16 @@ cd /d "%~dp0"
 chcp 65001 >nul 2>&1
 
 :: =========================================================
-::  Relatorio do Dia                                 v1.4.1
+::  Relatorio do Dia                                 v1.4.2
 ::  - Verifica / instala Node.js automaticamente
 ::  - Verifica / instala modulo node-firebird automaticamente
 ::  - Inicia servidor se necessario
 ::  - Abre relatorio de hoje no navegador
 ::
-::  CHANGELOG 1.4.1 - 2026-08-08 05:10 - Quebras de linha convertidas para
-::   CRLF, a convencao correta do Windows. Estes arquivos estavam com LF
-::   puro; funcionavam porque so' usam "goto", mas "call :label" quebra
-::   nesse formato (ver instalar-na-inicializacao.bat v1.8.1). Padronizado
-::   em todo o projeto para evitar a armadilha em edicoes futuras.
-::   Se for editar, use um editor que preserve CRLF.
+::  CHANGELOG 1.4.2 - 2026-10-05 16:24 - "echo" sem ponto apos instalar o
+::   node-firebird imprimia "ECHO is off." / "ECHO desativado." na tela;
+::   trocado por "echo." (linha em branco, como no resto do arquivo).
+::   Mantem CRLF - edite com editor que preserve CRLF.
 
 call :verificar_node
 if %errorlevel% neq 0 exit /b 1
@@ -143,7 +141,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo  [OK] node-firebird pronto.
-echo
+echo.
 exit /b 0
 
 :: -------------------------------------------------------

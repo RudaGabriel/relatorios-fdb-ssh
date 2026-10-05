@@ -1,26 +1,23 @@
 /**
  * gerar-relatorio-html.js
- * @version 2.7.9
+ * @version 2.9.1
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog
- *   2.7.9 - 2026-09-23 - Reativa fusão automática Gerencial→NF-e por valor
- *                        idêntico, a pedido do usuário (regra de negócio:
- *                        gerenciais do filtro [proibidos] são convertidas
- *                        manualmente por fora do fluxo integrado, então
- *                        nunca terão vínculo de coluna — valor idêntico no
- *                        mesmo dia é o sinal correto e deve sempre prevalecer).
- *     - A v2.7.8 tinha rebaixado essa reconciliação para somente aviso,
- *       por causa do risco de colisão (R$118,75 é preço de produto comum
- *       e se repete no dia). Reativada agora com trava adicional: cada
- *       NF-e só pode absorver NO MÁXIMO 1 gerencial — gerenciais candidatas
- *       ao mesmo valor são processadas em ordem de horário e casadas uma
- *       de cada vez, nunca duas desaparecendo em cima do mesmo documento.
- *       Com mais de uma NF-e candidata para a mesma gerencial, escolhe a
- *       mais próxima em horário. Tudo fica registrado via
- *       "RECONCILIACAO: ..." no console para auditoria.
- *     - Mantém a v2.7.8 (vínculo real via coluna GERENCIAL para o caso
- *       Gerencial→NFC-e, sem qualquer heurística) e a v2.7.6 (descarta
- *       NF-e com STATUS de rejeição da SEFAZ antes de virar candidata).
+ *   2.9.1 - 2026-10-05 17:05 - Mescla da v2.9.0 (painel "Duplicatas" com
+ *                        decisão do usuário) com a revisão de segurança e
+ *                        concorrência feita sobre a v2.7.9:
+ *     - XSS: __TECLAS_PERSONALIZADAS__ e o JSON de dados passam por
+ *       _jsonParaScript (escape de "</script>", U+2028, U+2029); modal de
+ *       configurações escapa caminho do favicon e nome do sistema.
+ *     - hora-fixada-cache.json: grava só as chaves alteradas nesta execução,
+ *       mesclando com o disco (não apaga entradas do servidor/outras gerações).
+ *     - Credenciais por variável de ambiente RELATORIO_FB_USER/RELATORIO_FB_PASS;
+ *       aviso de credencial de fábrica só quando é de fato SYSDBA/masterkey.
+ *     - Painel "Duplicatas" (v2.9.0) preservado, com 2 correções:
+ *       qs("#...", el) ignorava o modal ainda fora da página → TypeError que
+ *       impedia o relatório inteiro de renderizar quando havia duplicata
+ *       pendente; linhas reconstituídas ("manter") sem _idx/_busca → clique
+ *       e busca não funcionavam nelas; fechar() usado antes de declarado.
  */
 
 (function() {
@@ -28,7 +25,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "2.7.9";
+    const SCRIPT_VERSION = "2.9.1";
     const Firebird = require("node-firebird");
     const fs = require("node:fs");
     const process = require("node:process");
@@ -75,15 +72,18 @@
     const dataFimISO = parseISO(dataFimRaw);
 
     const saida = pegar("--saida");
-    const usuario = pegar("--user") || "SYSDBA";
-    const senha = pegar("--pass") || "masterkey";
+    // Credenciais: --user/--pass (uso manual) > variáveis de ambiente
+    // RELATORIO_FB_USER/RELATORIO_FB_PASS (como o servidor repassa — fora da
+    // linha de comando, que é visível na lista de processos) > padrão de fábrica.
+    const usuario = pegar("--user") || String(process.env.RELATORIO_FB_USER || "").trim() || "SYSDBA";
+    const senha   = pegar("--pass") || String(process.env.RELATORIO_FB_PASS || "")         || "masterkey";
     // Aviso de segurança: SYSDBA/masterkey são as credenciais de fábrica do
-    // Firebird. Mantido como fallback para não quebrar instalações existentes
-    // que dependem dele, mas o operador precisa SABER que está usando o padrão
-    // — se o Firebird de produção nunca teve a senha trocada, isso conecta com
-    // privilégios de DBA completos sem nenhum aviso prévio.
-    if (!pegar("--user") || !pegar("--pass")) {
-        console.warn("[AVISO] --user e/ou --pass não informados — usando credenciais padrão do Firebird (SYSDBA/masterkey). Se o banco de produção usa credenciais diferentes, configure --user e --pass explicitamente.");
+    // Firebird — se o banco de produção nunca teve a senha trocada, isso
+    // conecta com privilégios de DBA completos. Só avisa em execução manual:
+    // quando o servidor repassa as credenciais (variável de ambiente), ele
+    // mesmo já registra esse aviso uma vez — repetir a cada geração enchia o log.
+    if (usuario.toUpperCase() === "SYSDBA" && senha === "masterkey" && !process.env.RELATORIO_FB_PASS) {
+        console.warn("[AVISO] Usando credenciais padrão do Firebird (SYSDBA/masterkey). Se o banco de produção usa outras, defina fbUser/fbPass no config.json.");
     }
     const FIREBIRD_PORT = 3050; // porta padrão Firebird — única fonte da verdade
 
@@ -144,6 +144,14 @@
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+
+    // JSON seguro para embutir em <script>: escapa "<" (impede "</script>"
+    // fechar o bloco) e U+2028/U+2029 (quebram literais em JS antigo).
+    // Fonte única — usada para os dados do relatório e para as teclas de atalho.
+    const _jsonParaScript = v => JSON.stringify(v === undefined ? null : v)
+        .replace(/</g, "\\u003c")
+        .replace(/\u2028/g, "\\u2028")
+        .replace(/\u2029/g, "\\u2029");
 
     const decoder = new TextDecoder("windows-1252");
 
@@ -354,7 +362,13 @@
 			console.warn("[AVISO] hora-fixada-cache.json não pôde ser lido (" + (e.message || e) + ") — cache de hora fixada será reconstruído do zero.");
 		}
 	}
-	let _horaCacheDirty = false;
+	// Chaves criadas/alteradas NESTA execução — só elas são gravadas no fim
+	// (ver a mescla com o disco antes da gravação).
+	const _horaChavesAlteradas = new Set();
+	const _definirHoraCache = (chave, valor) => {
+		_horaCache[chave] = valor;
+		_horaChavesAlteradas.add(chave);
+	};
 	// ──────────────────────────────────────────────────────────────────────────
 
 	let _dbRef = null;
@@ -610,14 +624,23 @@
 			// referência de chave real (não heurística de data/valor — ver aviso
 			// na reconciliação por VENDAS logo abaixo, que É heurística e foi
 			// rebaixada a apenas registrar aviso, por causa deste mesmo caso).
-			const _gerenciaisAbsorvidasPorDocFiscal = new Set();
+			// Duplicatas: gerenciais absorvidas por documento fiscal, coletadas para
+			// exibir no painel "Duplicatas" do relatório (auditoria/transparência —
+			// não muda o comportamento de supressão em si, só registra o que foi
+			// suprimido/fundido nesta geração).
+			const _duplicatasConfirmadas = [];
+			const _duplicatasProvaveis = [];
+
+			const _gerenciaisAbsorvidasPorDocFiscal = new Map(); // gerencial (id) -> {docNumero, docModelo}
 			if (validCols.includes("GERENCIAL")) {
 				for (const n of rNfce.rows) {
 					const _modeloDoc = Number(n.MODELO || 0);
 					if (_modeloDoc !== 65 && _modeloDoc !== 55) continue; // só documento fiscal válido conta
 					if (n.CANC === 'S' || n.CANC === 'T' || n.SIT === 'C' || n.EMI === 'C') continue; // o próprio doc não pode estar cancelado/rejeitado
 					const _gVal = String(n.VAL_GERENCIAL || "").trim().replace(/^0+/, "");
-					if (_gVal) _gerenciaisAbsorvidasPorDocFiscal.add(_gVal);
+					if (!_gVal || _gerenciaisAbsorvidasPorDocFiscal.has(_gVal)) continue;
+					const _docNumero = validCols.map(c => String(n["VAL_" + c] || "").trim().replace(/^0+/, "")).find(v => v && v !== _gVal) || "?";
+					_gerenciaisAbsorvidasPorDocFiscal.set(_gVal, { docNumero: _docNumero, docModelo: _modeloDoc });
 				}
 			}
 
@@ -661,7 +684,24 @@
 				// comentário completo em _gerenciaisAbsorvidasPorDocFiscal acima.
 				// Restrito a modelo 99 de propósito: um documento fiscal nunca deve
 				// ser descartado por essa checagem, só a gerencial de origem.
-				if (_modeloLinha === 99 && ids.some(id => _gerenciaisAbsorvidasPorDocFiscal.has(id))) continue;
+				if (_modeloLinha === 99) {
+					const _docAbsorvente = ids.map(id => _gerenciaisAbsorvidasPorDocFiscal.get(id)).find(Boolean);
+					if (_docAbsorvente) {
+						_duplicatasConfirmadas.push({
+							gerencial: ids[0], docNumero: _docAbsorvente.docNumero, docModelo: _docAbsorvente.docModelo,
+							// Campos extras (v2.9.0) — permitem ao cliente reconstituir a linha
+							// da gerencial na tabela se o usuário escolher "manter" no painel
+							// Duplicatas, sem precisar refazer os joins de PAGAMENT/ITENS.
+							dt: toISO(n.DATA), hora: String(n.HORA || "").trim(),
+							caixa: String(n.CAIXA || "").trim(),
+							vendedor: String(n.VENDEDOR_NFCE || "").trim(),
+							cliente: String(n.CLI_NOME || "").trim(),
+							natureza: String(n.NAT_OP || "").trim(),
+							total: totalNum
+						});
+						continue;
+					}
+				}
 
 				const primaryId = ids[0];
 				// toISO() normaliza Date JS e strings para YYYY-MM-DD
@@ -898,6 +938,14 @@
 					if (idIndex.get(gerKey) === gerKey) idIndex.delete(gerKey);
 					const _obs = candidatas.length > 1 ? ` (${candidatas.length} candidatas disponíveis, escolhida a mais próxima)` : "";
 					console.log(`RECONCILIACAO: Gerencial ${gerVenda.numero} absorvida pela NF-e ${alvo.numero} (mesma data/valor, ${escolhida.horaMin - gerHoraMin}min depois)${_obs}.`);
+					_duplicatasProvaveis.push({
+						gerencial: gerVenda.numero, docNumero: alvo.numero, diffMin: escolhida.horaMin - gerHoraMin,
+						ambiguo: candidatas.length > 1,
+						// Campos extras (v2.9.0) — ver comentário em _duplicatasConfirmadas.push acima.
+						dt: gerVenda._dtKey, hora: gerVenda.hora, caixa: gerVenda.caixa,
+						vendedor: gerVenda.vendedor, cliente: gerVenda.cliente,
+						natureza: gerVenda.natureza, total: gerVenda.total_nfce
+					});
 				}
 			}
 
@@ -1295,9 +1343,8 @@
 						// preservado exatamente como estava — a migração é só de formato,
 						// nunca altera o horário já fixado.
 						if (_cached && _cached.tipo === "desconhecido" && _tipoVenda !== "desconhecido") {
-							_horaCache[key] = { tipo: _tipoVenda, hora: _cached.hora };
+							_definirHoraCache(key, { tipo: _tipoVenda, hora: _cached.hora });
 							_cached.tipo = _tipoVenda;
-							_horaCacheDirty = true;
 						}
 						if (_cached && _cached.hora === HORA_CACHE_OK) {
 							/* range ok verificado — usa hora original sem reverificação */
@@ -1315,11 +1362,11 @@
 						} else if (_cached && _cached.hora && _cached.hora !== HORA_CACHE_OK) {
 							/* marcador não-horário (ex: CANCELADA) — mantém a hora original da venda */
 						} else if (_diffMin > 0) {
-							finalHora = horaGeradaBR; _horaCache[key] = { tipo: _tipoVenda, hora: horaGeradaBR }; _horaCacheDirty = true;
+							finalHora = horaGeradaBR; _definirHoraCache(key, { tipo: _tipoVenda, hora: horaGeradaBR });
 						} else if (_diffMin >= -TOLERANCIA_RELOGIO_MIN) {
-							_horaCache[key] = { tipo: _tipoVenda, hora: HORA_CACHE_OK }; _horaCacheDirty = true;
+							_definirHoraCache(key, { tipo: _tipoVenda, hora: HORA_CACHE_OK });
 						} else if (_diffMin >= -MAXIMO_ATRASO_MIN) {
-							finalHora = horaGeradaBR; _horaCache[key] = { tipo: _tipoVenda, hora: horaGeradaBR }; _horaCacheDirty = true;
+							finalHora = horaGeradaBR; _definirHoraCache(key, { tipo: _tipoVenda, hora: horaGeradaBR });
 						}
 						// else: diff < −MAXIMO_ATRASO_MIN → ignora silenciosamente
 					}
@@ -1474,9 +1521,13 @@
 				// Proibidos embutidos no HTML para eliminar o "flash" na primeira
 				// renderização — o browser usa este valor imediatamente sem esperar
 				// o fetch /api/proibidos (que ainda é feito para pegar updates posteriores).
-				proibidosServidor: cfgProibidos
+				proibidosServidor: cfgProibidos,
+				// Duplicatas Gerencial↔documento fiscal suprimidas/fundidas nesta geração
+				// (ver painel "Duplicatas" no HTML) — puramente informativo/auditoria,
+				// não afeta o cálculo já feito acima.
+				duplicatas: { confirmadas: _duplicatasConfirmadas, provaveis: _duplicatasProvaveis }
 			};
-			const dadosJSON = JSON.stringify(dados).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+			const dadosJSON = _jsonParaScript(dados);
 			tick("JSON montado — gerando HTML...");
 			const html = String.raw`<!doctype html><!-- gerar-relatorio-html.js v${SCRIPT_VERSION} --><html lang="pt-br" data-report-version="${SCRIPT_VERSION}"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName)} ${escHtml(dataBR)}</title>
 <script>
@@ -1854,6 +1905,7 @@ tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); 
 <div class="radioBusca" id="radioBusca" role="radiogroup" aria-label="Filtrar por tipo de documento"><label class="radio" id="radioLblTodos"><input type="radio" name="tipoBusca" value="todos" checked><span>Todos</span></label><label class="radio" id="radioLblGer" style="display:none"><input type="radio" name="tipoBusca" value="gerencial"><span>Gerencial</span></label><label class="radio" id="radioLblNfce" style="display:none"><input type="radio" name="tipoBusca" value="nfce"><span>NFC-e</span></label><label class="radio" id="radioLblNfe" style="display:none"><input type="radio" name="tipoBusca" value="nfe"><span>NF-e</span></label></div>
 <button id="ajuda" class="btn btnLabel" type="button" data-tip="Coringas de busca disponíveis" aria-label="Ajuda com coringas"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg>Ajuda</button>
 <button id="proibidos" class="btn btnLabel btnProibidos" type="button" data-tip="Aplicar filtro [proibidos] — ocultar vendas com itens proibidos" aria-label="Filtrar proibidos"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>Proibidos</button>
+<button id="btnDuplicatas" class="btn btnLabel" type="button" style="display:none" data-tip="Ver gerenciais que foram automaticamente ocultadas nesta geração por já terem virado NFC-e/NF-e" aria-label="Ver duplicatas"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Duplicatas <span id="badgeDuplicatas" style="opacity:.75"></span></button>
 <button id="atualizar" class="btn btnLabel" type="button" data-tip="Recarregar relatório do dia atual" aria-label="Atualizar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>Atualizar</button>
 <button id="btnTema" class="btn btnLabel" type="button" data-tip="Alternar tema de cores (Ultra Dark / Dark / Claro)" aria-label="Alternar tema"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>Tema</button>
 <button id="btnModalPeriodo" class="btn btnLabel" type="button" data-tip="Gerar relatório para um intervalo de datas" aria-label="Gerar por período"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>Por período</button>
@@ -1982,7 +2034,7 @@ const _fecharOverlayAnimado = (el) => {
 // Duração do toast (ms) — lida do config.json no momento da geração
 const __TOAST_DURACAO__ = ${cfgToastDuracao};
 // Teclas de atalho personalizadas — lidas do config.json no momento da geração
-const __TECLAS_PERSONALIZADAS__ = ${JSON.stringify(cfgTeclasPersonalizadas)};
+const __TECLAS_PERSONALIZADAS__ = ${_jsonParaScript(cfgTeclasPersonalizadas)};
 // Envia erros JS ao servidor para registro em relatorio.log
 // ── Tooltip customizado ─────────────────────────────────────────────────────
 // Substitui o tooltip nativo do browser (feio, sem estilo) por um flutuante
@@ -2278,6 +2330,202 @@ const setProibidosUser=(lista)=>{
         }).catch(()=>{});
     }catch(e){}
 })();
+
+// ── Painel "Duplicatas" (v2.9.0) ────────────────────────────────────────
+// Gerenciais que o gerador suprimiu automaticamente nesta geração (já
+// convertidas em NFC-e/NF-e — ver _gerenciaisAbsorvidasPorDocFiscal e a
+// reconciliação por valor no lado Node.js). Por padrão elas continuam
+// FORA da tabela e da soma (mesmo comportamento de antes). Este painel
+// pergunta o que fazer, com 3 ações (pedidas pelo usuário):
+//   1) "Manter todas as duplicatas" — ação GLOBAL: passa a sempre exibir
+//      e somar toda duplicata encontrada (nesta e nas próximas gerações),
+//      até o usuário desativar. Persistida em localStorage.
+//   2) "Perguntar depois sobre essa" — não decide nada; essa gerencial
+//      continua oculta POR ENQUANTO, mas volta a aparecer no painel na
+//      próxima geração (nada é salvo).
+//   3) "Não perguntar mais sobre essa" — oculta essa gerencial em
+//      definitivo (comportamento atual) e nunca mais pergunta sobre ela.
+//      Persistida em localStorage por par gerencial+documento.
+// Um único modal para todas as duplicatas pendentes (nunca um por item).
+// LIMITAÇÃO CONHECIDA: a linha reconstituída ao "manter" não tem o
+// detalhamento de pagamento/itens (isso exigiria refazer os joins de
+// PAGAMENT/ITENS001 que já rodaram e descartaram essa gerencial no
+// servidor) — aparece com essa ressalva visível na tabela.
+const LS_DUP_MANTER_TODAS = "__dup_manter_todas__";
+const LS_DUP_OCULTO_PREFIXO = "__dup_oculto__::";
+const _dupChaveItem = d => String(d.gerencial) + "::" + String(d.docNumero);
+const _dupLerManterTodas = () => { try { return localStorage.getItem(LS_DUP_MANTER_TODAS) === "1"; } catch(e) { return false; } };
+const _dupSalvarManterTodas = (v) => { try { if (v) localStorage.setItem(LS_DUP_MANTER_TODAS, "1"); else localStorage.removeItem(LS_DUP_MANTER_TODAS); } catch(e) {} };
+const _dupEstaOculto = (d) => { try { return localStorage.getItem(LS_DUP_OCULTO_PREFIXO + _dupChaveItem(d)) === "1"; } catch(e) { return false; } };
+const _dupMarcarOculto = (d) => { try { localStorage.setItem(LS_DUP_OCULTO_PREFIXO + _dupChaveItem(d), "1"); } catch(e) {} };
+
+const _dupConf = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.confirmadas)) ? DADOS.duplicatas.confirmadas : []).map(d => ({...d, _tipo: "confirmado"}));
+const _dupProv = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.provaveis))   ? DADOS.duplicatas.provaveis   : []).map(d => ({...d, _tipo: "provavel"}));
+const _dupTodas = [..._dupConf, ..._dupProv];
+
+// Reconstitui a linha da gerencial no formato de DADOS.vendas, para poder
+// exibi-la e somá-la quando o usuário escolhe manter. Ver LIMITAÇÃO acima.
+const _dupSintetizarLinha = d => ({
+    _dtKey: d.dt || DADOS.data,
+    vendedor: d.vendedor || "",
+    modelo: 99,
+    tipo: "gerencial",
+    numero: d.gerencial,
+    caixa: d.caixa || "",
+    hora: d.hora || "",
+    cliente: d.cliente || "",
+    natureza: d.natureza || "",
+    total: Number(d.total || 0),
+    pagamentos: "Duplicata mantida manualmente — pagamento indisponível",
+    itens: "",
+    itensDetalhe: [],
+    formasValores: {},
+    is_recebimento: false,
+    _duplicataMantida: true
+});
+
+// Injeta na tabela + ajusta os totais fixos (DADOS.totaisDia/DADOS.totais/
+// DADOS.vendTotaisDia — não são recalculados a partir de DADOS.vendas,
+// então precisam ser somados manualmente aqui; os badges de QUANTIDADE
+// (#tQtdGer etc.) SÃO recalculados de DADOS.vendas mais abaixo, então já
+// ficam corretos sem nenhum ajuste extra).
+const _dupInjetarNaTabela = (d) => {
+    // BUG FIX (v2.9.1): _idx e _busca são atribuídos a DADOS.vendas num laço
+    // que roda ANTES deste trecho — a linha reconstituída ficava sem eles:
+    // o clique abria o modal errado/nenhum (data-idx="undefined") e a busca
+    // por texto não a encontrava.
+    const _linha = _dupSintetizarLinha(d);
+    _linha._idx = DADOS.vendas.length;
+    _linha._busca = rmAcento((_linha.vendedor||"")+" "+(_linha.tipo||"")+" "+(_linha.pagamentos||"")+" "+(_linha.caixa||"")+" "+(_linha.numero||"")+" "+(_linha.cliente||"")+" "+(_linha.natureza||"")).toLowerCase();
+    DADOS.vendas.push(_linha);
+    const v = Number(d.total || 0);
+    if (DADOS.totais) { DADOS.totais.total = Number(DADOS.totais.total || 0) + v; DADOS.totais.qtd = Number(DADOS.totais.qtd || 0) + 1; }
+    if (DADOS.totaisDia && DADOS.totaisDia.ok) {
+        DADOS.totaisDia.selecionado    = Number(DADOS.totaisDia.selecionado    || 0) + v;
+        DADOS.totaisDia.gerencial      = Number(DADOS.totaisDia.gerencial      || 0) + v;
+        DADOS.totaisDia.geral          = Number(DADOS.totaisDia.geral          || 0) + v;
+        DADOS.totaisDia.qtd_gerencial  = Number(DADOS.totaisDia.qtd_gerencial  || 0) + 1;
+    }
+    // vendTotaisDia é a fonte real do painel "Vendedores" ({vendedor, gerencial,
+    // nfce, nfe, geral, qtd} — ver linha ~1471); DADOS.vendedores é só um
+    // resumo derivado dela, então é resincronizado inteiro logo abaixo.
+    if (Array.isArray(DADOS.vendTotaisDia)) {
+        const nomeVend = d.vendedor || "";
+        let vt = DADOS.vendTotaisDia.find(x => x.vendedor === nomeVend);
+        if (!vt) { vt = { vendedor: nomeVend, gerencial: 0, nfce: 0, nfe: 0, geral: 0, qtd: 0 }; DADOS.vendTotaisDia.push(vt); }
+        vt.gerencial = Number(vt.gerencial || 0) + v;
+        vt.geral     = Number(vt.geral     || 0) + v;
+        vt.qtd       = Number(vt.qtd       || 0) + 1;
+        if (Array.isArray(DADOS.vendedores)) {
+            DADOS.vendedores = DADOS.vendTotaisDia.map(x => ({ vendedor: x.vendedor, qtd: x.qtd, total: x.geral }));
+        }
+    }
+};
+
+// ── Aplica decisões já salvas (localStorage) ANTES de qualquer render ──
+let _dupManterTodasAtivo = _dupLerManterTodas();
+const _dupPendentes = [];
+for (const d of _dupTodas) {
+    if (_dupManterTodasAtivo) { _dupInjetarNaTabela(d); continue; }
+    if (_dupEstaOculto(d)) continue; // "não perguntar mais" já escolhido antes
+    _dupPendentes.push(d); // sem decisão — vai pro modal
+}
+
+(function _initBtnDuplicatas(){
+    const btn = document.getElementById("btnDuplicatas");
+    if (!btn) return;
+    if (_dupTodas.length > 0) {
+        btn.style.display = "";
+        const badge = document.getElementById("badgeDuplicatas");
+        if (badge) badge.textContent = "(" + _dupTodas.length + ")";
+    }
+})();
+
+const abrirDuplicatas=(itensPendentes)=>{
+    if (document.getElementById("ovDup")) return; // guarda contra listener duplicado
+    const bg=document.createElement("div"); bg.className="ov"; bg.id="ovDup"; bg.setAttribute("aria-hidden","false");
+    // BUG FIX (v2.9.1): fechar/escKey precisam existir ANTES de render(), que
+    // os registra nos botões — antes, render() rodava primeiro e caía em
+    // "Cannot access 'fechar' before initialization" (TDZ do const).
+    function escKey(e){ if(e.key==="Escape") fechar(); }
+    const fechar=()=>{ document.removeEventListener("keydown",escKey); _fecharOverlayAnimado(bg); };
+    render(bg, itensPendentes);
+    document.body.appendChild(bg);
+    void bg.offsetWidth;
+    bg.classList.add("on");
+    document.addEventListener("keydown",escKey);
+
+    function render(el, itens) {
+        const linhaItem = d => {
+            const rotulo = d._tipo === "confirmado"
+                ? '<span style="color:#7ee787">● confirmado</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+(d.docModelo===65?'NFC-e':'NF-e')+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
+                : '<span style="color:#e3b341">● provável</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → NF-e <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(mesmo valor/data, +'+esc(d.diffMin)+'min'+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
+            return '<div class="dupItem" data-chave="'+esc(_dupChaveItem(d))+'" style="padding:10px;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px">'
+                + '<div style="margin-bottom:6px">'+rotulo+'</div>'
+                + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                + '<div class="btn dupBtnDepois" style="font-size:12px;padding:4px 10px">Perguntar depois sobre essa</div>'
+                + '<div class="btn dupBtnNunca" style="font-size:12px;padding:4px 10px">Não perguntar mais sobre essa</div>'
+                + '</div></div>';
+        };
+        const corpoHtml = itens.length === 0
+            ? '<div style="padding:16px;opacity:.7;font-size:13px">Nenhuma duplicata pendente de decisão.'
+              + (_dupManterTodasAtivo ? '<br><br>Modo <b>"manter todas"</b> está ativo — toda duplicata encontrada é exibida e somada automaticamente.' : '')
+              + '</div>'
+            : itens.map(linhaItem).join("");
+        const _btnManterTodasTxt = _dupManterTodasAtivo ? "Desativar \"manter todas\"" : "Manter todas as duplicatas";
+        el.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais já convertidas em NFC-e/NF-e — escolha o que fazer com cada uma.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
+            + '<div class="mbody" style="padding-bottom:0">'
+            + '<div class="btn" id="dupBtnTodas" style="margin-bottom:10px;width:100%;justify-content:center">'+_btnManterTodasTxt+'</div>'
+            + '</div>'
+            + '<div class="mbody" id="dupLista" style="max-height:50vh;overflow:auto;padding-top:0">'+corpoHtml+'</div></div>';
+
+        // BUG FIX (v2.9.1): qs() só aceita o seletor e busca no document — na
+        // 1ª renderização o modal ainda não foi inserido na página, então
+        // qs("#dupFechar") devolvia null e o TypeError interrompia TODO o
+        // script do relatório (a tabela não era desenhada) sempre que havia
+        // duplicata pendente. Busca dentro do próprio modal.
+        el.querySelector("#dupFechar").addEventListener("click",fechar);
+        el.addEventListener("click",e=>{if(e.target===el)fechar();});
+
+        el.querySelector("#dupBtnTodas").addEventListener("click", () => {
+            const ligar = !_dupManterTodasAtivo;
+            _dupSalvarManterTodas(ligar);
+            _dupManterTodasAtivo = ligar;
+            if (ligar) {
+                // Injeta agora todas as pendentes (as já ocultas por "não perguntar
+                // mais" continuam respeitadas — não são reabertas por esta ação).
+                for (const d of itens) _dupInjetarNaTabela(d);
+                itens.length = 0;
+                renderTabela();
+            }
+            render(el, itens);
+            toast("Duplicatas", ligar ? "Todas as duplicatas passam a ser exibidas." : "Modo \"manter todas\" desativado.");
+        });
+
+        el.querySelectorAll(".dupBtnDepois").forEach((btn, i) => {
+            btn.addEventListener("click", () => {
+                itens.splice(i, 1); // some do modal SEM salvar decisão — volta a perguntar na próxima geração
+                render(el, itens);
+                if (itens.length === 0) fechar();
+            });
+        });
+        el.querySelectorAll(".dupBtnNunca").forEach((btn, i) => {
+            btn.addEventListener("click", () => {
+                _dupMarcarOculto(itens[i]);
+                itens.splice(i, 1);
+                render(el, itens);
+                if (itens.length === 0) fechar();
+            });
+        });
+    }
+};
+{ const _b = document.getElementById("btnDuplicatas"); if (_b) _b.addEventListener("click", () => abrirDuplicatas(_dupPendentes)); }
+// Abre automaticamente se houver duplicata pendente de decisão nesta geração —
+// pedido explícito: "peça uma ação do usuário" (não fica só esperando clique no botão).
+// Usa a MESMA referência de array em ambos os pontos de abertura — decisões
+// tomadas aqui (ex.: "perguntar depois") ficam refletidas se o usuário
+// reabrir pelo botão na mesma sessão, em vez de mostrar itens já tratados.
+if (_dupPendentes.length > 0) abrirDuplicatas(_dupPendentes);
 
 const __ncToastMsgs=new Set();
 // Inicializa __TOAST_MS com o valor embutido na geração do HTML (config.json → toastDuracao).
@@ -3886,7 +4134,9 @@ var __abrirModalConfig = function() {
     _fetchJSON("/api/config", {cache: "no-store"})
     .catch(function(){ return {}; })
     .then(function(cfg) {
-        var _pn  = String(cfg.appName      || "").replace(/"/g, "&quot;");
+        // XSS FIX (v2.8.0): valores do servidor entram no HTML abaixo — escapados
+        // com esc() (& < > "), não só aspas.
+        var _pn  = esc(String(cfg.appName  || ""));
         var _pi  = parseInt(cfg.pollInterval || 800, 10);
         var _ml  = parseInt(cfg.maxLogLines  || 1000, 10);
         var _fv  = String(cfg.favicon        || "");
@@ -3928,12 +4178,12 @@ var __abrirModalConfig = function() {
               '<div class="kv" style="flex-direction:column;gap:8px">' +
                 '<div class="k">Ícone (favicon)</div>' +
                 '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
-                  '<input type="text" id="cfgFaviconPath" value="' + _fv.replace(/"/g,"&quot;") + '" class="input" placeholder="Caminho do arquivo ou vazio para padrão" style="flex:1;min-width:0">' +
+                  '<input type="text" id="cfgFaviconPath" value="' + esc(_fv) + '" class="input" placeholder="Caminho do arquivo ou vazio para padrão" style="flex:1;min-width:0">' +
                   '<button class="btn" type="button" id="cfgFaviconPick" data-tip="Selecionar arquivo de imagem do computador"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Procurar</button>' +
                   '<input type="file" id="cfgFaviconFile" accept=".png,.ico,.jpg,.jpeg" style="display:none">' +
                 '</div>' +
                 '<div id="cfgFaviconInfo" style="font-size:11px;color:var(--text-muted);padding-left:2px">' +
-                  (_fv ? 'Atual: ' + _fv : 'Usando favicon.png padrão da pasta do sistema') +
+                  (_fv ? 'Atual: ' + esc(_fv) : 'Usando favicon.png padrão da pasta do sistema') +
                 '</div>' +
               '</div>' +
               '<div class="kv" style="flex-direction:column;gap:8px">' +
@@ -4429,29 +4679,44 @@ try {
 
     // Persiste cache de horas fixadas somente quando houve nova entrada,
     // evitando escrita desnecessária em disco a cada execução.
-    if (_horaCacheDirty) {
+    if (_horaChavesAlteradas.size > 0) {
         try {
-            // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de gravar — nfc-e,
-            // depois nf-e, depois gerencial; ascendente por hora dentro de cada
-            // grupo. Ver comentário completo em _ordenarHoraCache, acima.
-            _horaCache = _ordenarHoraCache(_horaCache);
-            // PRECISÃO FIX (v2.6.4): gravação atômica (tmp + rename), igualando o
-            // cuidado que servidor-relatorio.js já tem com ESTE MESMO arquivo (lá
-            // via _gravarArquivoAtomico). A assimetria era perigosa: é justamente
-            // este processo que leva kill do fast-poll (kill-and-restart quando
-            // chega venda nova durante a geração). Um kill no meio da escrita
-            // deixava hora-fixada-cache.json truncado — JSON inválido, que os
-            // DOIS processos descartam ao ler, perdendo TODAS as horas fixadas do
-            // dia de uma vez. O efeito visível seria as vendas voltando a
-            // "flutuar" de posição a cada atualização: exatamente o problema que
-            // este cache existe para resolver.
+            // CONCORRÊNCIA FIX (v2.8.0): este arquivo é gravado também pelo
+            // servidor e por outras gerações rodando em paralelo. Antes, aqui
+            // se gravava _horaCache INTEIRO — a cópia lida no início desta
+            // execução — apagando qualquer entrada gravada por outro processo
+            // nesse intervalo. Agora relê o disco (estado mais recente), mantém
+            // só o dia atual e aplica apenas as chaves que ESTA execução criou
+            // ou migrou. Se outro processo já gravou a mesma chave no formato
+            // novo ({tipo,hora}), a dele prevalece: a hora fixada é a da
+            // primeira visão, e reescrevê-la faria a venda "pular" de horário.
+            let _disco = {};
+            try {
+                const _rawDisco = fs.readFileSync(_horaCacheFile, "utf8").replace(/^\uFEFF/, "");
+                const _pDisco = JSON.parse(_rawDisco);
+                if (_pDisco && typeof _pDisco === "object" && !Array.isArray(_pDisco)) _disco = _pDisco;
+            } catch (_) { /* ausente/corrompido: começa só com as chaves desta execução */ }
+            const _final = Object.create(null);
+            for (const [k, val] of Object.entries(_disco)) {
+                if (k.startsWith(_hojeISO + "|")) _final[k] = val;
+            }
+            for (const k of _horaChavesAlteradas) {
+                const _atual = _final[k];
+                const _discoTemFormatoNovo = _atual && typeof _atual === "object" && !Array.isArray(_atual);
+                if (!_discoTemFormatoNovo) _final[k] = _horaCache[k];
+            }
+            // ORDENAÇÃO: reordena por tipo/número antes de gravar — ver
+            // comentário completo em _ordenarHoraCache, acima.
+            const _json = JSON.stringify(_ordenarHoraCache(_final), null, 2);
+            // Gravação atômica (tmp + rename): este processo pode levar kill do
+            // fast-poll no meio da escrita; o arquivo nunca fica pela metade.
             const _tmpCache = _horaCacheFile + ".tmp" + process.pid;
             try {
-                fs.writeFileSync(_tmpCache, JSON.stringify(_horaCache, null, 2), "utf8");
+                fs.writeFileSync(_tmpCache, _json, "utf8");
                 fs.renameSync(_tmpCache, _horaCacheFile);
             } catch (eAtomicoCache) {
                 try { if (fs.existsSync(_tmpCache)) fs.unlinkSync(_tmpCache); } catch(_) {}
-                fs.writeFileSync(_horaCacheFile, JSON.stringify(_horaCache, null, 2), "utf8");
+                fs.writeFileSync(_horaCacheFile, _json, "utf8");
             }
         } catch (e) {
             console.warn("Aviso: não foi possível salvar hora-fixada-cache.json —", e.message);

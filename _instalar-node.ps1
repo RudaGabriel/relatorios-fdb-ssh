@@ -3,17 +3,19 @@
 # Metodos: winget -> MSI silencioso -> MSI com log detalhado.
 # Auto-eleva para Administrador se necessario.
 #
-# @version 1.2.1
+# @version 1.3.0
 # @changelog
-#   1.2.1 - 2026-08-07 15:30 - Prevencao (causa raiz encontrada em
-#                              iniciar-tray.ps1, mesma familia de risco):
-#     - Havia um travessao Unicode dentro de um Write-Log real (nao em
-#       comentario) na secao de download do MSI. Windows PowerShell 5.1 nao
-#       assume UTF-8 por padrao para .ps1 sem BOM - pode reinterpretar bytes
-#       multi-byte incorretamente e corromper o parsing do script a partir
-#       dali. Removidos todos os caracteres nao-ASCII do arquivo; agora 100%
-#       ASCII. Ver changelog de iniciar-tray.ps1 v1.2.2 para o caso concreto
-#       que motivou essa checagem em todos os .ps1 do projeto.
+#   1.3.0 - 2026-10-05 16:24 - Revisao completa.
+#     - Integridade: o MSI baixado era executado como Administrador sem
+#       nenhuma verificacao. Agora o SHA-256 e' conferido contra o
+#       SHASUMS256.txt oficial da mesma versao; sem acesso a ele, exige
+#       assinatura digital (Authenticode) valida do arquivo.
+#     - Auto-elevacao: a instancia nao elevada sempre saia com codigo 0, mesmo
+#       quando a elevada falhava - os .bat seguiam como se o Node estivesse
+#       instalado. Agora o codigo de saida da instancia elevada e' repassado.
+#     - Node.js 20 (fim de suporte em abril/2026) trocado pela LTS 22.22.0.
+#     - Read-Host protegido: os .bat chamam este script com -NonInteractive,
+#       onde Read-Host lanca erro em vez de esperar o ENTER.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -39,11 +41,21 @@ try {
 # (novo ponto de falha) so' para DESCOBRIR o que baixar, antes mesmo de baixar
 # o instalador. Mantido simples e previsivel - reveja/atualize este numero
 # periodicamente (verifique a LTS atual em https://nodejs.org/en/download).
-$NODE_VERSION = "20.19.0"
-$NODE_URL     = "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-x64.msi"
+$NODE_VERSION = "22.22.0"
+$NODE_MSI     = "node-v$NODE_VERSION-x64.msi"
+$NODE_URL     = "https://nodejs.org/dist/v$NODE_VERSION/$NODE_MSI"
+$NODE_SHASUMS = "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt"
 $NODE_DIR     = "C:\Program Files\nodejs"
 $LOG_FILE     = "$env:TEMP\node-install-log.txt"
 $TMP_MSI      = "$env:TEMP\node-setup.msi"
+
+# ---------------------------------------------------------------------------
+# Read-Host seguro: com -NonInteractive (como os .bat chamam) Read-Host lanca
+# erro; aqui so' pausa quando ha console interativo.
+# ---------------------------------------------------------------------------
+function Wait-Enter {
+    try { Read-Host "Pressione ENTER para fechar" | Out-Null } catch {}
+}
 
 # ---------------------------------------------------------------------------
 # Log com timestamp
@@ -77,14 +89,55 @@ function Ensure-Admin {
         # encerrava com um stack trace .NET cru em vez de uma mensagem clara,
         # inconsistente com o padrao de log amigavel usado no resto do arquivo.
         try {
-            Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -Verb RunAs -Wait -ErrorAction Stop
+            $procElevado = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -Verb RunAs -Wait -PassThru -ErrorAction Stop
         } catch {
             Write-Log "Elevacao para Administrador foi cancelada ou falhou: $($_.Exception.Message)" "ERRO"
             Write-Log "A instalacao do Node.js requer privilegios de Administrador. Execute novamente e aceite o prompt do UAC." "ERRO"
             exit 1
         }
-        exit 0
+        # Repassa o resultado REAL da instancia elevada (antes: sempre 0).
+        $codigoElevado = 0
+        try { if ($procElevado -and $procElevado.HasExited) { $codigoElevado = [int]$procElevado.ExitCode } } catch {}
+        exit $codigoElevado
     }
+}
+
+# ---------------------------------------------------------------------------
+# Verifica a integridade do MSI baixado antes de executa-lo como Administrador.
+# 1) SHA-256 contra o SHASUMS256.txt oficial da versao (falha => rejeita).
+# 2) Sem acesso ao SHASUMS256.txt: exige assinatura Authenticode valida.
+# ---------------------------------------------------------------------------
+function Test-MsiIntegro {
+    $hashLocal = $null
+    try { $hashLocal = (Get-FileHash -Path $TMP_MSI -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch {
+        Write-Log "Nao foi possivel calcular o SHA-256 do instalador: $($_.Exception.Message)" "ERRO"
+        return $false
+    }
+    $hashOficial = $null
+    try {
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+        $wc = New-Object System.Net.WebClient
+        $somas = $wc.DownloadString($NODE_SHASUMS)
+        foreach ($linha in ($somas -split "`n")) {
+            $partes = $linha.Trim() -split '\s+'
+            if ($partes.Count -ge 2 -and $partes[1] -eq $NODE_MSI) { $hashOficial = $partes[0].ToLowerInvariant(); break }
+        }
+    } catch {
+        Write-Log "SHASUMS256.txt indisponivel ($($_.Exception.Message)) - conferindo assinatura digital." "AVISO"
+    }
+    if ($hashOficial) {
+        if ($hashOficial -eq $hashLocal) { Write-Log "SHA-256 conferido com o oficial." "OK"; return $true }
+        Write-Log "SHA-256 NAO confere (esperado $hashOficial, obtido $hashLocal)." "ERRO"
+        return $false
+    }
+    try {
+        $assin = Get-AuthenticodeSignature -FilePath $TMP_MSI -ErrorAction Stop
+        if ($assin.Status -eq 'Valid') { Write-Log "Assinatura digital valida: $($assin.SignerCertificate.Subject)" "OK"; return $true }
+        Write-Log "Assinatura digital invalida ou ausente (status: $($assin.Status))." "ERRO"
+    } catch {
+        Write-Log "Nao foi possivel verificar a assinatura digital: $($_.Exception.Message)" "ERRO"
+    }
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -193,6 +246,8 @@ function Download-Msi {
             $job = Start-Job -ScriptBlock {
                 param($url, $dest)
                 try {
+                    # PS 5.1 nao habilita TLS 1.2 por padrao (nodejs.org exige).
+                    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
                     if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
                         Start-BitsTransfer -Source $url -Destination $dest -ErrorAction Stop
                     } else {
@@ -223,7 +278,9 @@ function Download-Msi {
 
                 if ($tamBytes -gt 5000000) {
                     Write-Log "Download OK. Tamanho: $tamMB MB" "OK"
-                    return $true
+                    if (Test-MsiIntegro) { return $true }
+                    Write-Log "Arquivo baixado reprovado na verificacao de integridade. Removendo e tentando novamente." "AVISO"
+                    Remove-Item $TMP_MSI -Force -ErrorAction SilentlyContinue
                 } else {
                     Write-Log "Arquivo suspeito ($tamMB MB). Removendo e tentando novamente." "AVISO"
                     Remove-Item $TMP_MSI -Force -ErrorAction SilentlyContinue
@@ -320,7 +377,7 @@ if (Install-ViaWinget) { exit 0 }
 if (-not (Download-Msi)) {
     Write-Log "Impossivel baixar o instalador. Verifique a internet." "ERRO"
     Write-Log "Download manual: $NODE_URL" "ERRO"
-    Read-Host "Pressione ENTER para fechar"
+    Wait-Enter
     exit 1
 }
 
@@ -339,7 +396,7 @@ if (-not $instalou) {
     Write-Log "Todas as tentativas falharam." "ERRO"
     Write-Log "Instale manualmente: https://nodejs.org/en/download" "ERRO"
     Write-Log "Log de diagnostico: $LOG_FILE" "ERRO"
-    Read-Host "Pressione ENTER para fechar"
+    Wait-Enter
     exit 1
 }
 

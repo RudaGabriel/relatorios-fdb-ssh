@@ -2,25 +2,40 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.8.5
+ * @version 2.9.0
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.8.5 - 2026-09-23 - RECONCILIACAO/AVISO RECONCILIACAO agora sempre vão
- *                        pro relatorio.log.
- *     - CAUSA: o roteador de stdout do filho (gerar-relatorio-html.js) só
- *       gravava linhas iniciadas por ">", "OK:", "Conectando em:" ou
- *       "Conectado!" — e mesmo essas só via logDebug() (exige
- *       logDebug:true no config.json) e só na 1ª geração do dia
- *       (_queryLogsHoje). As linhas "RECONCILIACAO: ..."/"AVISO
- *       RECONCILIACAO: ..." (fusão automática Gerencial→NF-e por valor
- *       idêntico, introduzida no gerador v2.7.7+) caíam nesse buffer e
- *       eram descartadas silenciosamente — nunca apareciam no log, em
- *       nenhuma configuração.
- *     - Corrigido: essas duas linhas agora são reconhecidas antes do
- *       filtro de rotina e gravadas via logTs() (sempre registra,
- *       independente de logDebug/_queryLogsHoje) — é evento de negócio
- *       que afeta o total do dia, não ruído de performance.
+ *   2.9.0 - 2026-10-05 16:24 - Revisão completa (corretude, segurança, desempenho):
+ *     - CRÍTICO: _corrigirHorariosVelhos reescrevia no banco a hora de TODAS
+ *       as NFC-e/pagamentos do dia a cada reinício (Set volátil vazio) e
+ *       deslocava toda venda nova em ~1 min (qualquer venda vira "velha" 1 min
+ *       depois). Agora usa regra de "primeira visão": a 1ª varredura após
+ *       boot/troca de banco só registra o que já existe (linha de base) e
+ *       apenas documentos que APARECEM já com hora velha são corrigidos.
+ *     - hora-fixada-cache.json: gravação passa a mesclar com o disco
+ *       (servidor e gerador sobrescreviam as entradas um do outro).
+ *     - Gerações supersedidas: timeout/erro de uma geração antiga não
+ *       sobrescreve mais o cache nem agenda retentativa sobre a geração nova.
+ *     - Troca de banco (/api/salvar-fdb) e reset de cache matam as gerações
+ *       em voo; banco salvo sem conexão agora reconecta sozinho em segundo
+ *       plano (antes ficava parado até reiniciar o servidor).
+ *     - Credenciais: lidas de config.json (fbUser/fbPass, antes ignoradas) e
+ *       repassadas ao gerador por variável de ambiente, não mais por
+ *       argumento de linha de comando (visível na lista de processos).
+ *     - Segurança: JSON embutido em <script> escapado (XSS em /config),
+ *       teclasPersonalizadas/proibidos validados em /api/config, /api/log-error
+ *       saneado contra injeção de linhas no log, seletor de FDB com uma única
+ *       instância por vez, validação de data de calendário em /periodo.
+ *     - Rotas /api/navigate/hash/{config|periodo} e /api/navigate/foco, que o
+ *       tray já chamava mas não existiam (menu "Gerar por período" não fazia
+ *       nada com aba aberta).
+ *     - Desempenho: agendarRegen deixa de criar um processo Node a cada
+ *       ~0,5 s sem nenhuma mudança; regera de imediato só sem HTML válido e,
+ *       com HTML válido, a cada _REGEN_SEGURANCA_MS (mudanças reais continuam
+ *       sendo detectadas em ~50 ms pelo fast-poll).
+ *     - Logger: fila de linhas pendentes limitada se o disco falhar.
+ *     - Removido código morto (agoraAjustado).
  */
 
 
@@ -28,7 +43,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.8.5";
+const SERVER_VERSION = "2.9.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -110,7 +125,11 @@ function _flushLog() {
         _fs.appendFileSync(LOG_PATH, _logPendentes.join("\n") + "\n");
         _logLinhasDesdeRotacao += _logPendentes.length;
         _logPendentes = [];
-    } catch(e) {}
+    } catch(e) {
+        // Disco cheio/arquivo travado de forma persistente: sem este teto a fila
+        // cresceria sem limite em memória durante dias. Mantém só as mais recentes.
+        if (_logPendentes.length > MAX_LOG_LINES) _logPendentes.splice(0, _logPendentes.length - MAX_LOG_LINES);
+    }
     _rotacionarLogSeNecessario();
 }
 function logToFile(...args) {
@@ -209,6 +228,73 @@ var escH = function(s) {
         .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 };
 
+// JSON seguro para embutir dentro de <script>: JSON.stringify sozinho não
+// escapa "</script>" — um valor salvo pelo usuário com esse texto (ex: um
+// termo de "proibidos") fecharia o bloco e executaria HTML/JS arbitrário.
+// U+2028/U+2029 são válidos em JSON mas quebram literais em JS antigo.
+var _jsonParaScript = function(v) {
+    return JSON.stringify(v === undefined ? null : v)
+        .replace(/</g, "\\u003c")
+        .replace(/\u2028/g, "\\u2028")
+        .replace(/\u2029/g, "\\u2029");
+};
+
+// Data ISO que existe de fato no calendário (rejeita 2026-02-30, 2026-13-01).
+var _ehDataISOValida = function(iso) {
+    var m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return false;
+    var a = +m[1], me = +m[2], d = +m[3];
+    var dt = new Date(Date.UTC(a, me - 1, d));
+    return dt.getUTCFullYear() === a && dt.getUTCMonth() === me - 1 && dt.getUTCDate() === d;
+};
+
+// Limites de tamanho das listas configuráveis — evitam que um POST da rede
+// grave um config.json gigante (que o gerador lê a cada geração).
+var MAX_PROIBIDOS        = 500;
+var MAX_TAM_PROIBIDO     = 200;
+var MAX_TECLAS           = 60;
+var MAX_TAM_CAMPO_TECLA  = 300;
+
+// Fonte única de validação de "proibidos" (antes /api/proibidos validava e
+// /api/config aceitava qualquer array, inclusive [1, {}, null]).
+var _sanitizarProibidos = function(lista) {
+    if (!Array.isArray(lista)) return [];
+    var vistos = Object.create(null), saida = [];
+    for (var i = 0; i < lista.length && saida.length < MAX_PROIBIDOS; i++) {
+        if (typeof lista[i] !== "string") continue;
+        var s = lista[i].replace(/[\x00-\x1F\x7F]/g, " ").trim().slice(0, MAX_TAM_PROIBIDO);
+        if (!s || vistos[s]) continue;
+        vistos[s] = true;
+        saida.push(s);
+    }
+    return saida;
+};
+
+// Teclas de atalho: aceita { tecla, comando, acao } (como o modal do relatório
+// envia) e normaliza para strings com tamanho limitado. Exige tecla e ao menos
+// um entre comando/acao — mesma regra usada pelo gerador ao ler config.json.
+var _sanitizarTeclas = function(lista) {
+    if (!Array.isArray(lista)) return [];
+    var saida = [];
+    for (var i = 0; i < lista.length && saida.length < MAX_TECLAS; i++) {
+        var t = lista[i];
+        if (!t || typeof t !== "object") continue;
+        var tecla   = typeof t.tecla   === "string" ? t.tecla.trim().slice(0, 40) : "";
+        var comando = typeof t.comando === "string" ? t.comando.slice(0, MAX_TAM_CAMPO_TECLA) : "";
+        var acao    = typeof t.acao    === "string" ? t.acao.trim().slice(0, 60) : "";
+        if (!tecla || (!comando && !acao)) continue;
+        saida.push({ tecla: tecla, comando: comando, acao: acao });
+    }
+    return saida;
+};
+
+// Texto vindo da rede antes de ir para o relatorio.log: remove caracteres de
+// controle (inclusive \r e \n) — sem isso, um POST em /api/log-error podia
+// forjar linhas inteiras do log ("[05-10-2026] [10:00:00] Reinicialização...").
+var _textoSeguroLog = function(s, max) {
+    return String(s == null ? "" : s).replace(/[\x00-\x1F\x7F]+/g, " ").trim().slice(0, max || 500);
+};
+
 // NOTA: padDois foi movido para o topo do arquivo (acima do logger) na v2.4.1 —
 // logToFile() depende dele e era chamado antes desta linha ser executada.
 
@@ -221,8 +307,12 @@ var pegar=function(k){
     return (i>=0&&i+1<args.length)?String(args[i+1]||"").trim():"";
 };
 var PORT   = parseInt(pegar("--porta")||"7734",10);
-var USER   = pegar("--user") || "SYSDBA";
-var PASS   = pegar("--pass") || "masterkey";
+// Credenciais do Firebird — resolvidas após carregar config.json (ver
+// "Resolução de credenciais" abaixo). Ordem: --user/--pass > variável de
+// ambiente RELATORIO_FB_USER/RELATORIO_FB_PASS (usada pelo tray) > config.json
+// (fbUser/fbPass) > padrão de fábrica SYSDBA/masterkey.
+var USER   = pegar("--user");
+var PASS   = pegar("--pass");
 var SCRIPT = path.join(__dirname,"gerar-relatorio-html.js");
 var FAVICON= path.join(__dirname,"favicon.png");
 var CONFIG = path.join(__dirname,"config.json");
@@ -388,6 +478,28 @@ if (appCfg.maxLogLines && parseInt(appCfg.maxLogLines,10) >= 100) {
 if (_logBuffer.length > MAX_LOG_LINES) _logBuffer.splice(0, _logBuffer.length - MAX_LOG_LINES); // in-place
 
 if (appCfg.porta&&appCfg.porta>0) PORT = parseInt(appCfg.porta,10);
+if (!(PORT > 0 && PORT < 65536)) PORT = 7734; // porta inválida no config/CLI → padrão em vez de listen() lançar
+
+// Resolução de credenciais. BUG FIX (v2.9.0): fbUser/fbPass existiam no
+// config.json (e o tray já os lia), mas este arquivo nunca os consultava —
+// sem --user/--pass o servidor sempre caía em SYSDBA/masterkey.
+USER = USER || String(process.env.RELATORIO_FB_USER || "").trim() || String(appCfg.fbUser || "").trim() || "SYSDBA";
+PASS = PASS || String(process.env.RELATORIO_FB_PASS || "")         || String(appCfg.fbPass || "")         || "masterkey";
+
+// Ambiente repassado a cada processo filho. SEGURANÇA (v2.9.0): a senha ia
+// como argumento "--pass" — visível para qualquer usuário da máquina na lista
+// de processos (Gerenciador de Tarefas/wmic). Variável de ambiente só é
+// legível pelo próprio usuário/administrador.
+var _ENV_FILHO = Object.assign({}, process.env, { RELATORIO_FB_USER: USER, RELATORIO_FB_PASS: PASS });
+// Aviso de credencial de fábrica: uma vez por boot (o tray, quando é ele quem
+// inicia o servidor, já registra o mesmo aviso — não duplica nesse caso).
+if (USER.toUpperCase() === "SYSDBA" && PASS === "masterkey" && !process.env.RELATORIO_FB_PASS) {
+    // setImmediate: depois da linha "=== Servidor iniciado ===", que deve ser a
+    // primeira do boot no log.
+    setImmediate(function() {
+        logTs("AVISO: usando credenciais padrão do Firebird (SYSDBA/masterkey). Defina fbUser/fbPass no config.json se o banco usa senha própria.");
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Auto-deteccao do caminho FDB
@@ -506,8 +618,9 @@ try {
     setTimeout(function() {
         _logProtSet.clear();
         _queryLogsHoje = false;
-        _nfceCorrigidasHoje.clear();
-        _pagCorrigidosHoje.clear();
+        // Dia novo começa vazio: não há linha de base a registrar — todo
+        // documento que aparecer a partir daqui é "primeira visão".
+        _resetarBaselineCorrecoes(true);
         _statusChangeTs = 0; // reseta a meia-noite — evita reloads espúrios no dia seguinte
         // Limpa entradas antigas do hora-fixada-cache (dias anteriores ao atual)
         try {
@@ -912,14 +1025,24 @@ var _ordenarHoraCache = function(cacheObj) {
     return ordenado;
 };
 
-var _horaFixadaCache = (function() {
+var _lerHoraFixadaCacheDisco = function() {
     try {
         var raw = fs.readFileSync(HORA_FIXADA_CACHE, "utf8").replace(/^\uFEFF/, "");
         var obj = JSON.parse(raw);
         if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
     } catch(e) {}
     return {};
-})();
+};
+var _horaFixadaCache = _lerHoraFixadaCacheDisco();
+
+// Chaves removidas de propósito desde a última gravação (UPDATE que falhou e
+// foi revertido). Sem este registro, a mescla com o disco ressuscitaria a
+// entrada que já tinha sido gravada num flush anterior.
+var _horaCacheRemovidas = new Set();
+var _removerHoraFixadaCache = function(chave) {
+    delete _horaFixadaCache[chave];
+    _horaCacheRemovidas.add(chave);
+};
 
 // _salvarHoraFixadaCache() → debounce de 500 ms (uso normal).
 // _salvarHoraFixadaCache.flush() → grava imediatamente (usado no exit).
@@ -929,9 +1052,30 @@ var _salvarHoraFixadaCache = (function() {
     var _timer = null;
     var _gravar = function() {
         try {
+            // CONCORRÊNCIA FIX (v2.9.0): gerar-relatorio-html.js também grava
+            // este arquivo (horas fixadas de NFC-e/NF-e/gerencial na exibição).
+            // Antes, este processo gravava só a sua cópia em memória — lida UMA
+            // vez no boot — e apagava do disco tudo o que o gerador tivesse
+            // registrado desde então; na geração seguinte essas vendas eram
+            // "vistas pela primeira vez" de novo e a hora delas voltava a
+            // flutuar. Agora relê o disco e mescla: entradas do dia atual vindas
+            // do disco + as desta memória (que prevalecem), menos as removidas.
+            var _dhHoje = hoje();
+            var _disco = _lerHoraFixadaCacheDisco();
+            var _mesclado = {};
+            Object.keys(_disco).forEach(function(k) {
+                if (_horaCacheRemovidas.has(k)) return;
+                if (String(k).split("|")[0] < _dhHoje) return; // dias anteriores: descartados
+                _mesclado[k] = _disco[k];
+            });
+            Object.keys(_horaFixadaCache).forEach(function(k) {
+                if (String(k).split("|")[0] < _dhHoje) return; // idem para a memória
+                _mesclado[k] = _horaFixadaCache[k];
+            });
+            _horaCacheRemovidas.clear();
             // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de cada gravação —
             // ver comentário completo acima de _ordenarHoraCache.
-            _horaFixadaCache = _ordenarHoraCache(_horaFixadaCache);
+            _horaFixadaCache = _ordenarHoraCache(_mesclado);
             if (!_gravarArquivoAtomico(HORA_FIXADA_CACHE, JSON.stringify(_horaFixadaCache, null, 2))) {
                 logTs("WARN _salvarHoraFixadaCache: falha ao gravar o cache de hora fixada.");
             }
@@ -990,6 +1134,66 @@ var broadcastSSE = function(data) {
 // ---------------------------------------------------------------------------
 // Aguarda FDB ficar acessível
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Ciclo de vida do polling (pollStatus + fast-poll)
+// DRY (v2.9.0): o mesmo bloco "setTimeout → pollStatus + setInterval +
+// _iniciarFastPoll" estava duplicado no boot e em aplicarNovoFdb, e não havia
+// como PARAR o polling — trocar para um banco inacessível deixava o fast-poll
+// antigo segurando a conexão persistente com o banco anterior.
+// ---------------------------------------------------------------------------
+var _pollStartTimer = null;
+var _iniciarPolling = function(atrasoMs) {
+    if (!Firebird) return;
+    clearTimeout(_pollStartTimer);
+    _pollStartTimer = setTimeout(function() {
+        _pollStartTimer = null;
+        pollStatus();
+        // pollStatus: fallback de segurança + funções de correção de horário.
+        // Fast-poll (50ms, conexão persistente) trata toda a detecção de mudanças.
+        // pollStatus usa attach/detach por ciclo — rodar em excesso sobrecarrega
+        // o Firebird desnecessariamente. Mínimo 2s independente de POLL_INTERVAL.
+        if (_pollIntervalId) clearInterval(_pollIntervalId);
+        _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
+        _iniciarFastPoll();
+    }, Math.max(0, atrasoMs || 0));
+};
+var _pararPolling = function() {
+    clearTimeout(_pollStartTimer); _pollStartTimer = null;
+    if (_pollIntervalId) { clearInterval(_pollIntervalId); _pollIntervalId = null; }
+    if (_fpIntervalId)   { clearInterval(_fpIntervalId);   _fpIntervalId   = null; }
+    _fpGen++; // invalida attach do fast-poll em voo
+    if (_fpDb) { try { _matarConexao(_fpDb); } catch(_) {} _fpDb = null; }
+    _fpBusy = false; _fpConectando = false;
+};
+
+// Reconexão em segundo plano. Usada quando o banco não está acessível no
+// momento (boot esgotou as tentativas automáticas, ou o usuário salvou um FDB
+// sem conexão). BUG FIX (v2.9.0): nesses casos nada mais tentava conectar —
+// o relatório ficava parado até alguém reiniciar o servidor manualmente.
+// _reconexaoGen invalida um laço antigo quando outro FDB é escolhido.
+var _RECONEXAO_INTERVALO_MS = 15000;
+var _reconexaoGen = 0;
+var _agendarReconexaoFdb = function() {
+    var minhaGen = ++_reconexaoGen;
+    var tentar = function() {
+        if (minhaGen !== _reconexaoGen || dbStatus.ok) return;
+        testarFdb(FDB_HOST, FDB_PATH, function(ok) {
+            if (minhaGen !== _reconexaoGen || dbStatus.ok) return;
+            if (!ok) { setTimeout(tentar, _RECONEXAO_INTERVALO_MS); return; }
+            logTs("Banco voltou a responder em " + FDB_HOST + " — retomando monitoramento.");
+            dbStatus = {ok:true, ip:FDB_HOST, erro:null, scanCompleto:true, scanning:false};
+            _aguardandoFdbManual = false;
+            updateConfigKey("fbHost", FDB_HOST);
+            _resetarBaselineCorrecoes(false);
+            _invalidarCache();
+            var dh = hoje();
+            gerarEmBackground(dh, dh, dh);
+            _iniciarPolling(0);
+        });
+    };
+    setTimeout(tentar, _RECONEXAO_INTERVALO_MS);
+};
+
 var aguardarFDB = function(onPronto) {
     var MAX_RETRY = 120;
     var RETRY_MS  = 15000;
@@ -1286,6 +1490,27 @@ var _gerarIdCounter   = Object.create(null); // chave → ID da geração atual
 // velha imediatamente ao detectar mudança, sem esperar os ~300ms restantes.
 var _gerandoKill      = Object.create(null); // chave → function() mata o proc atual
 
+// Descarta TODO o cache de relatórios e as gerações em andamento.
+// BUG FIX (v2.9.0): os pontos que trocavam banco/proibidos/config faziam só
+// "cache = {}" — as gerações em voo continuavam rodando e, ao terminar,
+// gravavam no cache novo um HTML feito com a configuração ANTIGA (banco
+// anterior, proibidos anteriores). Incrementar o ID de cada chave faz o
+// close/timeout/error dessas gerações reconhecê-las como supersedidas.
+var _invalidarCache = function() {
+    // Incrementa o ID de TODA chave conhecida (não só das que têm processo
+    // vivo): uma retentativa já agendada após timeout também é cancelada.
+    var chaves = Object.keys(_gerarIdCounter);
+    Object.keys(_gerandoKill).forEach(function(k) { if (chaves.indexOf(k) < 0) chaves.push(k); });
+    chaves.forEach(function(k) {
+        var kill = _gerandoKill[k];
+        _gerarIdCounter[k] = (_gerarIdCounter[k] || 0) + 1;
+        delete _gerandoKill[k];
+        try { if (typeof kill === "function") kill(); } catch(_) {}
+    });
+    cache = Object.create(null);
+    _gerarTentativas = Object.create(null);
+};
+
 // ---------------------------------------------------------------------------
 // Gerador em background — com timeout e retry automático
 // ---------------------------------------------------------------------------
@@ -1332,8 +1557,9 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
 
     // Passa o timeout configurado para o filho via --timeout.
     // Filho usa este valor para calibrar _tGlobal e _tQuery em vez de calcular sozinho.
+    // Credenciais vão por variável de ambiente (_ENV_FILHO), não por argumento.
     var nArgs=[SCRIPT,"--fdb",FDB,"--data-inicio",inicio,"--data-fim",fim,
-               "--saida",_tmpFile,"--user",USER,"--pass",PASS,
+               "--saida",_tmpFile,
                "--timeout",String(_SPAWN_TIMEOUT_MS)];
     // Repassa o nível de log ao filho: sem "--debug" ele omite a cronometragem
     // por etapa (7 linhas por geração), que é ruído no uso normal.
@@ -1345,7 +1571,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // {gerando:true} para sempre, deixando a página presa no paginaLoading.
     var proc = null;
     try {
-        proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"]});
+        proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
     } catch(spawnErr) {
         logTs("ERRO spawn síncrono ("+label+"): "+(spawnErr && spawnErr.message || spawnErr));
         cache[chave] = {html:null, gerando:false, erro:"Falha ao iniciar o gerador: "+(spawnErr && spawnErr.message || String(spawnErr))};
@@ -1365,7 +1591,9 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // Agora usa spawn (async) no Windows e SIGKILL (não-bloqueante) no Unix.
     // onKilled() é chamado quando o kill concluiu (ou após fallback de 5 s).
     var _matarProcessoFilho = function(onKilled) {
-        if (!proc.pid) { if (onKilled) setTimeout(onKilled, 0); return; }
+        // Processo já encerrado: não chama taskkill — o Windows recicla PIDs e
+        // "taskkill /F /T /PID n" poderia derrubar um processo alheio.
+        if (!proc.pid || proc.exitCode !== null || proc.signalCode !== null) { if (onKilled) setTimeout(onKilled, 0); return; }
         if (process.platform === "win32") {
             var _tkFeito = false;
             var _tkFallback = setTimeout(function() {
@@ -1425,9 +1653,25 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     //             veja o estado no próximo poll (800 ms) sem depender do kill ter concluído.
     // CORREÇÃO 2: kill é assíncrono (spawn, não execSync) — event loop livre durante o kill.
     // CORREÇÃO 3: retry só é agendado APÓS o kill concluir (callback de _matarProcessoFilho).
+    // Esta geração foi substituída por uma mais nova (kill-and-restart do
+    // fast-poll ou _invalidarCache)? Nesse caso ela não pode mais tocar em
+    // cache[chave], que já pertence à geração nova.
+    var _ehSupersedida = function() { return _gerarIdCounter[chave] !== _meuId; };
+    var _limparRecursosProprios = function() {
+        try { if (fs.existsSync(_tmpFile)) fs.unlinkSync(_tmpFile); } catch(_) {}
+        if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
+    };
+
     var _spawnTimer = setTimeout(function() {
         if (_procEncerrado) return;
         _procEncerrado = true;
+        // BUG FIX (v2.9.0): o timeout de uma geração JÁ SUPERSEDIDA gravava
+        // {matando:true} por cima da entrada da geração nova (a página voltava
+        // para "processo encerrado") e agendava uma retentativa duplicada.
+        if (_ehSupersedida()) {
+            _matarProcessoFilho(function() { _limparRecursosProprios(); _liberarKillProprio(); });
+            return;
+        }
         logTs("Timeout "+(_SPAWN_TIMEOUT_MS/1000)+"s gerando "+label+" — matando processo e refazendo.");
 
         // Seta matando:true IMEDIATAMENTE — browser vê no próximo poll sem esperar o kill
@@ -1437,12 +1681,16 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
 
         _matarProcessoFilho(function() {
             // Kill concluiu (ou fallback de 5 s) — agora limpa e agenda retry
-            try { if (fs.existsSync(_tmpFile)) fs.unlinkSync(_tmpFile); } catch(_) {}
-            if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
+            _limparRecursosProprios();
+            if (_ehSupersedida()) { _liberarKillProprio(); return; } // geração nova assumiu durante o kill
             if (_tentativa < MAX_TENTATIVAS) {
                 // matando:true já foi setado antes do kill — browser teve tempo de ver.
-                // Aguarda 3200ms (4× poll de 800ms) antes de relançar.
-                setTimeout(function() { gerarEmBackground(inicio, fim, chave, _pollTriggered); }, 3200);
+                // Aguarda 3200ms (4× poll de 800ms) antes de relançar — só se
+                // ninguém iniciou outra geração para a mesma chave nesse meio-tempo.
+                setTimeout(function() {
+                    if (_ehSupersedida()) return;
+                    gerarEmBackground(inicio, fim, chave, _pollTriggered);
+                }, 3200);
             } else {
                 logTs("ERRO: "+MAX_TENTATIVAS+" tentativas falharam para "+label+". Abortando.");
                 cache[chave] = {html:null, gerando:false, erro:"Geração falhou após "+MAX_TENTATIVAS+" tentativas (timeout de "+(_SPAWN_TIMEOUT_MS/1000)+"s cada)."};
@@ -1506,11 +1754,12 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         _procEncerrado = true;
         clearTimeout(_spawnTimer);
         logTs("ERRO spawn: "+e.message);
+        // Remove o PID da lista e libera a referência de kill desta geração.
+        _limparRecursosProprios();
+        _liberarKillProprio();
+        if (_ehSupersedida()) return; // não sobrescreve a entrada da geração nova
         cache[chave]={html:null,gerando:false,erro:"Falha ao iniciar node: "+e.message};
         _gerarTentativas[chave] = 0;
-        // Remove o PID da lista e libera a referência de kill desta geração.
-        if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
-        _liberarKillProprio();
     });
     proc.on("close",function(code){
         if (_procEncerrado) return; // timeout já tratou este processo
@@ -1610,7 +1859,12 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "_es=new EventSource('/api/events');" +
             "_es.onmessage=function(ev){" +
             "try{var d=JSON.parse(ev.data);" +
-            "if(d.type==='reload'||d.type==='navigate')window.location.replace(window.location.href);" +
+            "if(d.type==='reload')window.location.replace(window.location.href);" +
+            // navigate leva a URL de destino (selecionar-fdb, periodo...). Antes
+            // era tratado igual a reload e a aba ficava na mesma página. Só
+            // aceita caminho relativo ao próprio servidor ("/..." e não "//").
+            "if(d.type==='navigate'){var _u=String(d.url||'/');if(_u.charAt(0)!=='/'||_u.charAt(1)==='/')_u='/';window.location.assign(_u);}" +
+            "if(d.type==='foco'){try{window.focus();}catch(_){}}" +
             "if(d.type==='navigate-hash'&&d.hash){" +
             "if(typeof __abrirModalConfig==='function'&&d.hash==='config'){__abrirModalConfig();}" +
             "else if(typeof __abrirModalPeriodo==='function'&&d.hash==='periodo'){__abrirModalPeriodo();}" +
@@ -2108,7 +2362,7 @@ var _iniciarFastPoll = function() {
 //  • Timeout de 5 s por consulta (_QUERY_TIMEOUT_MS): se ultrapassar, cancela
 //    o socket TCP e refaz após 500 ms.
 //  • Após detecção chama _corrigirHorariosVelhos e _corrigirHorariosGerencial,
-//    que usam agoraAjustado() — hora sincronizada com o browser do usuário.
+//    que usam o relógio local do servidor (mesmo fuso do Firebird).
 // ---------------------------------------------------------------------------
 var _pollBusy = false;
 var _pollIntervalId = null; // guarda o ID do setInterval ativo — evita acúmulo de loops
@@ -2131,34 +2385,14 @@ var _corriVelhosEmAndamento    = false; // true = _corrigirHorariosVelhos rodand
 var _corriGerencialEmAndamento = false; // true = _corrigirHorariosGerencial rodando
 
 // ---------------------------------------------------------------------------
-// Sincronização de fuso horário com o browser do usuário.
-// O browser envia getTimezoneOffset()*60000 via POST /api/hora-usuario a cada 30 s.
-//
-// _clientTzOffsetMs = browser.getTimezoneOffset() * 60000
-//   ex: UTC-4 → 240 min × 60000 = 14 400 000 ms
-//   (positivo = fuso atrás de UTC; negativo = fuso à frente)
-//
-// agoraAjustado() retorna um pseudo-objeto cujos métodos getHours/getMinutes/
-// getSeconds usam getUTCHours/etc. num Date deslocado pelo tzOffset, produzindo
-// exatamente o que `new Date().getHours()` retornaria no BROWSER do usuário.
-//
-// Isso corrige o bug onde o servidor (potencialmente em UTC) calculava
-// horaAtual e horaLimite com getHours() do seu próprio fuso, enquanto o banco
-// gravava os horários no fuso local do usuário.
+// Fuso horário informado pelo browser (POST /api/hora-usuario a cada 30 s).
+// Hoje é usado apenas para diagnóstico (log em modo debug): as correções de
+// horário usam o relógio LOCAL do servidor, que é o mesmo do Firebird — ver
+// _corrigirHorariosVelhos. CÓDIGO MORTO REMOVIDO (v2.9.0): agoraAjustado(),
+// que convertia a hora para o fuso do browser, não era mais chamada em lugar
+// nenhum desde que essa troca foi feita.
 // ---------------------------------------------------------------------------
 var _clientTzOffsetMs = 0; // atualizado via /api/hora-usuario
-
-var agoraAjustado = function() {
-    // Date deslocado: getUTCHours() == hora local do usuário
-    // Ex: UTC 18:00 - 14400000 ms (UTC-4) → UTC 14:00 → getUTCHours() = 14 ✓
-    var d = new Date(Date.now() - _clientTzOffsetMs);
-    return {
-        getHours:   function() { return d.getUTCHours(); },
-        getMinutes: function() { return d.getUTCMinutes(); },
-        getSeconds: function() { return d.getUTCSeconds(); },
-        getTime:    function() { return d.getTime(); }
-    };
-};
 
 // Destrói a conexão Firebird na força — corta o socket TCP imediatamente,
 // sem esperar o banco responder (db.detach() aguarda; socket.destroy() não).
@@ -2228,242 +2462,201 @@ var _executarConsultaPoll = function(db, sql, params, cb) {
     });
 };
 
-// Sets de IDs já corrigidos hoje — garantem que cada venda/pagamento
-// seja ajustado UMA ÚNICA VEZ. Resetados à meia-noite em _agendarResetLogProt.
-var _nfceCorrigidasHoje    = new Set(); // chave: String(numero)
-var _pagCorrigidosHoje     = new Set(); // chave: String(numero) ou "seq:N"
+// ---------------------------------------------------------------------------
+// REGRA DE "PRIMEIRA VISÃO" (v2.9.0) para correção de hora de NFC-e/NF-e e
+// pagamentos.
+//
+// BUG CRÍTICO CORRIGIDO: a versão anterior selecionava TODO documento do dia
+// com hora < (agora − 1 min) que ainda não estivesse num Set em memória e
+// gravava a hora atual nele. Dois efeitos:
+//   1. A cada reinício do servidor o Set nascia vazio → TODAS as NFC-e e
+//      pagamentos do dia com mais de 1 min tinham a hora reescrita no banco
+//      para o horário do reinício (o tray reinicia sozinho em travamento).
+//   2. Mesmo sem reinício, toda venda gravada com a hora CERTA passava a ser
+//      "velha" 1 min depois e era reescrita para hora+1 min.
+// Agora a correção só vale para documentos que APARECEM no banco já com hora
+// velha (a intenção original: venda que chega com horário de abertura antigo).
+//   - Cada número visto é lembrado em _xxxVistos; um número é avaliado uma
+//     única vez, na primeira varredura em que aparece.
+//   - A 1ª varredura após boot/troca de banco é LINHA DE BASE: registra o que
+//     já existe sem alterar nada (não dá para saber como esses chegaram).
+//   - Na virada do dia os conjuntos são zerados SEM linha de base: o dia novo
+//     começa vazio, então tudo o que surgir é primeira visão.
+// ---------------------------------------------------------------------------
+var _nfceVistasHoje    = new Set(); // chave: String(numero)
+var _pagVistosHoje     = new Set(); // chave: String(numero)
+var _nfceBaselineFeita = false;
+var _pagBaselineFeita  = false;
+var _resetarBaselineCorrecoes = function(semLinhaDeBase) {
+    _nfceVistasHoje.clear();
+    _pagVistosHoje.clear();
+    _nfceBaselineFeita = !!semLinhaDeBase;
+    _pagBaselineFeita  = !!semLinhaDeBase;
+};
 
-// Corrige vendas cujo horário registrado está mais de 1 min no passado,
-// atualizando o campo de hora para o instante atual do relógio local do servidor
-// (new Date().getHours() — mesmo fuso do Firebird, sem dependência de _clientTzOffsetMs).
-// Cada venda/pagamento é corrigido UMA ÚNICA VEZ por dia (controlado pelos Sets).
-// Executa de forma assíncrona sem bloquear o poll principal.
-// NOTA: abre sua própria conexão Firebird — não usa o db do poll para evitar
+// Processa o resultado de uma varredura (linhas com NUMERO e VELHA=1|0).
+// Devolve os números que devem ser corrigidos; atualiza vistos/linha de base.
+var _selecionarPrimeiraVisao = function(rows, vistos, baselineFeita) {
+    var corrigir = [];
+    (rows || []).forEach(function(r) {
+        var id = String(r.NUMERO != null ? r.NUMERO : (r.numero != null ? r.numero : "")).trim();
+        if (!id || vistos.has(id)) return;
+        vistos.add(id);
+        if (!baselineFeita) return; // linha de base: só registra
+        if (Number(r.VELHA != null ? r.VELHA : r.velha) === 1) corrigir.push(id);
+    });
+    return corrigir;
+};
+
+// Corrige vendas que aparecem com horário mais de _HORA_VELHA_MS no passado,
+// gravando o instante atual do relógio local do servidor (mesmo fuso do
+// Firebird). Executa de forma assíncrona sem bloquear o poll principal.
+// NOTA: abre suas próprias conexões Firebird — não usa o db do poll para evitar
 // race condition com _liberar(db) que pode destruir a conexão antes das
 // queries de correção completarem.
 var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
-    // Busy-flag: evita chamadas paralelas (poll a cada 200ms, query ~10-100ms).
+    // Busy-flag: evita chamadas paralelas (poll a cada ≥2s, query ~10-100ms).
     if (_corriVelhosEmAndamento) return;
     _corriVelhosEmAndamento = true;
 
-    // USA O RELÓGIO LOCAL DO SERVIDOR DIRETAMENTE — servidor e Firebird estão
-    // na mesma máquina e compartilham o mesmo clock.
-    // Bug anterior: usava agoraAjustado() que depende de _clientTzOffsetMs (inicia em 0).
-    // Com _clientTzOffsetMs=0 numa máquina UTC-3, horaLimite ficava 3h adiantada →
-    // todas as vendas do dia eram "detectadas" erradas e gravadas com hora UTC incorreta.
-    // Depois que _nfceCorrigidasHoje absorvia esses IDs, vendas novas com hora velha
-    // ficavam travadas no Set e nunca eram corrigidas novamente.
     var _nowMs    = Date.now();
     var _agoraD   = new Date(_nowMs);
     var _threshD  = new Date(_nowMs - _HORA_VELHA_MS);
-    // getHours()/getMinutes()/getSeconds() = hora LOCAL do servidor (mesmo fuso do Firebird)
     var horaAtual = padDois(_agoraD.getHours()) + ":" + padDois(_agoraD.getMinutes()) + ":" + padDois(_agoraD.getSeconds());
     var horaLimite= padDois(_threshD.getHours()) + ":" + padDois(_threshD.getMinutes()) + ":" + padDois(_threshD.getSeconds());
 
-    // Guard meia-noite: nos primeiros _HORA_VELHA_MS ms do dia, threshold cruza a
-    // meia-noite LOCAL e horaLimite fica "23:5x:xx" (ontem). A comparação SQL de
-    // strings retornaria "00:0x:xx" < "23:5x:xx" = true — corrigiria todas as
-    // vendas do dia novo indevidamente. Aguarda o próximo ciclo de poll.
-    // Bug anterior: usava floor(getTime()/86400000) = dia UTC, não dia LOCAL —
-    // o guard disparava na hora errada em máquinas com fuso diferente de UTC.
+    // Guard meia-noite: nos primeiros _HORA_VELHA_MS ms do dia, horaLimite fica
+    // "23:5x:xx" (ontem) e TODA hora do dia novo pareceria velha. Aguarda.
     var _agoraDiaStr  = _agoraD.getFullYear() + "-" + padDois(_agoraD.getMonth()+1) + "-" + padDois(_agoraD.getDate());
     var _threshDiaStr = _threshD.getFullYear() + "-" + padDois(_threshD.getMonth()+1) + "-" + padDois(_threshD.getDate());
-    if (_threshDiaStr < _agoraDiaStr) {
-        // guard meia-noite — silencioso para não inundar o log
+    if (_threshDiaStr < _agoraDiaStr || dh !== _agoraDiaStr) {
         _corriVelhosEmAndamento = false;
         return;
     }
 
-    // NÃO loga no início — essa função é chamada a cada poll (200ms).
-    // Logar aqui geraria ~5 msgs/s, esgotando MAX_LOG_LINES em minutos.
-    // Logs apenas quando efetivamente corrige algo ou ocorre erro.
+    // Dois ramos assíncronos (nfce + pagament), cada um com conexão própria.
+    var _pend = 2;
+    var _liberar = function() { if (--_pend <= 0) _corriVelhosEmAndamento = false; };
 
-    // _pend: contador de ramos async pendentes (nfce + pagament = 2).
-    // Começa em 1 (nfce); incrementado para 2 quando pagament é iniciado.
-    // Chega a 0 quando ambos terminam (ou erram) → limpa _corriVelhosEmAndamento.
-    var _pend = 1;
-    var _liberar = function() {
-        if (--_pend <= 0) _corriVelhosEmAndamento = false;
+    var _regenerarHoje = function() {
+        try {
+            if (!cache[dh] || !cache[dh].gerando) {
+                delete cache[dh];
+                gerarEmBackground(dh, dh, dh);
+            }
+        } catch(e) { logTs("WARN correção de horário (regeneração): " + e.message); }
     };
 
-    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:FB_CHARSET, lowercase_keys:false};
-
-    // Timeout global para a conexão nfce — impede que conexão pendurada vaze
-    // para sempre se o Firebird travar após o poll principal já ter liberado.
-    var _cvDb = null, _cvEncerrado = false;
-    var _cvTimer = setTimeout(function() {
-        if (_cvEncerrado) return;
-        _cvEncerrado = true;
-        logTs("_corrigirHorariosVelhos(nfce): timeout de " + (_QUERY_TIMEOUT_MS/1000) + "s — encerrando conexão.");
-        if (_cvDb) _matarConexao(_cvDb);
-        _liberar(); // timeout = fim do ramo nfce
-    }, _QUERY_TIMEOUT_MS);
-
-    Firebird.attach(opts, function(errConn, db) {
-        if (_cvEncerrado) { if (db) _matarConexao(db); return; } // timeout já chamou _liberar
-        _cvDb = db;
-        if (errConn || !db) { clearTimeout(_cvTimer); _liberar(); return; } // banco indisponível — tenta no próximo ciclo
-        var _fechar = function() {
-            if (_cvEncerrado) return;
-            _cvEncerrado = true;
-            clearTimeout(_cvTimer);
-            try { db.detach(); } catch(_) {}
-            _liberar(); // fim normal do ramo nfce
+    // Abre conexão com timeout global; chama trabalho(db, fechar). Nunca lança.
+    var _comConexao = function(rotulo, trabalho) {
+        var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                    role:null, charset:FB_CHARSET, lowercase_keys:false};
+        var dbRef = null, encerrado = false;
+        var timer = setTimeout(function() {
+            if (encerrado) return;
+            encerrado = true;
+            logTs("_corrigirHorariosVelhos(" + rotulo + "): timeout de " + (_QUERY_TIMEOUT_MS/1000) + "s — encerrando conexão.");
+            if (dbRef) _matarConexao(dbRef);
+            _liberar();
+        }, _QUERY_TIMEOUT_MS);
+        var fechar = function() {
+            if (encerrado) return;
+            encerrado = true;
+            clearTimeout(timer);
+            if (dbRef) { try { dbRef.detach(); } catch(_) {} }
+            _liberar();
         };
+        try {
+            Firebird.attach(opts, function(errConn, db) {
+                if (encerrado) { if (db) _matarConexao(db); return; }
+                if (errConn || !db) { fechar(); return; } // banco indisponível — tenta no próximo ciclo
+                dbRef = db;
+                try { trabalho(db, fechar, function() { return encerrado; }); }
+                catch(e) { logTs("WARN _corrigirHorariosVelhos(" + rotulo + "): " + e.message); fechar(); }
+            });
+        } catch(e) { fechar(); }
+    };
 
-    // ---- nfce: SELECT IDs ainda não corrigidos ----
-    // Tenta campo DHORA; se falhar, retenta com campo HORA.
-    // IMPORTANTE: exclui modelo=99 (gerenciais) — eles são tratados exclusivamente
-    // por _corrigirHorariosGerencial, que usa _horaFixadaCache (persistente).
-    // Sem esse filtro, o mesmo gerencial seria corrigido em paralelo por ambas as
-    // funções no mesmo poll, e após restart o _nfceCorrigidasHoje (volátil) seria
-    // zerado enquanto o _horaFixadaCache permanece — causando re-correção infinita.
-    var _corrigirNfceComCampo = function(campo) {
-        var sqlSel =
-            "SELECT numero FROM nfce " +
-            "WHERE data >= ? AND data < ? + 1 " +
-            "AND COALESCE(modelo,65) <> 99 " +
-            "AND " + campo + " IS NOT NULL " +
-            "AND " + campo + " < ? " +
-            "AND COALESCE(cancelado,'N') NOT IN ('S','T') " +
-            "AND total > 0";
-        db.query(sqlSel, [dh, dh, horaLimite], function(errS, rows) {
-            if (errS) { logTs("Correção nfce."+campo+": erro na query — "+errS.message); _fechar(); return; }
-            if (!rows || !rows.length) { _fechar(); return; } // nenhum para corrigir — silencioso
+    // ---- nfce (exceto gerenciais, tratadas por _corrigirHorariosGerencial) ----
+    _comConexao("nfce", function(db, fechar, encerrado) {
+        // Coluna de hora: DHORA quando existir, senão HORA.
+        db.query("SELECT FIRST 1 dhora FROM nfce WHERE data >= ? AND data < ? + 1 AND COALESCE(modelo,65) <> 99", [dh, dh], function(errProbe) {
+            if (encerrado()) return;
+            var campo = errProbe ? "hora" : "dhora";
+            // IIF compara no próprio Firebird, exatamente como a versão anterior
+            // comparava no WHERE (mesma semântica para colunas texto ou TIME).
+            var sqlSel =
+                "SELECT numero, IIF(" + campo + " < ?, 1, 0) AS VELHA FROM nfce " +
+                "WHERE data >= ? AND data < ? + 1 " +
+                "AND COALESCE(modelo,65) <> 99 " +
+                "AND " + campo + " IS NOT NULL " +
+                "AND COALESCE(cancelado,'N') NOT IN ('S','T') " +
+                "AND total > 0";
+            db.query(sqlSel, [horaLimite, dh, dh], function(errS, rows) {
+                if (encerrado()) return;
+                if (errS) { logTs("Correção nfce."+campo+": erro na query — "+errS.message); fechar(); return; }
+                var novos = _selecionarPrimeiraVisao(rows, _nfceVistasHoje, _nfceBaselineFeita);
+                _nfceBaselineFeita = true;
+                if (!novos.length) { fechar(); return; }
 
-            // Filtra apenas os que ainda não foram corrigidos nesta sessão do dia
-            var novos = rows
-                .map(function(r) { return String(r.NUMERO || r.numero || ""); })
-                .filter(function(id) { return id && !_nfceCorrigidasHoje.has(id); });
-
-            if (!novos.length) { _fechar(); return; } // todos já corrigidos — silencioso
-
-            // Registra no Set ANTES do UPDATE para evitar dupla correção
-            // mesmo que o UPDATE demore ou seja chamado em paralelo
-            novos.forEach(function(id) { _nfceCorrigidasHoje.add(id); });
-
-            // Monta placeholders: UPDATE ... WHERE numero IN (?,?,?)
-            // Guard extra: AND COALESCE(modelo,65) <> 99 garante que mesmo que
-            // a SELECT acima retorne algum gerencial por race condition, o UPDATE
-            // nunca os toque — proteção em profundidade.
-            var placeholders = novos.map(function() { return "?"; }).join(",");
-            var sqlUpd =
-                "UPDATE nfce SET " + campo + " = ? " +
-                "WHERE numero IN (" + placeholders + ") " +
-                "AND COALESCE(modelo,65) <> 99";
-            db.query(sqlUpd, [horaAtual].concat(novos), function(errU) {
-                if (errU) {
-                    // Reverte o Set — UPDATE falhou, poderá tentar novamente depois
-                    novos.forEach(function(id) { _nfceCorrigidasHoje.delete(id); });
-                    logTs("Poll: ERRO ao corrigir nfce." + campo + ": " + errU.message);
-                } else {
-                    logTs("Poll: " + novos.length + " venda(s) nfce corrigida(s) para " + horaAtual +
-                          " (campo " + campo + ", numero(s): " + novos.join(",") + ").");
-                    _pushCorrecao(
-                        "🕐 " + novos.length + " venda(s) NFC-e com hora antiga corrigida(s) para " + horaAtual,
-                        "rgba(251,191,36,.45)"
-                    );
-                    // Regenera para que o HTML com hora corrigida esteja pronto quando o browser recarregar.
-                    var _dhNfce = dh;
-                    try {
-                        if (!cache[_dhNfce] || !cache[_dhNfce].gerando) {
-                            delete cache[_dhNfce];
-                            gerarEmBackground(_dhNfce, _dhNfce, _dhNfce);
-                        }
-                    } catch(_rgErr) { logTs("WARN _corrigirNfce regen: " + _rgErr.message); }
-                }
-                _fechar();
+                // Guard extra no UPDATE: nunca toca gerencial, mesmo por race.
+                var placeholders = novos.map(function() { return "?"; }).join(",");
+                var sqlUpd =
+                    "UPDATE nfce SET " + campo + " = ? " +
+                    "WHERE numero IN (" + placeholders + ") " +
+                    "AND COALESCE(modelo,65) <> 99 " +
+                    "AND data >= ? AND data < ? + 1";
+                db.query(sqlUpd, [horaAtual].concat(novos, [dh, dh]), function(errU) {
+                    if (errU) {
+                        // Esquece os números para que a próxima varredura tente de novo.
+                        novos.forEach(function(id) { _nfceVistasHoje.delete(id); });
+                        logTs("Poll: ERRO ao corrigir nfce." + campo + ": " + errU.message);
+                    } else {
+                        logTs("Poll: " + novos.length + " venda(s) nfce corrigida(s) para " + horaAtual +
+                              " (campo " + campo + ", numero(s): " + novos.join(",") + ").");
+                        _pushCorrecao("🕐 " + novos.length + " venda(s) NFC-e com hora antiga corrigida(s) para " + horaAtual,
+                                      "rgba(251,191,36,.45)");
+                        _regenerarHoje();
+                    }
+                    fechar();
+                });
             });
         });
-    };
-
-    // Primeiro tenta DHORA; em caso de erro na coluna o Firebird retorna erro
-    // diferente de "sem linhas", então tentamos HORA como fallback silencioso.
-    // Probe também exclui modelo=99 para não confundir detecção de coluna com
-    // presença de linhas gerenciais (que têm seu próprio probe em _corrigirHorariosGerencial).
-    db.query("SELECT FIRST 1 dhora FROM nfce WHERE data >= ? AND data < ? + 1 AND COALESCE(modelo,65) <> 99", [dh, dh], function(errProbe) {
-        if (!errProbe) {
-            _corrigirNfceComCampo("dhora");
-        } else {
-            _corrigirNfceComCampo("hora");
-        }
     });
 
-    // ---- pagament: SELECT IDs ainda não corrigidos ----
-    // NOTA: usa uma segunda conexão própria para não conflitar com a query nfce acima.
-    // Incrementa _pend ANTES de abrir a conexão — garante que _liberar() do ramo nfce
-    // não zere o contador antes de pagament ser registrado.
-    _pend++; // agora _pend = 2 (nfce ainda em andamento + pagament iniciando)
-    var opts2 = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
-                 role:null, charset:FB_CHARSET, lowercase_keys:false};
-    // Timeout global para a conexão pagament — mesma proteção da conexão nfce acima.
-    var _cv2Db = null, _cv2Encerrado = false;
-    var _cv2Timer = setTimeout(function() {
-        if (_cv2Encerrado) return;
-        _cv2Encerrado = true;
-        logTs("_corrigirHorariosVelhos(pagament): timeout de " + (_QUERY_TIMEOUT_MS/1000) + "s — encerrando conexão.");
-        if (_cv2Db) _matarConexao(_cv2Db);
-        _liberar(); // timeout = fim do ramo pagament
-    }, _QUERY_TIMEOUT_MS);
-    Firebird.attach(opts2, function(errConn2, db2) {
-        if (_cv2Encerrado) { if (db2) _matarConexao(db2); return; } // timeout já chamou _liberar
-        _cv2Db = db2;
-        if (errConn2 || !db2) { clearTimeout(_cv2Timer); _liberar(); return; }
-        var _fechar2 = function() {
-            if (_cv2Encerrado) return;
-            _cv2Encerrado = true;
-            clearTimeout(_cv2Timer);
-            try { db2.detach(); } catch(_) {}
-            _liberar(); // fim normal do ramo pagament
-        };
-        var sqlPagSel =
-            "SELECT numero FROM pagament " +
+    // ---- pagament ----
+    _comConexao("pagament", function(db, fechar, encerrado) {
+        var sqlSel =
+            "SELECT numero, IIF(hora < ?, 1, 0) AS VELHA FROM pagament " +
             "WHERE data >= ? AND data < ? + 1 " +
             "AND hora IS NOT NULL " +
-            "AND hora < ? " +
             "AND valor > 0";
-        db2.query(sqlPagSel, [dh, dh, horaLimite], function(errPS, rowsP) {
-            if (errPS) { logTs("Correção pagament.hora: erro na query — "+errPS.message); _fechar2(); return; }
-            if (!rowsP || !rowsP.length) { _fechar2(); return; } // silencioso — chamado a cada 200ms
+        db.query(sqlSel, [horaLimite, dh, dh], function(errS, rows) {
+            if (encerrado()) return;
+            if (errS) { logTs("Correção pagament.hora: erro na query — "+errS.message); fechar(); return; }
+            var novos = _selecionarPrimeiraVisao(rows, _pagVistosHoje, _pagBaselineFeita);
+            _pagBaselineFeita = true;
+            if (!novos.length) { fechar(); return; }
 
-            var novosP = rowsP
-                .map(function(r) { return String(r.NUMERO || r.numero || ""); })
-                .filter(function(id) { return id && !_pagCorrigidosHoje.has(id); });
-
-            if (!novosP.length) { _fechar2(); return; } // silencioso
-
-            novosP.forEach(function(id) { _pagCorrigidosHoje.add(id); });
-
-            var phP = novosP.map(function() { return "?"; }).join(",");
-            var sqlPagUpd =
-                "UPDATE pagament SET hora = ? WHERE numero IN (" + phP + ")";
-            db2.query(sqlPagUpd, [horaAtual].concat(novosP), function(errPU) {
-                if (errPU) {
-                    novosP.forEach(function(id) { _pagCorrigidosHoje.delete(id); });
-                    logTs("Poll: ERRO ao corrigir pagament.hora: " + errPU.message);
+            var ph = novos.map(function() { return "?"; }).join(",");
+            // Restringe ao dia: "numero" de pagament não é garantidamente único
+            // entre dias — sem a data, o UPDATE podia alterar pagamentos antigos.
+            var sqlUpd = "UPDATE pagament SET hora = ? WHERE numero IN (" + ph + ") AND data >= ? AND data < ? + 1";
+            db.query(sqlUpd, [horaAtual].concat(novos, [dh, dh]), function(errU) {
+                if (errU) {
+                    novos.forEach(function(id) { _pagVistosHoje.delete(id); });
+                    logTs("Poll: ERRO ao corrigir pagament.hora: " + errU.message);
                 } else {
-                    logTs("Poll: " + novosP.length + " pagamento(s) corrigido(s) para " + horaAtual +
-                          " (numero(s): " + novosP.join(",") + ").");
-                    _pushCorrecao(
-                        "🕐 " + novosP.length + " pagamento(s) com hora antiga corrigido(s) para " + horaAtual,
-                        "rgba(251,191,36,.45)"
-                    );
-                    // Regenera para que o HTML com hora corrigida esteja pronto quando o browser recarregar.
-                    var _dhPag = dh;
-                    try {
-                        if (!cache[_dhPag] || !cache[_dhPag].gerando) {
-                            delete cache[_dhPag];
-                            gerarEmBackground(_dhPag, _dhPag, _dhPag);
-                        }
-                    } catch(_rgPErr) { logTs("WARN _corrigirPag regen: " + _rgPErr.message); }
+                    logTs("Poll: " + novos.length + " pagamento(s) corrigido(s) para " + horaAtual +
+                          " (numero(s): " + novos.join(",") + ").");
+                    _pushCorrecao("🕐 " + novos.length + " pagamento(s) com hora antiga corrigido(s) para " + horaAtual,
+                                  "rgba(251,191,36,.45)");
+                    _regenerarHoje();
                 }
-                _fechar2();
+                fechar();
             });
         });
     });
-
-    }); // fecha Firebird.attach principal
 };
 
 // ---------------------------------------------------------------------------
@@ -2645,7 +2838,7 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
             db.query(sqlUpd, [horaAtual].concat(novosParaFixar), function(errU) {
                 if (errU) {
                     // Reverte entradas do cache — poderá tentar novamente depois
-                    novosParaFixar.forEach(function(id) { delete _horaFixadaCache[dh + "|" + id]; });
+                    novosParaFixar.forEach(function(id) { _removerHoraFixadaCache(dh + "|" + id); });
                     _salvarHoraFixadaCache();
                     logTs("Poll: ERRO ao corrigir gerencial." + campo + ": " + errU.message);
                 } else {
@@ -2873,31 +3066,51 @@ var pollStatus = function() {
 // dessa rede de segurança funcionar de fato: 500ms é o valor original,
 // validado em produção pelo autor, e a latência percebida de venda na tela
 // vale muito mais que o custo de CPU ocioso.
-var _REGEN_COOLDOWN_MS = 500;  // ent.gerando já bloqueia concorrência — cooldown só evita thrash
-
-// Intervalo de verificação da regeneração periódica — INDEPENDENTE do POLL_INTERVAL.
-// BUG FIX: comentário anterior dizia "30s" mas a variável estava em 200ms — contradição
-// que causava confusão sobre o comportamento real. O valor correto é 200ms (fallback rápido).
-// Mudanças reais chegam via fast-poll/pollStatus; agendarRegen é apenas safety net.
-var _REGEN_CHECK_MS = 200;  // checa a cada 200ms — se fast-poll falhar, detecta em ≤2s
+// DESEMPENHO (v2.9.0): o laço anterior regenerava o relatório do dia a cada
+// ~500 ms MESMO SEM NENHUMA MUDANÇA — um processo Node novo + 3 conexões
+// Firebird + consulta do dia inteiro, 24 h por dia, ~2 por segundo. Era a
+// maior carga sobre o banco da loja, o mesmo banco que o próprio log descreve
+// como "instável/sobrecarregado". A v2.6.4 reverteu um cooldown de 5 min
+// porque ele atrasava a RECUPERAÇÃO de falhas; aqui as duas coisas ficam
+// separadas:
+//   • sem HTML válido (erro, conteúdo ausente, cache apagado) → regera já
+//     (a cada _REGEN_APOS_FALHA_MS no máximo, para não martelar banco fora do ar);
+//   • com HTML válido → regera a cada _REGEN_SEGURANCA_MS, só como rede de
+//     segurança. Vendas novas, cancelamentos, autorizações e correções de
+//     horário continuam disparando a regeneração imediata (fast-poll ~50 ms /
+//     pollStatus / correções), que não passa por este laço.
+var _REGEN_CHECK_MS       = 200;    // frequência da verificação (barata: só olha o cache)
+var _REGEN_SEGURANCA_MS   = 15000;  // HTML válido: regeneração preventiva
+var _REGEN_APOS_FALHA_MS  = 1000;   // sem HTML válido: intervalo mínimo entre tentativas
+var _regenUltimaFalhaTs   = 0;
 
 var agendarRegen = function() {
     setTimeout(function() {
-        var dh = hoje();
-        var ent = cache[dh];
-        // Bloqueia regeneração se:
-        //   ent.gerando   → geração em andamento
-        //   ent.matando   → processo sendo encerrado por timeout
-        //   ent.geradoEm presente e dentro do cooldown → HTML recém-gerado,
-        //       browser ainda não teve chance de redirecionar e exibir o conteúdo.
-        var _podeRegen = !ent
-            || (!ent.gerando && !ent.matando
-                && (!ent.geradoEm || (Date.now() - ent.geradoEm) >= _REGEN_COOLDOWN_MS));
-        if (_podeRegen) {
-            delete cache[dh];
-            gerarEmBackground(dh, dh, dh);
+        try {
+            var dh = hoje();
+            var ent = cache[dh];
+            var agora = Date.now();
+            var podeRegen;
+            if (!ent) {
+                podeRegen = true;
+            } else if (ent.gerando || ent.matando) {
+                podeRegen = false;
+            } else if (ent.erro || !ent.html) {
+                podeRegen = (agora - _regenUltimaFalhaTs) >= _REGEN_APOS_FALHA_MS;
+                if (podeRegen) _regenUltimaFalhaTs = agora;
+            } else {
+                podeRegen = !ent.geradoEm || (agora - ent.geradoEm) >= _REGEN_SEGURANCA_MS;
+            }
+            // Com o banco fora do ar e sem seleção manual pendente, ainda gera
+            // (a página precisa mostrar o erro); em modo de seleção manual não.
+            if (podeRegen && !_aguardandoFdbManual) {
+                delete cache[dh];
+                gerarEmBackground(dh, dh, dh);
+            }
+        } catch(e) {
+            logTs("WARN agendarRegen: " + (e && e.message || e));
         }
-        agendarRegen();
+        agendarRegen(); // sempre reagenda — uma exceção nunca pode matar o laço
     }, _REGEN_CHECK_MS);
 };
 
@@ -2908,7 +3121,7 @@ var htmlFavicon="<link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\">";
 
 var paginaLoading=function(titulo,sub,chavePoll,urlDest){
     var p="/pronto?k="+encodeURIComponent(chavePoll);
-    var dJs=JSON.stringify(urlDest);
+    var dJs=_jsonParaScript(urlDest);
     var SC2="</"+"script>";
     // SVGs injetados como variáveis JS — browser usa sem depender do servidor
     var jsVars=
@@ -3221,6 +3434,7 @@ var paginaEscolherFdb = function() {
 //   • OpenFileDialog exibido via ShowDialog($form) para herdar o branding.
 // Retorna { ok, caminho } | { ok:false, erro } | { cancelado:true }.
 // ---------------------------------------------------------------------------
+var _pickerAberto = false;
 var abrirPickerFdbWindows = function(cb) {
     // ROBUSTEZ FIX (v2.4.1): o diálogo só existe no Windows (System.Windows.Forms).
     // Em qualquer outra plataforma o powershell.exe simplesmente não existe e o
@@ -3312,7 +3526,11 @@ var abrirPickerFdbWindows = function(cb) {
 // Aplica novo caminho FDB em memória e reinicia conexão com o banco.
 // Salva fdbPath e fbHost no config.json para persistir entre reinicializações.
 // ---------------------------------------------------------------------------
+// Uma troca de banco por vez: duas requisições simultâneas (duas abas, ou
+// api.ps1 + navegador) intercalavam testes e gravações de FDB_HOST/FDB_PATH.
+var _aplicandoFdb = false;
 var aplicarNovoFdb = function(caminhoBruto, cb) {
+    if (_aplicandoFdb) { cb({ ok: false, erro: "Já existe uma troca de banco em andamento. Aguarde e tente novamente." }); return; }
     // Aceita formatos: "C:\...\SMALL.FDB" ou "192.168.1.10:C:\...\SMALL.FDB"
     var parsed = parseFdb(caminhoBruto);
     var novoHost = parsed.host;
@@ -3331,54 +3549,55 @@ var aplicarNovoFdb = function(caminhoBruto, cb) {
         }
     }
 
+    _aplicandoFdb = true;
     logTs("[FDB Manual] Testando conexão em " + novoHost + ":" + novoPath + "...");
 
     testarFdb(novoHost, novoPath, function(ok, erro) {
-        if (!ok) {
-            // Avisa mas permite salvar mesmo assim (banco pode estar offline temporariamente)
-            logTs("[FDB Manual] Conexão de teste falhou (" + (erro||"timeout") + ") — salvando mesmo assim.");
+        try {
+            if (!ok) {
+                // Avisa mas permite salvar mesmo assim (banco pode estar offline temporariamente)
+                logTs("[FDB Manual] Conexão de teste falhou (" + (erro||"timeout") + ") — salvando mesmo assim; reconexão automática a cada " + (_RECONEXAO_INTERVALO_MS/1000) + "s.");
+            }
+
+            // Para tudo o que ainda aponta para o banco anterior ANTES de trocar.
+            _pararPolling();
+            _reconexaoGen++; // cancela laço de reconexão do banco anterior
+
+            FDB_PATH = novoPath;
+            FDB_HOST = novoHost;
+            FDB      = novoHost + ":" + novoPath;
+
+            // Persiste no config.json (uma gravação só — antes eram duas seguidas)
+            saveConfig({ fdbPath: novoPath, fbHost: novoHost });
+
+            dbStatus = ok
+                ? { ok: true,  ip: novoHost, erro: null, scanCompleto: true, scanning: false }
+                : { ok: false, ip: novoHost, erro: erro || "Sem conexão no momento", scanCompleto: true, scanning: false };
+
+            // Desativa modo de seleção manual — servidor volta ao comportamento normal
+            _aguardandoFdbManual = false;
+
+            // Banco novo = numeração nova: linha de base das correções recomeça.
+            _resetarBaselineCorrecoes(false);
+
+            // Limpa cache (matando gerações do banco anterior) e regenera já.
+            _invalidarCache();
+            var dh = hoje();
+            gerarEmBackground(dh, dh, dh);
+
+            logTs("[FDB Manual] Banco configurado: " + FDB + " | Aguardando geração...");
+
+            if (Firebird) {
+                if (ok) _iniciarPolling(3000);
+                else    _agendarReconexaoFdb();
+            }
+        } catch(e) {
+            logTs("ERRO aplicarNovoFdb: " + (e && e.stack || e));
+            _aplicandoFdb = false;
+            cb({ ok: false, erro: "Erro interno ao aplicar o banco: " + (e && e.message || e) });
+            return;
         }
-
-        // Atualiza vars globais
-        FDB_PATH = novoPath;
-        FDB_HOST = novoHost;
-        FDB      = novoHost + ":" + novoPath;
-
-        // Persiste no config.json
-        updateConfigKey("fdbPath", novoPath);
-        updateConfigKey("fbHost",  novoHost);
-
-        // Atualiza dbStatus
-        if (ok) {
-            dbStatus = { ok: true, ip: novoHost, erro: null, scanCompleto: true, scanning: false };
-        } else {
-            dbStatus = { ok: false, ip: novoHost, erro: erro || "Sem conexão no momento", scanCompleto: true, scanning: false };
-        }
-
-        // Desativa modo de seleção manual — servidor volta ao comportamento normal
-        _aguardandoFdbManual = false;
-
-        // Limpa cache e força regeneração imediata
-        cache = Object.create(null);
-        var dh = hoje();
-        gerarEmBackground(dh, dh, dh);
-
-        logTs("[FDB Manual] Banco configurado: " + FDB + " | Aguardando geração...");
-
-        // Inicia polling se Firebird disponível e conexão OK
-        if (Firebird && ok) {
-            setTimeout(function() {
-                pollStatus();
-                // pollStatus: fallback de segurança + funções de correção de horário.
-                // Fast-poll (50ms, conexão persistente) trata toda a detecção de mudanças.
-                // pollStatus usa attach/detach por ciclo — rodar em excesso sobrecarrega
-                // o Firebird desnecessariamente. Mínimo 2s independente de POLL_INTERVAL.
-                if (_pollIntervalId) clearInterval(_pollIntervalId);
-                _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
-                _iniciarFastPoll(); // detecção em tempo real via conexão persistente
-            }, 3000);
-        }
-
+        _aplicandoFdb = false;
         cb({ ok: true });
     });
 };
@@ -3730,14 +3949,15 @@ var server=http.createServer(function(req,res){
                     res.end(JSON.stringify({ok:false,erro:"Payload deve ser um array de strings."}));
                     return;
                 }
-                var proibidosLimpos = payload
-                    .filter(function(i){ return typeof i === "string"; })
-                    .map(function(s){ return s.trim(); })
-                    .filter(function(s){ return s.length > 0; });
-                updateConfigKey("proibidos", proibidosLimpos);
+                var proibidosLimpos = _sanitizarProibidos(payload);
+                if (!updateConfigKey("proibidos", proibidosLimpos)) {
+                    res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"});
+                    res.end(JSON.stringify({ok:false,erro:"Falha ao gravar config.json em disco."}));
+                    return;
+                }
                 appCfg.proibidos = proibidosLimpos;
                 _config.proibidos = proibidosLimpos;
-                cache = Object.create(null);
+                _invalidarCache();
                 var dh = hoje();
                 gerarEmBackground(dh, dh, dh);
                 res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
@@ -3773,13 +3993,18 @@ var server=http.createServer(function(req,res){
             if (errBody) { res.writeHead(413,{"Content-Type":"application/json; charset=utf-8"}); res.end(JSON.stringify({ok:false,erro:errBody.message})); return; }
             try{
                 var p=JSON.parse(cfgBody);
+                if(!p||typeof p!=="object"||Array.isArray(p)){
+                    res.writeHead(400,{"Content-Type":"application/json; charset=utf-8"});
+                    res.end(JSON.stringify({ok:false,erro:"Payload deve ser um objeto JSON."}));
+                    return;
+                }
                 var rawCfg="";
                 try{ rawCfg=fs.readFileSync(CONFIG,"utf8").replace(/^\uFEFF/,"").trim(); }catch(e){}
                 var obj={};
-                if(rawCfg){ try{ obj=JSON.parse(rawCfg); }catch(e){ res.writeHead(500); res.end(JSON.stringify({ok:false,erro:"config.json corrompido"})); return; } }
+                if(rawCfg){ try{ obj=JSON.parse(rawCfg); }catch(e){ res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"}); res.end(JSON.stringify({ok:false,erro:"config.json corrompido"})); return; } }
                 if(typeof obj!=="object"||Array.isArray(obj)) obj={};
 
-                if(p.appName       !== undefined){ var n=String(p.appName||"").trim();    if(n) obj.appName=n; }
+                if(p.appName       !== undefined){ var n=_textoSeguroLog(p.appName, 80);    if(n) obj.appName=n; }
                 if(p.pollInterval  !== undefined){ var pi=parseInt(p.pollInterval,10);    if(pi>=200) obj.pollInterval=pi; }
                 if(p.maxLogLines   !== undefined){ var ml=parseInt(p.maxLogLines,10);     if(ml>=100) obj.maxLogLines=ml; }
                 if(p.favicon       !== undefined){
@@ -3794,11 +4019,12 @@ var server=http.createServer(function(req,res){
                     obj.favicon = _favChk.valor;
                 }
                 if(p.toastDuration !== undefined){ var td=parseInt(p.toastDuration,10);   if(td>=500&&td<=60000) obj.toastDuration=td; }
-                if(p.proibidos            !== undefined && Array.isArray(p.proibidos)){ obj.proibidos=p.proibidos; }
+                // VALIDAÇÃO FIX (v2.9.0): antes qualquer array era gravado como veio
+                // (inclusive [1,{},null]); teclas exigiam "comando" mesmo quando o
+                // modal envia só "acao". Mesma regra de /api/proibidos agora.
+                if(p.proibidos            !== undefined && Array.isArray(p.proibidos)){ obj.proibidos=_sanitizarProibidos(p.proibidos); }
                 if(p.teclasPersonalizadas !== undefined && Array.isArray(p.teclasPersonalizadas)){
-                    obj.teclasPersonalizadas = p.teclasPersonalizadas.filter(function(t){
-                        return t && typeof t.tecla === "string" && typeof t.comando === "string";
-                    });
+                    obj.teclasPersonalizadas = _sanitizarTeclas(p.teclasPersonalizadas);
                 }
 
                 // PRECISÃO FIX (v2.6.7): gravação atômica do config.json. Este
@@ -3873,7 +4099,7 @@ var server=http.createServer(function(req,res){
                 // Sincroniza _config em memória com o objeto já processado (sem novo readFileSync).
                 try { Object.assign(_config, obj); appCfg = _config; cfg = _config; } catch(_sc) {}
 
-                cache=Object.create(null);
+                _invalidarCache();
                 var dh=hoje(); gerarEmBackground(dh,dh,dh);
 
                 logTs("Configurações salvas via modal.");
@@ -3899,7 +4125,9 @@ var server=http.createServer(function(req,res){
             var _ml=parseInt(cc.maxLogLines||MAX_LOG_LINES,10);
             var _td=parseInt(cc.toastDuration||TOAST_DURATION||5000,10);
             var _fv=escH(cc.favicon||"");
-            var _pr=JSON.stringify(Array.isArray(cc.proibidos)?cc.proibidos:[]);
+            // XSS FIX (v2.9.0): JSON.stringify não escapa "</script>" — um termo
+            // proibido com esse texto executava código nesta página.
+            var _pr=_jsonParaScript(Array.isArray(cc.proibidos)?cc.proibidos:[]);
             return "<!doctype html><html lang=\"pt-br\"><head><meta charset=\"utf-8\">"+htmlFavicon+"<title>Configuracoes</title>"+
             "<script>(function(){try{var t=localStorage.getItem('fdb_theme')||(document.cookie.match(/fdb_theme=([^;]+)/)||[])[1]||'ultra-dark';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();"+SC3+
             "<style>"+
@@ -4030,7 +4258,21 @@ var server=http.createServer(function(req,res){
                     if(/(?:chrome|moz|safari|ms-browser)-extension:\/\//i.test(_stackTxt)){
                         res.writeHead(204);res.end();return;
                     }
-                    logTs("[BROWSER-ERROR] "+String(e.msg||"")+(e.src?" | "+e.src:"")+(e.line?" L"+e.line:"")+(e.col?":"+e.col:"")+(e.stack?"\n"+e.stack:""));
+                    if(!e||typeof e!=="object"){res.writeHead(204);res.end();return;}
+                    // SEGURANÇA (v2.9.0): todo texto vindo da rede passa por
+                    // _textoSeguroLog (sem \r/\n) — antes um POST podia forjar
+                    // linhas inteiras do relatorio.log. O stack continua
+                    // multilinha, mas cada linha é indentada com "    | " para
+                    // nunca se passar por uma linha legítima do log.
+                    var _ln = parseInt(e.line,10), _cl = parseInt(e.col,10);
+                    var _stackSeguro = e.stack
+                        ? String(e.stack).slice(0, 4000).split(/\r?\n/).slice(0, 30)
+                            .map(function(l){ return "    | " + _textoSeguroLog(l, 300); }).join("\n")
+                        : "";
+                    logTs("[BROWSER-ERROR] "+_textoSeguroLog(e.msg, 500)+
+                          (e.src?" | "+_textoSeguroLog(e.src, 300):"")+
+                          (_ln>0?" L"+_ln:"")+(_cl>0?":"+_cl:"")+
+                          (_stackSeguro?"\n"+_stackSeguro:""));
                 }catch(_){}
             }
             res.writeHead(204);res.end();
@@ -4084,7 +4326,13 @@ var server=http.createServer(function(req,res){
     // Responde: { ok:true, caminho:"C:\..." } | { ok:false, cancelado:true } | { ok:false, erro:"..." }
     // -----------------------------------------------------------------------
     if(rota==="/api/abrir-picker-fdb" && req.method==="GET"){
+        // Uma janela por vez: cada chamada abria um diálogo novo na tela do
+        // servidor (cliques repetidos ou chamadas da rede empilhavam janelas).
+        if (_pickerAberto) { sendJson({ok:false, erro:"O seletor de arquivos já está aberto na máquina do servidor."}); return; }
+        _pickerAberto = true;
         abrirPickerFdbWindows(function(resultado) {
+            _pickerAberto = false;
+            if (res.headersSent || res.destroyed) return;
             res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
             res.end(JSON.stringify(resultado));
         });
@@ -4107,6 +4355,9 @@ var server=http.createServer(function(req,res){
                 }
                 if(!/\.fdb$/i.test(caminho)){
                     sendJson({ok:false, erro:"O arquivo deve ter extensão .fdb"}); return;
+                }
+                if(caminho.length>1024 || /[\x00-\x1F]/.test(caminho)){
+                    sendJson({ok:false, erro:"Caminho inválido."}); return;
                 }
                 logTs("[FDB Manual] Caminho recebido: "+caminho);
                 aplicarNovoFdb(caminho, function(r){
@@ -4180,6 +4431,24 @@ var server=http.createServer(function(req,res){
         sendJson({ok:true, clients:sentCfg});return;
     }
 
+    // /api/navigate/hash/{config|periodo} — abre o modal correspondente na aba
+    // aberta. BUG FIX (v2.9.0): o tray chamava /api/navigate/hash/periodo
+    // ("Gerar por período...") mas a rota não existia (404 silencioso) — com
+    // o relatório aberto, o clique no menu não fazia nada.
+    var mHash = rota.match(/^\/api\/navigate\/hash\/(config|periodo)$/);
+    if(mHash){
+        var sentHash = broadcastSSE({type:"navigate-hash", hash:mHash[1]});
+        sendJson({ok:true, clients:sentHash});return;
+    }
+
+    // /api/navigate/foco — pede à aba aberta que traga a janela para frente.
+    // Também era chamada pelo tray sem existir. O navegador pode ignorar o
+    // pedido (política de foco), por isso é best-effort.
+    if(rota==="/api/navigate/foco"){
+        var sentFoco = broadcastSSE({type:"foco"});
+        sendJson({ok:true, clients:sentFoco});return;
+    }
+
     // /api/navigate/selecionar-fdb
     // Navega a aba aberta para a pagina de selecao manual do FDB.
     // Usado pelo item "Selecionar banco (FDB)..." do menu de bandeja.
@@ -4190,6 +4459,9 @@ var server=http.createServer(function(req,res){
 
     // /api/navigate/periodo/YYYY-MM-DD/YYYY-MM-DD
     var mNav = rota.match(/^\/api\/navigate\/periodo\/(\d{4}-\d{2}-\d{2})\/(\d{4}-\d{2}-\d{2})$/);
+    if(mNav && (!_ehDataISOValida(mNav[1]) || !_ehDataISOValida(mNav[2]) || mNav[1] > mNav[2])){
+        sendJson({ok:false, erro:"Período inválido."}, 400);return;
+    }
     if(mNav){
         var navUrl = "/periodo?i="+mNav[1]+"&f="+mNav[2];
         var sentNav = broadcastSSE({type:"navigate", url:navUrl});
@@ -4323,8 +4595,10 @@ var server=http.createServer(function(req,res){
         };
         inicio=fixISO(inicio);fim=fixISO(fim);
         var isoRe=/^\d{4}-\d{2}-\d{2}$/;
-        if(!isoRe.test(inicio)||!isoRe.test(fim)||inicio>fim){
-            logTs("Periodo invalido ("+inicio+"/"+fim+"). Redirecionando para formulario.");
+        // Valida também o CALENDÁRIO (2026-02-30 passava no regex e só falhava
+        // no processo filho, com "Script terminou com codigo 1").
+        if(!isoRe.test(inicio)||!isoRe.test(fim)||!_ehDataISOValida(inicio)||!_ehDataISOValida(fim)||inicio>fim){
+            logTs("Periodo invalido ("+_textoSeguroLog(inicio,40)+"/"+_textoSeguroLog(fim,40)+"). Redirecionando para formulario.");
             res.writeHead(302,{"Location":"/periodo"});res.end();return;
         }
         var chave=inicio+"|"+fim;
@@ -4363,30 +4637,27 @@ server.listen(PORT, BIND_ADDR, function(){
             // FDB não encontrado após todas tentativas automáticas.
             // Ativa modo de seleção manual — qualquer acesso a / ou /periodo
             // exibirá a página paginaEscolherFdb() até o usuário configurar.
+            // Continua tentando em segundo plano: se o banco voltar sozinho
+            // (servidor da loja ligado depois), o relatório retoma sem intervenção.
             logTs("AVISO: Banco não encontrado. Aguardando seleção manual em http://localhost:"+PORT+"/selecionar-fdb");
             _aguardandoFdbManual = true;
+            if (Firebird) _agendarReconexaoFdb();
         }
 
         var dh=hoje();
         // Gera relatório mesmo sem banco — resultado mostrará mensagem de erro adequada
         gerarEmBackground(dh,dh,dh);
 
-        if(Firebird&&dbOk){
-            setTimeout(function(){
-                pollStatus();
-                if (_pollIntervalId) clearInterval(_pollIntervalId);
-                // Fast-poll (50ms) trata detecção; pollStatus só para correções + fallback.
-                _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
-                _iniciarFastPoll(); // detecção em tempo real via conexão persistente
-            }, 5000);
-    
-        }
+        // Fast-poll (50ms) trata detecção; pollStatus só para correções + fallback.
+        if(Firebird&&dbOk) _iniciarPolling(5000);
 
         agendarRegen();
         // BUG FIX (v2.4.1): mensagem tinha "200ms" fixo no texto, mas a constante
         // real do fast-poll (_FP_INTERVAL_MS) é 50ms — o log mentia sobre o próprio
         // comportamento do servidor, confundindo qualquer debug futuro.
-        logTs("Fast-poll: " + _FP_INTERVAL_MS + "ms (detecção instantânea) | pollStatus fallback: " + (POLL_INTERVAL/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
+        // Intervalo REAL do pollStatus (mesma fórmula de _iniciarPolling) — o
+        // log anterior mostrava POLL_INTERVAL, 10× menor que o valor efetivo.
+        logTs("Fast-poll: " + _FP_INTERVAL_MS + "ms (detecção instantânea) | pollStatus fallback: " + (Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000)/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
     });
 });
 
