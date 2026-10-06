@@ -36,6 +36,15 @@ function query(sql, params, cb) {
             if (/QT_G/.test(s))  return cb(null, [{ QT_G: 0, TOT_G: 0, QT_NFC: (st.nfce || []).length, TOT_NFC: (st.nfce || []).length * 10, QT_NF: 0, TOT_NF: 0, QT_PAG: 0, TOT_PAG: 0 }]);
             if (/rdb\$relation_fields rf/i.test(s) && params[0] === "NFCE")
                 return cb(null, ["NUMERONF", "GERENCIAL", "HORA", "CANCELADO", "MODELO", "VENDEDOR"].map(c => ({ C: c })));
+            // ALTERACA (itens das vendas): estado.alt = [{ pedido, desc, qtd, total }].
+            // "pedido" e' o numero (ou gerencial) da venda em estado.nfce.
+            if (/rdb\$relation_fields rf/i.test(s) && params[0] === "ALTERACA")
+                return cb(null, ["DATA", "PEDIDO", "CAIXA", "DESCRICAO", "QUANTIDADE", "TOTAL", "ITEM"].map(c => ({ C: c })));
+            if (/from ALTERACA where DATA between/i.test(s))
+                return cb(null, (st.alt || []).map(r => ({
+                    DATA: hojeUTC(), PED: String(r.pedido), CX: "1", DESCRICAO: r.desc, QUANTIDADE: r.qtd || 1,
+                    VENDEDOR_ALT: null, HORA_ALT: "", TOTAL_ITEM: r.total === undefined ? null : r.total
+                })));
             if (/from nfce n where n.data between/i.test(s)) {
                 registrar("GERACAO");
                 return cb(null, (st.nfce || []).map(r => ({
