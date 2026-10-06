@@ -6,7 +6,8 @@
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   3.5.0 - 2026-10-06 16:00 - Volta o chip de desconto na coluna Itens (tinha se perdido
  *     numa atualização): depois dos 3 itens e do "+N mais…", a venda com desconto ganha o
- *     chip vermelho "tdItemChip tdItemDesc" com o percentual (ex.: "−10%"). Ao passar o
+ *     chip vermelho "tdItemChip tdItemDesc" com o texto "Desconto de 10% (−R$ 7,50)",
+ *     cortado com reticências quando não couber na célula. Ao passar o
  *     mouse mostra o detalhamento (valor e % do desconto, soma dos itens, total com
  *     desconto e cada linha de desconto); o clique abre o modal normalmente. Mesma regra
  *     do modal: item com valor negativo é desconto, % sobre a soma dos itens positivos.
@@ -3521,7 +3522,8 @@ const descontoVenda=x=>{
     const somaPositiva=det.reduce((a,i)=>temValor(i)&&Number(i.total)>0?a+Number(i.total):a,0);
     const valor=linhas.reduce((a,i)=>temValor(i)?a+Math.abs(Number(i.total)):a,0);
     const pct=(somaPositiva>0&&valor>0)?valor/somaPositiva*100:null;
-    const rotulo=pct!==null?"−"+_fmtPctDesc(pct)+"%":"Desconto";
+    // Texto completo no chip; se não couber, a própria .tdItemChip corta com "…".
+    const rotulo=pct!==null?"Desconto de "+_fmtPctDesc(pct)+"% (−"+fmt(valor)+")":"Desconto";
     const tip=[];
     if(pct!==null){
         tip.push("Desconto de "+_fmtPctDesc(pct)+"% (−"+fmt(valor)+")");

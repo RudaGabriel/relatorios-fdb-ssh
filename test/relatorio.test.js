@@ -259,10 +259,10 @@ test("gerador: venda com desconto ganha o chip vermelho com o percentual", () =>
     const v101 = dados.vendas.find(v => /101$/.test(v.numero)), v102 = dados.vendas.find(v => /102$/.test(v.numero));
     const d = descontoVenda(v101);
     assert.ok(d, "venda 101 deveria ter desconto");
-    assert.strictEqual(d.rotulo, "\u221210%", "5 de 50 = 10%");
+    assert.strictEqual(d.rotulo, "Desconto de 10% (\u2212R$ 5,00)", "5 de 50 = 10%");
     assert.match(d.tip, /Desconto de 10% \(\u2212R\$ 5,00\)/);
     assert.match(d.tip, /Total com desconto: R\$ 45,00/);
     assert.strictEqual(descontoVenda(v102), null, "venda sem desconto nao ganha chip");
-    assert.strictEqual(descontoVenda({ itensDetalhe: [{ desc: "X", total: 200 }, { desc: "DESCONTO", total: -1 }] }).rotulo, "\u22120,5%");
+    assert.strictEqual(descontoVenda({ itensDetalhe: [{ desc: "X", total: 200 }, { desc: "DESCONTO", total: -1 }] }).rotulo, "Desconto de 0,5% (\u2212R$ 1,00)");
     assert.ok(html.includes('class="tdItemChip tdItemDesc"'), "chip com a classe tdItemDesc ausente no HTML");
 });
