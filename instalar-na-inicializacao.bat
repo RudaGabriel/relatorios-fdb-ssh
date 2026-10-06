@@ -142,11 +142,19 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.11.2
+:: instalar-na-inicializacao.bat                       v1.12.0
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
-:: CHANGELOG 1.11.2 - 2026-10-06 10:00 - A mensagem final indica o
+:: CHANGELOG 1.12.0 - 2026-10-06 16:30 - Tarefa agendada roda IMEDIATAMENTE
+::   no logon (inclusive no logon automatico logo apos ligar o computador):
+::   removido o atraso de 2 min (/delay 0002:00). A espera pela pasta de
+::   rede continua garantida pelo bootstrap.vbs (ate 30 min). Alem disso a
+::   tarefa deixa de ter os padroes do schtasks que podiam segura-la: "so
+::   iniciar na energia AC" (notebook na bateria nunca iniciava), "parar se
+::   passar para bateria" e limite de execucao de 72 h.
+::
+:: CHANGELOG (anterior) 1.11.2 - 2026-10-06 10:00 - A mensagem final indica o
 ::   remover-inicializacao.bat (remove tarefa, atalho, registro e bootstrap)
 ::   em vez do comando schtasks, que so' apagava a tarefa.
 ::
@@ -468,22 +476,27 @@ echo.
 :: ---------------------------------------------------------------------------
 :: 5. Registra tarefa agendada apontando para o BOOTSTRAP LOCAL
 ::    - Nunca falha com "arquivo nao encontrado" (bootstrap e local)
-::    - O delay de 2 min da tempo ao Windows de montar drives de rede
+::    - Dispara no logon, sem atraso (v1.12.0): a espera pela pasta de rede
+::      fica com o bootstrap, que tenta na hora e repete por ate 30 min.
+::    - ONLOGON (e nao ONSTART) de proposito: o icone da bandeja precisa da
+::      area de trabalho do usuario. Com logon automatico, dispara assim que
+::      o computador liga.
 :: ---------------------------------------------------------------------------
 schtasks /delete /tn "!TASK_NAME!" /f >nul 2>&1
 if defined APP_NAME_LEGADO if not "!APP_NAME_LEGADO!"=="!APP_NAME!" schtasks /delete /tn "!APP_NAME_LEGADO! - Relatorios" /f >nul 2>&1
 
 schtasks /create /tn "!TASK_NAME!" ^
     /tr "wscript.exe \"!BOOTSTRAP_FILE!\"" ^
-    /sc ONLOGON /ru "%USERNAME%" /rl LIMITED /delay 0002:00 /f >nul 2>&1
+    /sc ONLOGON /ru "%USERNAME%" /rl LIMITED /f >nul 2>&1
 
 if %errorlevel% equ 0 (
+    call :ajustar_tarefa
     echo =======================================================
     echo   Sucesso^^!
     echo =======================================================
     echo.
     echo   Cadeia de inicializacao:
-    echo     1. Tarefa agendada ONLOGON + delay 2 min
+    echo     1. Tarefa agendada no logon ^(imediata, sem atraso^)
     echo     2. bootstrap.vbs LOCAL aguarda ate 30 min pelo launcher.vbs na rede
     echo     3. launcher.vbs lanca iniciar-tray.ps1 ^(oculto^)
     echo     4. iniciar-tray.ps1 aguarda ate 30 min pelo servidor-relatorio.js
@@ -578,3 +591,30 @@ echo.
 pause
 exit /b 0
 
+:: ---------------------------------------------------------------------------
+:: AJUSTE DA TAREFA (v1.12.0) - subrotina chamada logo apos o schtasks /create.
+:: O schtasks cria a tarefa com padroes que podem impedir a execucao imediata:
+:: "iniciar somente na energia AC" (notebook na bateria nunca iniciava),
+:: "parar se passar para bateria" e limite de 72 h. Ajustados via
+:: ScheduledTasks; se o modulo nao existir ou falhar, a tarefa continua
+:: valendo, so' com esses padroes - por isso e' aviso, nunca erro.
+:: Fora de bloco "( )" de proposito: aqui a expansao e o errorlevel sao
+:: imediatos, e comentarios "::" sao seguros.
+:: ---------------------------------------------------------------------------
+:ajustar_tarefa
+set "TASK_NAME_PS=!TASK_NAME:'=''!"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try{$t=Get-ScheduledTask -TaskName '!TASK_NAME_PS!' -ErrorAction Stop; $t.Settings.DisallowStartIfOnBatteries=$false; $t.Settings.StopIfGoingOnBatteries=$false; $t.Settings.ExecutionTimeLimit='PT0S'; Set-ScheduledTask -InputObject $t -ErrorAction Stop | Out-Null; exit 0}catch{exit 1}" >nul 2>&1
+set "_LT=%TIME: =0%"
+set "_LT=!_LT:~0,8!"
+if errorlevel 1 goto :ajustar_tarefa_falhou
+echo   [OK] Tarefa ajustada: inicia tambem na bateria e sem limite de tempo.
+>>"%LOGF%" echo [!_LD!] [!_LT!] [INSTALL] Tarefa criada sem atraso no logon e ajustada ^(bateria/sem limite^).
+exit /b 0
+
+:ajustar_tarefa_falhou
+echo   [AVISO] Nao foi possivel ajustar as opcoes de energia da tarefa.
+echo   Em notebook na bateria ela pode nao iniciar: no Agendador de
+echo   Tarefas, aba Condicoes, desmarque "Iniciar somente se o computador
+echo   estiver ligado na energia AC".
+>>"%LOGF%" echo [!_LD!] [!_LT!] [INSTALL] AVISO: tarefa criada sem atraso, mas ajuste de bateria/limite falhou.
+exit /b 0

@@ -72,7 +72,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 ### Operação
 - **Ícone na bandeja do Windows** com abrir relatório, atualizar, gerar por período, configurações, selecionar banco, reiniciar e sair.
 - **Watchdog:** o servidor é reiniciado sozinho se cair ou travar.
-- **Inicialização automática no logon**, com espera de até 30 min pela pasta de rede e pelo banco.
+- **Inicialização automática no logon**, imediata (sem atraso; com logon automático, assim que o computador liga), inclusive em notebook na bateria, com espera de até 30 min pela pasta de rede e pelo banco.
 - **Detecção automática do banco:**
   - caminhos locais conhecidos;
   - endereço salvo no `config.json`;
