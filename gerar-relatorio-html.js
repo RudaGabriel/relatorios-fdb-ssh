@@ -1,17 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.4.0
+ * @version 3.5.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.4.0 - 2026-10-06 11:30 - Termos proibidos: contador de termos adicionados (com
- *     quantos são filtros de valor e aviso acima do limite de 500) nos dois editores
- *     (Configurações e "Editar lista de proibidos"). O formato da caixa é detectado e,
- *     se não for "um termo por linha", ajustado automaticamente ao colar, ao sair do
- *     campo e ao salvar: separados por vírgula, ponto e vírgula, tabulação ou barra
- *     vertical, lista JSON, marcadores ("- ", "1. "), aspas, espaços extras e
- *     repetidos (sem diferenciar acento/maiúsculas). Vírgula entre dígitos é decimal
- *     ("AGUA 1,5L", ">100=6578,96") e nunca separa termos.
+ *   3.5.0 - 2026-10-06 16:00 - Volta o chip de desconto na coluna Itens (tinha se perdido
+ *     numa atualização): depois dos 3 itens e do "+N mais…", a venda com desconto ganha o
+ *     chip vermelho "tdItemChip tdItemDesc" com o percentual (ex.: "−10%"). Ao passar o
+ *     mouse mostra o detalhamento (valor e % do desconto, soma dos itens, total com
+ *     desconto e cada linha de desconto); o clique abre o modal normalmente. Mesma regra
+ *     do modal: item com valor negativo é desconto, % sobre a soma dos itens positivos.
+ *     Percentual abaixo de 1% aparece com uma casa (0,5%) no chip e no modal, que antes
+ *     arredondava para 1%. Altura máxima da célula de itens ampliada para caber o chip.
  */
 
 (function() {
@@ -19,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.4.0";
+    const SCRIPT_VERSION = "3.5.0";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -2281,11 +2281,13 @@ thead th:nth-child(5), tbody td:nth-child(5) { width: 108px; text-align: center;
 thead th:nth-child(6), tbody td:nth-child(6) { width: 15%; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 thead th:nth-child(7), tbody td:nth-child(7) { width: auto; text-align: center; padding-left: 8px; }
 thead tr { user-select: none; }
-.tdItemsWrap { display: flex; flex-wrap: wrap; gap: 6px; max-height: 138px; overflow: hidden; }
+.tdItemsWrap { display: flex; flex-wrap: wrap; gap: 6px; max-height: 172px; overflow: hidden; }
 .tdItemChip { display: block; align-items: center; background: var(--chip-bg); border: 1px solid var(--border-focus); padding: 6px 12px; border-radius: 99px; font-size: 12px; font-weight: 500; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; transition: var(--transition-fast); width: 100%; text-align: center; }
 .tdItemMais { color: var(--accent); border-color: var(--accent-bg); font-weight: 700; background: var(--accent-bg); }
 tbody tr:hover .tdItemChip { border-color: var(--text-muted); color: var(--text-main); background: var(--chip-bg-hover); }
 tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.tdItemDesc { color: var(--danger, #e55); border-color: var(--danger, #e55); border-color: color-mix(in srgb, var(--danger, #e55) 45%, transparent); background: color-mix(in srgb, var(--danger, #e55) 12%, transparent); font-weight: 700; }
+tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--danger, #e55); background: color-mix(in srgb, var(--danger, #e55) 18%, transparent); }
 .tdItemQtd { color: var(--accent); font-weight: 700; margin-right: 6px; font-family: 'JetBrains Mono', monospace; }
 .itensMini .itensChips { max-height: 220px; overflow-y: auto; padding-right: 4px; scroll-behavior: smooth; }
 .itensMini.big { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
@@ -3500,9 +3502,55 @@ const itensMiniHTML=(it,grande)=>{
 };
 const MAX_ITENS_TD = 3; // Máximo de chips visíveis na célula da tabela
 
-const itensTdHTML=itensRaw=>{
+// Desconto da venda (v3.5.0): mesma regra do modal de detalhes — linhas de
+// item com valor negativo são desconto e o % é sobre a soma dos itens
+// positivos. Linha "DESCONTO" sem valor (banco sem coluna de preço) ainda
+// conta como desconto, só que sem %. null = venda sem desconto.
+const _fmtPctDesc=p=>{
+    if(!(p>0))return"0";
+    if(p>=1)return String(Math.round(p));
+    const d=Math.round(p*10)/10;
+    return d>0?String(d).replace(".",","):"<0,1";
+};
+const descontoVenda=x=>{
+    const det=(x&&Array.isArray(x.itensDetalhe)?x.itensDetalhe:[]).filter(i=>i&&!i.cancelado);
+    if(!det.length)return null;
+    const temValor=i=>i.total!==null&&i.total!==undefined&&Number.isFinite(Number(i.total));
+    const linhas=det.filter(i=>temValor(i)?Number(i.total)<0:/\bDESCONTO\b/.test(normP(i.desc)));
+    if(!linhas.length)return null;
+    const somaPositiva=det.reduce((a,i)=>temValor(i)&&Number(i.total)>0?a+Number(i.total):a,0);
+    const valor=linhas.reduce((a,i)=>temValor(i)?a+Math.abs(Number(i.total)):a,0);
+    const pct=(somaPositiva>0&&valor>0)?valor/somaPositiva*100:null;
+    const rotulo=pct!==null?"−"+_fmtPctDesc(pct)+"%":"Desconto";
+    const tip=[];
+    if(pct!==null){
+        tip.push("Desconto de "+_fmtPctDesc(pct)+"% (−"+fmt(valor)+")");
+        tip.push("Itens: "+fmt(somaPositiva));
+        tip.push("Total com desconto: "+fmt(somaPositiva-valor));
+    }else{
+        tip.push("Venda com desconto (valor não registrado no banco)");
+    }
+    tip.push("");
+    for(const i of linhas){
+        const q=String(i.qtd||"").trim();
+        const nome=(q&&q!=="1"?q+"x ":"")+String(i.desc||"DESCONTO").trim();
+        if(temValor(i)){
+            const v=Math.abs(Number(i.total));
+            tip.push(nome+": −"+fmt(v)+(somaPositiva>0?" ("+_fmtPctDesc(v/somaPositiva*100)+"%)":""));
+        }else tip.push(nome);
+    }
+    tip.push("");
+    tip.push("Clique para ver todos os itens");
+    return{rotulo,tip:tip.join("\n"),valor,pct};
+};
+
+const itensTdHTML=(itensRaw,venda)=>{
     const t=String(limparItensVisuais(itensRaw)||"").trim();
-    if(!t)return{html:"",title:""};
+    const desc=descontoVenda(venda);
+    // Chip de desconto: vermelho, ao passar o mouse mostra o detalhamento; o
+    // clique segue para a linha (abre o modal, como os demais chips).
+    const chipDesc=desc?'<span class="tdItemChip tdItemDesc" data-tip="'+esc(desc.tip)+'">'+esc(desc.rotulo)+'</span>':'';
+    if(!t)return chipDesc?{html:'<div class="tdItemsWrap">'+chipDesc+'</div>',title:""}:{html:"",title:""};
     const linhas=t.split(/\n+/g).map(s=>String(s||"").replace(/^⤷\s*/,"").trim()).filter(Boolean);
     const tituloPartes=[];
     // Monta chips — limita a MAX_ITENS_TD visíveis, resto mostrado no modal ao clicar
@@ -3526,6 +3574,7 @@ const itensTdHTML=itensRaw=>{
         // Chip de ellipsis — informa que há mais itens visíveis no modal
         html+='<span class="tdItemChip tdItemMais" data-tip="'+extras+' itens adicionais — clique para ver todos">+'+extras+' mais…</span>';
     }
+    html+=chipDesc;
     html+='</div>';
     return{html,title:tituloPartes.join(" • ")};
 };
@@ -4123,7 +4172,7 @@ const _tipoLabel = x => {
 const _buildRowTb = x => {
     if(!x) return "";
     if(!_tdHtmlCache.has(x._idx)){
-        const itensInfo = itensTdHTML(x.itens);
+        const itensInfo = itensTdHTML(x.itens, x);
         _tdHtmlCache.set(x._idx, itensInfo.html);
     }
     const iHtml = _tdHtmlCache.get(x._idx);
@@ -4402,7 +4451,7 @@ const abrirModal=x=>{
             if (it.total !== null && Number.isFinite(it.total)) { somaFinal += it.total; temPreco = true; }
             // Percentual de desconto relativo ao total dos itens positivos
             const _pctStr = (_isDesc && somaPositiva > 0)
-                ? ' (' + Math.round(Math.abs(it.total) / somaPositiva * 100) + '%)'
+                ? ' (' + _fmtPctDesc(Math.abs(it.total) / somaPositiva * 100) + '%)'
                 : '';
             const _precoCell = it.total !== null
                 ? '<td class="ipreco'+(_isDesc?' desc':'')+'">'+(_isDesc?'−':'')+fmt(Math.abs(it.total))+_pctStr+'</td>'

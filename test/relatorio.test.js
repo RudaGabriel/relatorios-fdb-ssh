@@ -237,3 +237,32 @@ test("gerador: proibidos colados em outro formato viram um termo por linha", () 
     const grande = formatar(Array.from({ length: 510 }, (_, i) => "T" + i).join(","));
     assert.strictEqual(grande.excedente, 10, "acima de 500 termos deveria sinalizar o excedente");
 });
+
+// ---------------------------------------------------------------------------
+test("gerador: venda com desconto ganha o chip vermelho com o percentual", () => {
+    const dir = montarPasta({}, {
+        nfce: [{ numero: "101", hora: "10:00:00" }, { numero: "102", hora: "10:05:00" }],
+        alt: [
+            { pedido: "101", desc: "COCA", qtd: 2, total: 20 }, { pedido: "101", desc: "PAO", qtd: 5, total: 5 },
+            { pedido: "101", desc: "LEITE", qtd: 1, total: 6 }, { pedido: "101", desc: "CAFE", qtd: 1, total: 19 },
+            { pedido: "101", desc: "DESCONTO", qtd: 1, total: -5 },
+            { pedido: "102", desc: "AGUA", qtd: 1, total: 3 }
+        ]
+    });
+    const html = gerar(dir);
+    const ini = html.indexOf("const _fmtPctDesc="), fim = html.indexOf("const itensTdHTML=");
+    assert.ok(ini > 0 && fim > ini, "descontoVenda nao encontrada no HTML");
+    const deps = 'const fmt=v=>"R$ "+Number(v).toFixed(2).replace(".",",");' +
+        'const normP=v=>String(v||"").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").trim().toUpperCase();';
+    const descontoVenda = new Function(deps + html.slice(ini, fim) + "return descontoVenda;")();
+    const dados = JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+    const v101 = dados.vendas.find(v => /101$/.test(v.numero)), v102 = dados.vendas.find(v => /102$/.test(v.numero));
+    const d = descontoVenda(v101);
+    assert.ok(d, "venda 101 deveria ter desconto");
+    assert.strictEqual(d.rotulo, "\u221210%", "5 de 50 = 10%");
+    assert.match(d.tip, /Desconto de 10% \(\u2212R\$ 5,00\)/);
+    assert.match(d.tip, /Total com desconto: R\$ 45,00/);
+    assert.strictEqual(descontoVenda(v102), null, "venda sem desconto nao ganha chip");
+    assert.strictEqual(descontoVenda({ itensDetalhe: [{ desc: "X", total: 200 }, { desc: "DESCONTO", total: -1 }] }).rotulo, "\u22120,5%");
+    assert.ok(html.includes('class="tdItemChip tdItemDesc"'), "chip com a classe tdItemDesc ausente no HTML");
+});
