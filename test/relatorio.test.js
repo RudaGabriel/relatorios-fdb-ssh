@@ -209,3 +209,31 @@ test("servidor: encerramento ordenado registra no log, avisa as abas e sai com c
         assert.match(log, /=== Servidor encerrado: encerramento solicitado por teste-automatico ===/);
     } finally { srv.parar(); }
 });
+
+// ---------------------------------------------------------------------------
+test("gerador: proibidos colados em outro formato viram um termo por linha", () => {
+    const html = gerar(montarPasta());
+    // Executa a funcao do proprio HTML gerado, com as dependencias minimas dela.
+    const ini = html.indexOf("const PROIB_MAX="), fim = html.indexOf("// Liga contador");
+    assert.ok(ini > 0 && fim > ini, "formatarProibidos nao encontrada no HTML");
+    const deps = 'const rmAcento=v=>String(v||"").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"");' +
+        'const normP=v=>rmAcento(v).trim().toUpperCase().replace(/\\s+/g," ");' +
+        'const _isValorProib=v=>{const s=String(v||"").trim();return /^(>=|<=|>|<)[0-9]/.test(s)||/^\\d[\\d.,]*$/.test(s);};';
+    const formatar = new Function(deps + html.slice(ini, fim) + "return formatarProibidos;")();
+    const casos = [
+        ["COCA\nPEPSI", ["COCA", "PEPSI"], false],
+        ["COCA, PEPSI;FANTA\tSPRITE | KUAT", ["COCA", "PEPSI", "FANTA", "SPRITE", "KUAT"], true],
+        ['["COCA","coca","PEPSI"]', ["COCA", "PEPSI"], true],
+        ['- "COCA"\n1. COCÁ\n2) AGUA   1,5L', ["COCA", "AGUA 1,5L"], true],
+        [">100=6578,96\n6578,96", [">100=6578,96", "6578,96"], false],
+        ["", [], false]
+    ];
+    for (const [entrada, lista, alterado] of casos) {
+        const r = formatar(entrada);
+        assert.deepStrictEqual(r.lista, lista, "lista de " + JSON.stringify(entrada));
+        assert.strictEqual(r.alterado, alterado, "alterado de " + JSON.stringify(entrada));
+        assert.strictEqual(r.texto, lista.join("\n"));
+    }
+    const grande = formatar(Array.from({ length: 510 }, (_, i) => "T" + i).join(","));
+    assert.strictEqual(grande.excedente, 10, "acima de 500 termos deveria sinalizar o excedente");
+});
