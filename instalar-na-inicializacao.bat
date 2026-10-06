@@ -142,11 +142,15 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.11.1
+:: instalar-na-inicializacao.bat                       v1.11.2
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
-:: CHANGELOG 1.11.1 - 2026-10-05 17:30 - O nome do sistema perdia TODOS os
+:: CHANGELOG 1.11.2 - 2026-10-06 10:00 - A mensagem final indica o
+::   remover-inicializacao.bat (remove tarefa, atalho, registro e bootstrap)
+::   em vez do comando schtasks, que so' apagava a tarefa.
+::
+:: CHANGELOG (anterior) 1.11.1 - 2026-10-05 17:30 - O nome do sistema perdia TODOS os
 ::   espacos ("Loja Silva" virava "LojaSilva") no titulo, no nome da tarefa
 ::   agendada, do atalho e da regra de firewall: o "!APP_NAME: =!" que so'
 ::   deveria TESTAR se o nome estava vazio sobrescrevia a propria variavel.
@@ -491,8 +495,7 @@ if %errorlevel% equ 0 (
     echo   Launcher na rede ^(bootstrap espera este^):
     echo     !LAUNCHER_PATH!
     echo.
-    echo   Para remover:
-    echo     schtasks /delete /tn "!TASK_NAME!" /f
+    echo   Para remover: execute remover-inicializacao.bat
     echo.
     goto :iniciar_agora
 )

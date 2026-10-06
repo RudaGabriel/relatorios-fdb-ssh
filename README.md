@@ -102,6 +102,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 | `iniciar-tray.ps1` | Ícone na bandeja, menu de ações e watchdog que reinicia o servidor se ele cair ou travar. |
 | `launcher.vbs` / `bootstrap.vbs` | Iniciam o tray de forma oculta. O bootstrap fica local e espera a pasta de rede aparecer no logon. |
 | `instalar-na-inicializacao.bat` | Configura a inicialização automática (tarefa agendada ou pasta Inicializar), a regra de firewall e o nome do sistema. |
+| `remover-inicializacao.bat` | Desfaz a inicialização automática e, se você confirmar, encerra todos os processos do relatório. |
 | `gerar_relatorio_*.bat` | Atalhos para abrir o relatório do dia, de uma data ou de um período (iniciam o servidor se preciso). |
 | `api.ps1` | Cliente de linha de comando para todas as rotas da API, com menu interativo. |
 | `_instalar-node.ps1` / `node-firebird.bat` | Instalam o Node.js e o módulo `node-firebird`. |
@@ -131,6 +132,25 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 4. Abra o relatório pelo ícone da bandeja (duplo clique) ou em `http://localhost:7734`.
 
 > Para só testar, sem inicialização automática, execute `gerar_relatorio_do_dia.bat`.
+
+### Remover a inicialização automática
+
+Execute **`remover-inicializacao.bat`**. Ele remove tudo o que inicia o relatório sozinho no logon:
+
+- a tarefa agendada, com qualquer nome, inclusive de versões antigas;
+- o atalho na pasta Inicializar e as entradas nas chaves `Run` do registro;
+- o bootstrap local em `%LOCALAPPDATA%\RelatoriosBootstrap`, inclusive um bootstrap que esteja aguardando a rede.
+
+Antes de começar, ele pergunta se deve **encerrar todos os processos do relatório** (servidor, ícone da bandeja e gerações em andamento):
+
+- **S**: o servidor é encerrado de forma ordenada (registra no log e as telas abertas mostram "Servidor de relatórios encerrado"); o que não responder em alguns segundos é forçado.
+- **N**: o servidor continua rodando até você sair pelo ícone da bandeja ou reiniciar o computador.
+
+Só são considerados processos `node`, `powershell`, `wscript` e `cscript` cuja linha de comando cite arquivos do sistema. Um editor com um desses arquivos aberto, por exemplo, nunca é encerrado.
+
+O privilégio de administrador (UAC) só é pedido se algum item exigir, como a tarefa criada pelo instalador. Ao final aparece um resumo do que foi removido e de eventuais pendências, e tudo também é registrado no `relatorio.log` (linhas `[REMOVER]`).
+
+Não são apagados: `config.json`, logs, cache e a regra de firewall. Para reativar, rode `instalar-na-inicializacao.bat` de novo.
 
 ---
 
@@ -278,7 +298,7 @@ Cada correção é registrada no log e avisada na tela.
 
 ## Logs e diagnóstico
 
-Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja e instalador, no formato `[DD-MM-AAAA] [HH:MM:SS] mensagem`. A primeira linha de cada dia mostra as versões em uso:
+Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, instalador e removedor, no formato `[DD-MM-AAAA] [HH:MM:SS] mensagem`. A primeira linha de cada dia mostra as versões em uso:
 
 ```
 [05-10-2026] [08:00:01] === Servidor iniciado 05/10/2026 === Servidor v2.10.0 | Gerador v3.3.0
@@ -312,6 +332,8 @@ Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos,
 ├── iniciar-tray.ps1               Ícone na bandeja + watchdog
 ├── launcher.vbs / bootstrap.vbs   Inicialização oculta
 ├── instalar-na-inicializacao.bat  Instalação da inicialização automática
+├── remover-inicializacao.bat      Remove a inicialização automática
+├── _remover-inicializacao.ps1     Auxiliar do remover-inicializacao.bat
 ├── gerar_relatorio_do_dia.bat     Abre o relatório de hoje
 ├── gerar_relatorio_por_data.bat   Abre o relatório de uma data
 ├── gerar_relatorio_intervalo.bat  Abre o relatório de um período
@@ -335,6 +357,7 @@ Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos,
 | "Falha ao conectar" / senha incorreta | Ajuste `fbUser` e `fbPass` no `config.json` e reinicie pelo menu da bandeja |
 | Outro computador não abre o relatório | Porta 7734 no firewall (rode o instalador como administrador) e IP em `maquinaIP` |
 | Relatório de período longo não termina | Aumente `spawnTimeoutMs` no `config.json` (até 600000) |
+| Servidor continua iniciando sozinho após a remoção | Rode `remover-inicializacao.bat` como administrador e veja as linhas `[REMOVER]` no `relatorio.log` |
 | Servidor não inicia no logon | Rode `instalar-na-inicializacao.bat` de novo; veja as linhas `[INSTALL]` e `[TRAY]` no `relatorio.log` |
 | Qualquer outro problema | Consulte o `relatorio.log`, que registra erros, avisos e a versão em uso |
 
