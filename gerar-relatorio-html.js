@@ -1,14 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.3.1
+ * @version 3.4.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.3.1 - 2026-10-05 22:00 - Padrão de fábrica sem dados de loja: a lista padrão de
- *     "proibidos" (marcas fixas de uma loja específica, aplicada automaticamente em toda
- *     instalação nova e sempre que a lista do usuário ficava vazia) passa a ser vazia —
- *     "Restaurar padrão" agora limpa a lista. Exemplo do campo de nome trocado para
- *     "ex: Minha Loja".
+ *   3.4.0 - 2026-10-06 11:30 - Termos proibidos: contador de termos adicionados (com
+ *     quantos são filtros de valor e aviso acima do limite de 500) nos dois editores
+ *     (Configurações e "Editar lista de proibidos"). O formato da caixa é detectado e,
+ *     se não for "um termo por linha", ajustado automaticamente ao colar, ao sair do
+ *     campo e ao salvar: separados por vírgula, ponto e vírgula, tabulação ou barra
+ *     vertical, lista JSON, marcadores ("- ", "1. "), aspas, espaços extras e
+ *     repetidos (sem diferenciar acento/maiúsculas). Vírgula entre dígitos é decimal
+ *     ("AGUA 1,5L", ">100=6578,96") e nunca separa termos.
  */
 
 (function() {
@@ -16,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.3.1";
+    const SCRIPT_VERSION = "3.4.0";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -3068,6 +3071,100 @@ const setProibidosUser=(lista)=>{
     _recompileProibidos();
 };
 
+// ── Formato da lista de proibidos (v3.4.0) ──────────────────────────────────
+// Formato aceito: UM termo por linha. Listas coladas de outros lugares chegam
+// em formatos diversos (separadas por vírgula, ponto e vírgula, tabulação ou
+// barra vertical, como lista JSON, com marcadores "- " / "1. ", entre aspas,
+// com espaços sobrando ou repetidas) — aqui são detectadas e convertidas.
+// Vírgula ENTRE DÍGITOS é decimal ("AGUA 1,5L", ">100=6578,96") e nunca separa
+// termos. Limites iguais aos do servidor (_sanitizarProibidos).
+const PROIB_MAX=500, PROIB_MAX_TAM=200;
+const formatarProibidos=texto=>{
+    const motivos=new Set();
+    let bruto=String(texto==null?"":texto).replace(/\r\n?/g,"\n").replace(/[\u0000-\u0008\u000B-\u001F\u007F\u00A0\u200B\uFEFF]/g," ");
+    let partes=null;
+    const t=bruto.trim();
+    // Lista JSON: ["A","B"] (só se for JSON válido de strings/números).
+    if(t.charAt(0)==="["&&t.charAt(t.length-1)==="]"){
+        try{
+            const arr=JSON.parse(t);
+            if(Array.isArray(arr)&&arr.every(v=>typeof v==="string"||typeof v==="number")){ partes=arr.map(String); motivos.add("lista JSON"); }
+        }catch(_){}
+        if(!partes&&t.indexOf("\n")<0){ bruto=t.slice(1,-1); motivos.add("colchetes"); }
+    }
+    if(!partes){
+        partes=[];
+        bruto.split("\n").forEach(linha=>{
+            let l=linha;
+            if(/;/.test(l)){ motivos.add("ponto e vírgula"); }
+            if(/\t/.test(l)){ motivos.add("tabulação"); l=l.replace(/\t+/g,";"); }
+            if(/\|/.test(l)){ motivos.add("barra vertical"); l=l.replace(/\|/g,";"); }
+            l.split(";").forEach(seg=>{
+                // Mascara a vírgula decimal (\u0001 nunca sobra: controles já foram limpos).
+                const m=seg.replace(/(\d),(?=\d)/g,"$1\u0001");
+                if(m.indexOf(",")>=0){ motivos.add("vírgula"); m.split(",").forEach(x=>partes.push(x.replace(/\u0001/g,","))); }
+                else partes.push(seg);
+            });
+        });
+    }
+    const lista=[], vistos=new Set();
+    let duplicados=0, longos=0;
+    for(const p0 of partes){
+        let s=String(p0).trim();
+        if(!s)continue;
+        const semMarc=s.replace(/^(?:[-*•·▪►]|\d{1,3}[.)])\s+/,"");
+        if(semMarc!==s){ motivos.add("marcadores"); s=semMarc.trim(); }
+        const semAsp=s.replace(/^(["'“”‘’\x60])(.*)\1$/,"$2").replace(/^[“‘](.*)[”’]$/,"$1");
+        if(semAsp!==s){ motivos.add("aspas"); s=semAsp.trim(); }
+        if(/\s{2,}/.test(s)){ motivos.add("espaços extras"); s=s.replace(/\s+/g," "); }
+        if(!s)continue;
+        if(s.length>PROIB_MAX_TAM){ s=s.slice(0,PROIB_MAX_TAM).trim(); longos++; }
+        // Repetido = mesmo termo sem acento/maiúsculas (é assim que o filtro compara).
+        const chave=_isValorProib(s)?"V:"+s.replace(/\s+/g,""):"T:"+normP(s);
+        if(vistos.has(chave)){ duplicados++; continue; }
+        vistos.add(chave); lista.push(s);
+    }
+    if(duplicados)motivos.add(duplicados+(duplicados===1?" repetido removido":" repetidos removidos"));
+    if(longos)motivos.add(longos+(longos===1?" termo cortado":" termos cortados")+" em "+PROIB_MAX_TAM+" caracteres");
+    const formatado=lista.join("\n");
+    // Linhas vazias/espaços nas pontas: ajusta sem alarde (não é "formato errado").
+    const alterado=formatado!==String(texto==null?"":texto).replace(/\r\n?/g,"\n").replace(/\s+$/,"");
+    return {lista, texto:formatado, alterado, motivos:[...motivos],
+            valores:lista.filter(_isValorProib).length, excedente:Math.max(0,lista.length-PROIB_MAX)};
+};
+// Liga contador + formatação automática a uma textarea de proibidos.
+// Conta a cada tecla; formata ao colar e ao sair do campo (formatar durante a
+// digitação moveria o cursor). Devolve a função que formata e retorna a lista.
+const ligarEditorProibidos=(ta,elCont)=>{
+    if(!ta)return ()=>[];
+    let aviso="";
+    const pintar=(r)=>{
+        if(!elCont)return;
+        const n=r.lista.length;
+        let txt=n===0?"Nenhum termo adicionado":(n===1?"1 termo adicionado":n+" termos adicionados");
+        if(r.valores)txt+=" ("+r.valores+(r.valores===1?" filtro":" filtros")+" de valor)";
+        let cor="var(--text-muted)";
+        if(r.excedente){ txt+=" — limite de "+PROIB_MAX+": os "+r.excedente+" últimos não serão salvos"; cor="var(--danger)"; }
+        else if(aviso){ txt+=" — "+aviso; cor="var(--success)"; }
+        else if(r.alterado&&r.motivos.length){ txt+=" — formato será ajustado ao sair do campo"; cor="var(--st-warn)"; }
+        elCont.textContent=txt; elCont.style.color=cor;
+    };
+    const aplicar=()=>{
+        const r=formatarProibidos(ta.value);
+        if(r.alterado){
+            ta.value=r.texto;
+            aviso=r.motivos.length?"formato ajustado automaticamente ("+r.motivos.join(", ")+")":"";
+        }
+        pintar(r);
+        return r.lista.slice(0,PROIB_MAX);
+    };
+    ta.addEventListener("input",()=>{ aviso=""; pintar(formatarProibidos(ta.value)); });
+    ta.addEventListener("paste",()=>{ setTimeout(aplicar,0); });
+    ta.addEventListener("blur",aplicar);
+    aplicar();
+    return aplicar;
+};
+
 // Aplica proibidos embutidos na geração IMEDIATAMENTE (sem flash), depois
 // sincroniza com o servidor para pegar atualizações feitas após a geração.
 (function _syncProibidos(){
@@ -4476,7 +4573,7 @@ const abrirEditorProibidos=()=>{
     // de memória progressivo).
     if (document.getElementById("ovProib")) return;
     const bg=document.createElement("div"); bg.className="ov"; bg.id="ovProib"; bg.setAttribute("aria-hidden","false");
-    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Salvo no servidor (config.json).</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid var(--field-border);background:var(--field-bg);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
+    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Colou separado por vírgula, ponto e vírgula, tabulação ou em lista? O formato é ajustado sozinho. Salvo no servidor (config.json).</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid var(--field-border);background:var(--field-bg);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prCont" aria-live="polite" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 2px 0;line-height:1.4"></div><div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
     document.body.appendChild(bg);
     // Fix de transição: className precisa entrar no DOM SEM "on" e ganhar a
     // classe depois (com reflow forçado no meio) — se "on" já vier junto no
@@ -4488,6 +4585,7 @@ const abrirEditorProibidos=()=>{
     const ta=qs("#prTa",bg);
     // Mostra entradas originais (não normalizadas) para preservar capitalização e filtros de valor
     ta.value=valoresProibidos.join("\n");
+    const formatarPr=ligarEditorProibidos(ta,qs("#prCont",bg));
     const msg=qs("#prMsg",bg);
     // BUG FIX (auditoria v2.5.0 — LEAK): "fechar" só removia o elemento do DOM
     // (bg.remove()) mas NUNCA removia o listener "keydown" de Escape — esse
@@ -4506,11 +4604,12 @@ const abrirEditorProibidos=()=>{
         setProibidosUser(proibidosPadrao);
         _salvarProibidosServidor(proibidosPadrao);
         ta.value=proibidosPadrao.join("\n");
+        formatarPr();
         renderTabela();
         toast("Proibidos","Restaurado padrão.");
     });
     qs("#prSalvar",bg).addEventListener("click",()=>{
-        const lista=String(ta.value||"").split(/\n/g).map(s=>s.trim()).filter(Boolean);
+        const lista=formatarPr();
         setProibidosUser(lista);
         if(msg)msg.textContent="Salvando...";
         _salvarProibidosServidor(lista, ()=>{
@@ -4991,8 +5090,9 @@ var __abrirModalConfig = function() {
                 '</div>' +
               '</div>' +
               '<div class="kv" style="flex-direction:column;gap:8px">' +
-                '<div class="k">Termos proibidos <span style="font-weight:400;text-transform:none;letter-spacing:0">(um por linha — oculta vendas com esses produtos)</span></div>' +
+                '<div class="k">Termos proibidos <span style="font-weight:400;text-transform:none;letter-spacing:0">(um por linha — oculta vendas com esses produtos; listas coladas em outro formato são ajustadas sozinhas)</span></div>' +
                 '<textarea id="cfgProibidos" spellcheck="false" style="width:100%;min-height:130px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg-app);color:var(--text-main);padding:10px 12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;transition:border-color .15s"></textarea>' +
+                '<div id="cfgProibCont" aria-live="polite" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 2px 0;line-height:1.4"></div>' +
               '</div>' +
               '<div class="kv" style="flex-direction:column;gap:8px">' +
                 '<div class="k">Teclas de atalho <span style="font-weight:400;text-transform:none;letter-spacing:0">(tecla → executa comando na caixa de busca)</span></div>' +
@@ -5014,6 +5114,8 @@ var __abrirModalConfig = function() {
         var _ta = document.getElementById("cfgProibidos");
         _ta.addEventListener("focus", function(){ _ta.style.borderColor = "var(--accent)"; });
         _ta.addEventListener("blur",  function(){ _ta.style.borderColor = "var(--border)"; });
+        // Contador de termos + ajuste automático do formato (um por linha).
+        var _formatarCfgPr = ligarEditorProibidos(_ta, document.getElementById("cfgProibCont"));
 
         // ── Teclas de atalho ──────────────────────────────────────────────────
         var _teclasArr = Array.isArray(cfg.teclasPersonalizadas)
@@ -5211,8 +5313,7 @@ var __abrirModalConfig = function() {
             var td   = parseInt(document.getElementById("cfgToastDuracao").value, 10) || 5000;
             var jh   = parseInt(document.getElementById("cfgJanelaHora").value, 10);
             var fv   = String(document.getElementById("cfgFaviconPath").value || "").trim();
-            var prRaw= String(document.getElementById("cfgProibidos").value   || "");
-            var pr   = prRaw.split("\n").map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
+            var pr   = _formatarCfgPr();
             var favFile = _fileInp.files && _fileInp.files[0];
 
             if (!an) { toast("Erro", "O nome do sistema não pode estar vazio."); return; }

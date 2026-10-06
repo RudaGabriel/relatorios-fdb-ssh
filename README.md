@@ -63,6 +63,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - Tabela no computador e cartões no celular, com renderização em blocos para dias com muitas vendas.
 - **Busca avançada** com coringas de valor, texto, campo e operadores lógicos (veja [abaixo](#busca-e-filtros-coringas)).
 - **Filtro de "proibidos"**: lista de produtos ou marcas que podem ser ocultados ou isolados com uma tecla.
+- **Editor de proibidos inteligente**: mostra quantos termos foram adicionados (e quantos são filtros de valor) e ajusta sozinho listas coladas em outro formato — separadas por vírgula, ponto e vírgula, tabulação ou `|`, lista JSON, com marcadores, aspas ou repetidas — para o formato aceito, um termo por linha. Vírgula entre números (`AGUA 1,5L`, `>100=6578,96`) é decimal e não separa termos.
 - **Teclas de atalho personalizáveis**: cada tecla executa um comando de busca e/ou uma ação (copiar, filtrar, trocar tema…).
 - **Ferramentas de cópia** para a área de transferência: tudo, com itens, sem dinheiro, só gerencial.
 - Configurações editáveis pela própria tela: nome do sistema, ícone, intervalos, janela de correção de horário, proibidos e atalhos.
