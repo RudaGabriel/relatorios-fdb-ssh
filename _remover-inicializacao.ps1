@@ -1,5 +1,5 @@
 # =============================================================================
-# _remover-inicializacao.ps1                                          v1.0.0
+# _remover-inicializacao.ps1                                          v1.0.1
 # Autor: Ruda Gabriel
 # -----------------------------------------------------------------------------
 # Auxiliar do remover-inicializacao.bat (nao precisa ser executado direto).
@@ -33,6 +33,7 @@
 #
 # Codigo de saida: 0 = tudo removido/encerrado, 1 = sobrou algo (listado).
 #
+# CHANGELOG 1.0.1 - 2026-10-07 22:30 - Data e hora do log do MESMO instante.
 # CHANGELOG 1.0.0 - 2026-10-06 10:00 - Primeira versao.
 # =============================================================================
 
@@ -111,7 +112,8 @@ $PADRAO_INICIO = "RelatoriosBootstrap|iniciar-tray\.ps1|servidor-relatorio\.js|g
 
 function Write-RemLog([string]$Msg) {
     try {
-        $linha = "[{0}] [{1}] [REMOVER] {2}" -f (Get-Date -Format 'dd-MM-yyyy'), (Get-Date -Format 'HH:mm:ss'), $Msg
+        $agora = Get-Date
+        $linha = "[{0:dd-MM-yyyy}] [{0:HH:mm:ss}] [REMOVER] {1}" -f $agora, $Msg
         Add-Content -Path $LOG_PATH -Value $linha -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch {}
 }

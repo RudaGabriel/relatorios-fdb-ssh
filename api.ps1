@@ -9,9 +9,16 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 - Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
-@version 1.5.0
+@version 1.5.1
 @author Ruda Gabriel
 @changelog
+  1.5.1 - 2026-10-07 22:30 - Correcoes da varredura de bugs.
+    - Menu: "continue" dentro de um switch age sobre o SWITCH, nao sobre o
+      laco - cancelar a opcao 21 ou deixar a 7 em branco seguia para o
+      comando e mostrava um erro em seguida. Laco rotulado (continue menu).
+    - "encerrar": confirmacao SIM igual no menu e no modo direto (maiusculas);
+      textos dizem que, com o icone da bandeja ativo, o servidor e' religado
+      em ate ~10 s.
   1.5.0 - 2026-10-07 19:00 - IP desta maquina e rotas que faltavam.
     - Cabecalho do menu mostra o nome e o IP DESTA maquina (a que abriu o
       api.ps1): o IP e' o da placa de rede usada para chegar ao servidor
@@ -492,9 +499,10 @@ function Executar-Endpoint {
         }
         "encerrar" {
             # Desliga o servidor de forma ordenada (registra no relatorio.log e
-            # avisa as abas). Ele NAO volta sozinho: para ligar de novo use a
-            # opcao "restart" (que inicia via launcher.vbs) ou o icone/atalho.
-            if ($Data -ne "SIM") { throw "Cancelado: o servidor so' e' desligado com a confirmacao SIM." }
+            # avisa as abas). Com o icone da bandeja ativo, ele e' religado
+            # automaticamente em ate ~10 s (vigia do tray); sem o tray, fica
+            # desligado ate a opcao "restart" ou o atalho/icone.
+            if ($Data -cne "SIM") { throw "Cancelado: o servidor so' e' desligado com a confirmacao SIM." }
             $origem = [System.Uri]::EscapeDataString("api.ps1 em " + $(if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [Environment]::MachineName }))
             return Invoke-ApiCall -Rota "/api/encerrar?origem=${origem}" -MaxRetries 0
         }
@@ -591,7 +599,7 @@ function Mostrar-Menu {
     Write-Host ""
     Write-Host "=== MAIS OPCOES ==="
     Write-Host "20. meu-ip           | Nome e IP(s) desta maquina"
-    Write-Host "21. encerrar         | Desligar o servidor (pede confirmacao)"
+    Write-Host "21. encerrar         | Desligar/reiniciar o servidor (pede confirmacao)"
     Write-Host "22. foco             | Trazer a aba do relatorio para frente"
     Write-Host "23. modal-config     | Abrir a janela de configuracao na aba"
     Write-Host "24. modal-periodo    | Abrir 'gerar por periodo' na aba"
@@ -608,7 +616,9 @@ function Mostrar-Menu {
 # ===========================================================================
 if ($Endpoint -eq "menu") {
     Mostrar-Menu
-    while ($true) {
+    # Rotulo "menu": dentro de um switch, um "continue" simples age sobre o
+    # SWITCH (nao sobre o laco) e a execucao seguia para Executar-Endpoint.
+    :menu while ($true) {
         $escolha = Read-Host "Selecione a operacao"
         if ($escolha -eq "0") { exit }
 
@@ -659,7 +669,7 @@ if ($Endpoint -eq "menu") {
                     if ($pi -and [int]::TryParse($pi, [ref]$null)) { $dados["pollInterval"] = [int]$pi }
                     $ml = Read-Host "maxLogLines (Enter para manter)"
                     if ($ml -and [int]::TryParse($ml, [ref]$null)) { $dados["maxLogLines"] = [int]$ml }
-                    if ($dados.Count -eq 0) { Write-Warning "Nenhum valor informado"; continue }
+                    if ($dados.Count -eq 0) { Write-Warning "Nenhum valor informado"; continue menu }
                 }
                 "8" { $dados = Read-Host "Caminho completo do .fdb" }
                 "13" {
@@ -671,10 +681,11 @@ if ($Endpoint -eq "menu") {
                 "16" { $dados = Read-Host "Chave de polling" }
                 "17" { $dados = @{ msg = Read-Host "Mensagem de erro"; stack = "Simulado CLI" } }
                 "21" {
-                    Write-Host "O servidor sera DESLIGADO e as telas do relatorio vao parar de atualizar." -ForegroundColor Yellow
-                    Write-Host "Para ligar de novo: opcao 15 (restart) ou o atalho/icone do relatorio." -ForegroundColor Yellow
+                    Write-Host "O servidor sera DESLIGADO de forma ordenada (as telas mostram o aviso)." -ForegroundColor Yellow
+                    Write-Host "Se o icone da bandeja estiver ativo, ele religa o servidor em ate ~10 s." -ForegroundColor Yellow
+                    Write-Host "Sem o icone, para ligar de novo: opcao 15 (restart) ou o atalho." -ForegroundColor Yellow
                     $conf = Read-Host "Digite SIM para confirmar"
-                    if ($conf -cne "SIM") { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue }
+                    if ($conf -cne "SIM") { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue menu }
                     $dados = "SIM"
                 }
                 "26" {

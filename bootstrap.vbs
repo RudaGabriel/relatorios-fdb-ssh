@@ -1,5 +1,5 @@
 ' =============================================================================
-' bootstrap.vbs                                                        v1.0.0
+' bootstrap.vbs                                                        v1.1.0
 ' Autor: Ruda Gabriel
 ' -----------------------------------------------------------------------------
 ' Aguarda ate 30 min (120 x 15s) pelo launcher.vbs e o executa.
@@ -22,8 +22,12 @@
 ' dinamica). Vem de "launcher.path", um arquivo texto de UMA linha gravado ao
 ' lado deste, que o instalador escreve com um unico "echo" sem escape nenhum.
 '
-' CHANGELOG 1.0.0 - 2026-08-12 22:30 - Criado como arquivo estatico do projeto,
-'   substituindo a geracao dinamica por echo em instalar-na-inicializacao.bat.
+' CHANGELOG 1.1.0 - 2026-10-07 22:30 - launcher.path lido em UTF-8.
+'   O instalador roda com "chcp 65001" e grava o arquivo em UTF-8; aqui ele era
+'   lido como ANSI, e um caminho com acento (C:\Relatorios com acento, perfil
+'   "Joao" com til) nunca era encontrado: o servidor nao subia no logon. Le em
+'   UTF-8 (ADODB.Stream) e, se o arquivo nao existir assim, tenta tambem a
+'   leitura antiga (ANSI) - cobre launcher.path gravado por versoes anteriores.
 ' =============================================================================
 
 Option Explicit
@@ -43,19 +47,45 @@ arqPath = fso.BuildPath(pastaAtual, "launcher.path")
 
 If Not fso.FileExists(arqPath) Then WScript.Quit 2
 
+Dim vbsPathAnsi, vbsPathUtf8, st, txt
 On Error Resume Next
-vbsPath = Trim(fso.OpenTextFile(arqPath, 1).ReadLine)
-If Err.Number <> 0 Then WScript.Quit 3
+vbsPathAnsi = Trim(fso.OpenTextFile(arqPath, 1).ReadLine)
+If Err.Number <> 0 Then vbsPathAnsi = ""
+Err.Clear
+Set st = CreateObject("ADODB.Stream")
+If Err.Number = 0 Then
+    st.Type = 2
+    st.Charset = "utf-8"
+    st.Open
+    st.LoadFromFile arqPath
+    txt = st.ReadText
+    st.Close
+    If Err.Number = 0 Then
+        txt = Replace(txt, ChrW(&HFEFF), "")
+        If InStr(txt, vbCr) > 0 Then txt = Left(txt, InStr(txt, vbCr) - 1)
+        If InStr(txt, vbLf) > 0 Then txt = Left(txt, InStr(txt, vbLf) - 1)
+        vbsPathUtf8 = Trim(txt)
+    End If
+End If
+Err.Clear
 On Error Goto 0
 
-If Len(vbsPath) = 0 Then WScript.Quit 4
+If Len(vbsPathUtf8) = 0 And Len(vbsPathAnsi) = 0 Then WScript.Quit 3
+If Len(vbsPathUtf8) = 0 Then vbsPathUtf8 = vbsPathAnsi
+If Len(vbsPathAnsi) = 0 Then vbsPathAnsi = vbsPathUtf8
 
 ' Aguarda o launcher aparecer. A pasta pode ser de rede e ainda nao estar
 ' montada no momento do logon, por isso a espera longa.
 maxT = 120
 n = 0
 Do While n < maxT
-    If fso.FileExists(vbsPath) Then
+    vbsPath = ""
+    If fso.FileExists(vbsPathUtf8) Then
+        vbsPath = vbsPathUtf8
+    ElseIf fso.FileExists(vbsPathAnsi) Then
+        vbsPath = vbsPathAnsi
+    End If
+    If Len(vbsPath) > 0 Then
         sh.Run "wscript.exe " & Chr(34) & vbsPath & Chr(34), 0, False
         WScript.Quit 0
     End If
