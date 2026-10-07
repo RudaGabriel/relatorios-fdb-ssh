@@ -2,11 +2,20 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.15.1
+ * @version 2.15.2
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
+ *   2.15.2 - 2026-10-07 20:00 - Um refresh por venda (não dois).
+ *     - O caixa grava a venda (NFCE) e o pagamento (PAGAMENT) em transações
+ *       separadas. A parte rápida via a venda e gerava; a complementar via o
+ *       pagamento ~1 s depois e gerava de novo: DOIS refresh por venda (log
+ *       da loja: "Gerencial: vendas 36 → 37" e, 1 s depois, "Pagamentos:
+ *       38 → 39", cada um com "→ regerando"). Agora a mudança da parte rápida
+ *       fica pendente: a complementar roda na hora e, se é venda nova, é
+ *       relida até o pagamento aparecer (no máximo 1,5 s); então UMA geração
+ *       com tudo, e uma linha só no log. Outras mudanças esperam uma leitura.
  *   2.15.1 - 2026-10-07 19:00 - /api/status com a contagem por tipo desde o início.
  *     - g/nfc/nf (Gerencial, NFC-e, NF-e) ficavam -1 até a 1ª conferência do
  *       pollStatus — com o fast-poll completo saudável, até 10 s depois de
@@ -60,7 +69,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.15.1";
+const SERVER_VERSION = "2.15.2";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2645,6 +2654,43 @@ var _fpRegistrarParte = function(parte, ms) {
         _fpLogPartesFaixa = faixa; _fpLogPartesTs = Date.now();
     }
 };
+// ── Mudança pendente (v2.15.2): UM refresh por venda ────────────────────
+// O caixa grava a venda (NFCE) e o pagamento (PAGAMENT) em transações
+// separadas, com alguns centésimos de segundo entre elas. Com as duas partes,
+// a rápida via a venda e gerava, e a complementar via o pagamento ~1 s depois
+// e gerava DE NOVO — dois refresh por venda (já acontecia às vezes na consulta
+// única). Agora a mudança da parte rápida abre uma pendência: a complementar
+// roda NA HORA; se é venda nova, ela é relida (pausa de meia consulta) até o pagamento
+// aparecer (no máximo _FP_ESPERA_PAG_MS); então gera UMA vez, com tudo.
+// Outras mudanças (vendedor, cancelamento, valor) esperam só uma leitura.
+// Garantia: um temporizador gera de qualquer jeito se a complementar falhar.
+var _FP_ESPERA_PAG_MS = 1500;
+var _fpPendente = null; // {a, dh, novaVenda, cMudou, ate, t}
+var _fpQtSubiu = function(antes, depois) {
+    return _FP_CAMPOS.some(function(k) { return /_QT$/.test(k) && depois[k] > antes[k]; });
+};
+var _fpFecharPendente = function() {
+    var p = _fpPendente;
+    if (!p) return;
+    _fpPendente = null;
+    clearTimeout(p.t);
+    var b = _fpJuntar(_fpUltN, _fpUltC);
+    logTs("FastPoll: " + _descreverMudancaCompleta(p.a, b) + " → regerando.");
+    _fpRegerar(p.dh);
+};
+var _fpAbrirPendente = function(a, novaVenda, dh) {
+    _fpProxC = 0; // complementar na próxima volta do fast-poll
+    if (_fpPendente) { // outra mudança antes de fechar: junta na mesma
+        _fpPendente.novaVenda = _fpPendente.novaVenda || novaVenda;
+        return;
+    }
+    var p = { a: a, dh: dh, novaVenda: novaVenda, cMudou: false, ate: Date.now() + (novaVenda ? _FP_ESPERA_PAG_MS : 0) };
+    p.t = setTimeout(function() { if (_fpPendente === p) _fpFecharPendente(); }, _FP_ESPERA_PAG_MS + 1500);
+    _fpPendente = p;
+};
+var _fpDescartarPendente = function() {
+    if (_fpPendente) { clearTimeout(_fpPendente.t); _fpPendente = null; }
+};
 var _fpUltimoOkTs     = 0;     // instante da última consulta rápida bem-sucedida
 // Fast-poll completo saudável = já cobre tudo que o pollStatus compara (e mais).
 // Nesse caso o pollStatus não regera por conta própria (v2.13.0) e roda bem
@@ -2858,7 +2904,7 @@ var _fpPoll = function() {
         _fpUltimoPend  = -1;
         _fpUltimoSvend  = -1;
         _fpUltimoSforma = -1;
-        _fpUltN = null; _fpUltC = null;
+        _fpUltN = null; _fpUltC = null; _fpDescartarPendente();
         logTs("FastPoll: virada de dia (" + _fpDhAtual + " → " + dh + ") — baseline resetado.");
     }
     _fpDhAtual = dh;
@@ -2909,6 +2955,7 @@ var _fpPoll = function() {
                         if (_wdFired) return;
                         if (!errB && rowsB && rowsB.length) {
                             _fpModo = "basico";
+                            _fpFecharPendente(); // gera o que estava pendente antes de trocar de modo
                             _fpUltN = null; _fpUltC = null;
                             logTs("FastPoll: consulta completa passou a falhar (" +
                                   _textoSeguroLog(errC ? (errC.message || errC) : "sem linhas") + ") — seguindo no modo básico.");
@@ -2940,7 +2987,23 @@ var _fpPoll = function() {
                         nf:  {qt: atual.NF_QT,  tot: _r2(atual.NF_TOT)}
                     });
                 }
-                if (anterior && _fpDiferente(anterior, atual)) {
+                var _mudou = !!anterior && _fpDiferente(anterior, atual);
+                if (_parte === "N" && _mudou && _FP_SQL_C) {
+                    // Mudança na parte rápida: NÃO gera ainda — a mesma venda costuma
+                    // trazer, numa transação separada do caixa, o pagamento (na parte
+                    // complementar). Gerar já e de novo quando o pagamento aparecer
+                    // dava DOIS refresh por venda. Ver _fpPendente.
+                    _fpAbrirPendente(_fpJuntar(anterior, _fpUltC), _fpQtSubiu(anterior, atual), dh);
+                } else if (_parte === "C" && _fpPendente) {
+                    _fpPendente.cMudou = _fpPendente.cMudou || _mudou;
+                    if (!_fpPendente.novaVenda || _fpPendente.cMudou || Date.now() >= _fpPendente.ate) {
+                        _fpFecharPendente();
+                    } else {
+                        // Venda nova sem o pagamento ainda: relê logo (até o prazo). Folga
+                        // de meia consulta: só durante esta espera curta (≤ 1,5 s por venda).
+                        _fpProxC = Date.now() + Math.max(50, Math.round(_fpMediaC * 0.5));
+                    }
+                } else if (_mudou) {
                     var _a = _parte === "N" ? _fpJuntar(anterior, _fpUltC) : _fpJuntar(_fpUltN, anterior);
                     var _b = _fpJuntar(_fpUltN, _fpUltC);
                     logTs("FastPoll: " + _descreverMudancaCompleta(_a, _b) + " → regerando.");
@@ -3019,7 +3082,7 @@ var _iniciarFastPoll = function() {
     _fpGen++;               // invalida qualquer attach em voo da geração anterior
     _fpUltimoQt = _fpUltimoTot = _fpUltimoPend = _fpUltimoSvend = _fpUltimoSforma = -1;
     // Banco novo (ou reconfigurado): esquema e modo voltam a ser sondados.
-    _fpUltN = null; _fpUltC = null;
+    _fpUltN = null; _fpUltC = null; _fpDescartarPendente();
     _fpModo = null; _fpEsquema = null; _fpTemVendedor = null;
     _fpMediaMs = 0; _fpInicioCiclo = 0; // banco novo: tempo de consulta medido de novo
     _fpMediaN = 0; _fpMediaC = 0; _fpMedidoN = false; _fpMedidoC = false; _fpProxN = 0; _fpProxC = 0; _fpLogPartesFaixa = "";
