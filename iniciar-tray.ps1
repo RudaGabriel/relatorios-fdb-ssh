@@ -3,9 +3,15 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.4.0
+# @version 1.4.1
 # @author Ruda Gabriel
 # @changelog
+#   1.4.1 - 2026-10-07 22:30 - Correcoes da varredura de bugs.
+#     - Mutex abandonado (tray anterior morto sem liberar) era tratado como
+#       "outra instancia rodando" e o icone nao subia mais; agora e' adquirido.
+#     - "Reiniciar servidor" so' anuncia sucesso se o processo novo continua
+#       vivo apos 2 s (antes bastava o Start retornar, mesmo com a porta ocupada).
+#     - Data e hora do log tiradas do MESMO instante (virada da meia-noite).
 #   1.4.0 - 2026-10-05 22:30 - Encerramento com mensagem clara. "Sair" e
 #     "Reiniciar servidor" matavam o processo direto (taskkill /F): o servidor
 #     nao tinha chance de registrar nada no log nem avisar as telas abertas, e
@@ -50,7 +56,10 @@ function Write-TrayLog {
     param([string]$Msg, [string]$Nivel = "INFO")
     try {
         $prefixo = if ($Nivel -eq "INFO") { "" } else { "$($Nivel): " }
-        $linha = "[{0}] [{1}] [TRAY] {2}{3}" -f (Get-Date -Format "dd-MM-yyyy"), (Get-Date -Format "HH:mm:ss"), $prefixo, $Msg
+        # Data e hora do MESMO instante (duas chamadas a Get-Date podiam cair em
+        # dias diferentes na virada da meia-noite).
+        $agora = Get-Date
+        $linha = "[{0:dd-MM-yyyy}] [{0:HH:mm:ss}] [TRAY] {1}{2}" -f $agora, $prefixo, $Msg
         Add-Content -Path $LOG_PATH -Value $linha -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch {}
 }
@@ -61,7 +70,12 @@ function Write-TrayLog {
 $mutexName = "Global\RelatoriosTray_7734"
 $mutex = New-Object System.Threading.Mutex($false, $mutexName)
 $acquired = $false
-try { $acquired = $mutex.WaitOne(0) } catch { $acquired = $false }
+# AbandonedMutexException = o tray anterior morreu sem liberar o mutex: ele
+# FOI adquirido por esta instancia. Tratar como "outra instancia rodando"
+# fazia o icone nunca mais subir ate reiniciar o Windows.
+try { $acquired = $mutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+catch { $acquired = $false }
 if (-not $acquired) {
     Write-TrayLog "Outra instancia ja esta rodando (mutex ja em uso) - encerrando esta sem fazer nada."
     exit 0
@@ -536,7 +550,16 @@ $itemReiniciar.Add_Click({
     $reiniciouOk = $false
     try {
         $script:nodeProc = [System.Diagnostics.Process]::Start($psi)
-        $reiniciouOk = ($null -ne $script:nodeProc)
+        # Confere que o processo NAO morreu logo em seguida (ex.: porta ainda
+        # ocupada por um servidor que nao respondeu ao encerramento -> EADDRINUSE).
+        # Antes bastava o Start retornar algo para o balao dizer "sucesso".
+        if ($null -ne $script:nodeProc) {
+            Start-Sleep -Milliseconds 2000
+            $reiniciouOk = -not $script:nodeProc.HasExited
+            if (-not $reiniciouOk) {
+                Write-TrayLog "Servidor relancado encerrou logo em seguida (codigo $($script:nodeProc.ExitCode)) - porta $PORT ainda ocupada?" "ERRO"
+            }
+        }
     } catch {
         Write-TrayLog "Falha ao relancar o servidor: $($_.Exception.Message)" "ERRO"
     }

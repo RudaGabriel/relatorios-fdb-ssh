@@ -114,6 +114,25 @@ test("gerador: hora-fixada-cache.json registra venda cancelada e gerencial conve
     assert.strictEqual(c[k301].situacao, "convertida");
     assert.deepStrictEqual(c[k301].convertidaEm, { tipo: "nfce", numero: "125000" });
 
+    // v3.8.1: gerencial marcada 'S' MAS com documento fiscal apontando para ela
+    // = convertida (o vínculo prevalece); número repetido com uma linha
+    // cancelada e outra ativa = ativa (é a que está na tela).
+    alterar(st => {
+        st.nfce.push({ numero: "302", hora: horaHaMin(10), modelo: 99 });
+        st.nfce.push({ numero: "303", hora: horaHaMin(10), modelo: 65 });
+    });
+    gerar(dir);
+    alterar(st => {
+        st.nfce.find(r => r.numero === "302").canc = "S";
+        st.nfce.push({ numero: "125001", hora: horaHaMin(1), modelo: 65, gerencial: "302" });
+        st.nfce.push({ numero: "303", hora: horaHaMin(10), modelo: 65, canc: "S" });
+    });
+    gerar(dir);
+    c = lerCache();
+    assert.strictEqual(c[hojeISO() + "|302"].situacao, "convertida", "vínculo GERENCIAL prevalece sobre o 'S'");
+    assert.deepStrictEqual(c[hojeISO() + "|302"].convertidaEm, { tipo: "nfce", numero: "125001" });
+    assert.strictEqual(c[hojeISO() + "|303"].situacao, undefined, "a 303 ativa está na tela — não pode virar cancelada");
+
     // 300 volta a ficar ativa: a situação sai, a hora continua a mesma.
     alterar(st => { st.nfce[0].canc = "N"; });
     gerar(dir);
@@ -299,6 +318,18 @@ test("servidor: encerramento ordenado registra no log, avisa as abas e sai com c
         let recebido = "";
         const lendo = (async () => { try { for (;;) { const { value, done } = await leitor.read(); if (done) break; recebido += Buffer.from(value).toString("utf8"); } } catch (_) {} })();
 
+        // Antes de encerrar (v2.15.5): pollStatus rodando sem nenhuma venda nova;
+        // erro da tela com várias linhas; pollInterval/maxLogLines fora da faixa.
+        await esperar(4000);
+        await fetch(srv.base + "/api/log-error", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ msg: "erro de teste", stack: "linha A\nlinha B\nlinha C" }) });
+        const rc = await fetch(srv.base + "/api/config", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pollInterval: 500000000, maxLogLines: 999999999 }) });
+        assert.ok(rc.status < 500, "config fora da faixa não pode derrubar a rota");
+        const cfgEf = await (await fetch(srv.base + "/api/config")).json();
+        assert.ok(cfgEf.pollInterval >= 100 && cfgEf.pollInterval <= 60000, "pollInterval efetivo fora da faixa: " + cfgEf.pollInterval);
+        assert.ok(cfgEf.maxLogLines >= 100 && cfgEf.maxLogLines <= 100000, "maxLogLines efetivo fora da faixa: " + cfgEf.maxLogLines);
+
         const r = await fetch(srv.base + "/api/encerrar?origem=teste-automatico");
         assert.strictEqual(r.status, 200);
         await Promise.race([saiu, esperar(8000)]);
@@ -308,6 +339,10 @@ test("servidor: encerramento ordenado registra no log, avisa as abas e sai com c
         assert.match(recebido, /"type":"encerrando"/, "as abas deveriam receber o aviso de encerramento");
         const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
         assert.match(log, /=== Servidor encerrado: encerramento solicitado por teste-automatico ===/);
+        assert.ok(!/Dados alterados/.test(log), "sem venda nova, a verificação de reserva não pode acusar mudança (vendas+pagamentos × vendas):\n" + log);
+        const semCat = log.split("\n").filter(l => l.trim() && !/^\[\d\d-\d\d-\d{4}\] \[\d\d:\d\d:\d\d\] \[[A-Z]+\] /.test(l));
+        assert.deepStrictEqual(semCat, [], "toda linha física (inclusive stack de várias linhas) leva data, hora e categoria");
+        assert.match(log, /\[NAVEGADOR\]     \| linha B/, "linhas de continuação do stack");
     } finally { srv.parar(); }
 });
 

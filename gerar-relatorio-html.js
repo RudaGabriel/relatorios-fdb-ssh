@@ -1,17 +1,19 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.0
+ * @version 3.8.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.8.0 - 2026-10-07 22:00 - Situação da venda no hora-fixada-cache.json.
- *     - Venda que já tinha hora fixada e depois foi CANCELADA ou CONVERTIDA (gerencial →
- *       NFC-e/NF-e) continuava no arquivo como ativa. Agora a entrada ganha
- *       "situacao": "cancelada" | "convertida" e, na conversão, "convertidaEm": {tipo,
- *       numero} do documento fiscal (vínculo GERENCIAL da NFCE, ou a reconciliação com a
- *       NF-e da tabela VENDAS). Voltou a ficar ativa → os campos saem. A hora fixada nunca
- *       muda; só entradas que já existem são atualizadas; o arquivo só é regravado quando
- *       algo mudou.
+ *   3.8.1 - 2026-10-07 23:00 - Correções da varredura de bugs.
+ *     - Situação no hora-fixada-cache.json: venda que vai para a tela é sempre "ativa",
+ *       mesmo que outra linha com a mesma chave esteja cancelada (número repetido, NFC-e
+ *       ainda sem número próprio); conversão reconhecida por QUALQUER número da gerencial
+ *       (mesmo critério da tela) e antes do cancelamento (o PDV pode marcar a origem com
+ *       'S' ao converter); NF-e da tabela VENDAS cancelada também ganha a situação;
+ *       número de "convertidaEm" sempre sem zeros à esquerda.
+ *     - Somente leitura: se a versão do node-firebird não puder ser lida (pacote que
+ *       bloqueia o package.json), a transação continua readOnly — antes caía na forma
+ *       de lista, que no driver 1.x/2.x vira transação de ESCRITA com espera.
  */
 
 (function() {
@@ -19,7 +21,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.0";
+    const SCRIPT_VERSION = "3.8.1";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -62,11 +64,27 @@
     // o certo é read_committed (15) + rec_version (17), escrito aqui por número.
     var _somenteLeitura = function(FB) {
         if (!FB || FB.__somenteLeitura) return FB;
-        var maior = 0;
-        try { maior = parseInt(String(require("node-firebird/package.json").version).split(".")[0], 10) || 0; } catch (_) {}
+        // Versão do driver: pelo package.json do módulo e, se o pacote bloquear
+        // esse caminho (campo "exports" em versões futuras), lendo o arquivo do disco.
+        var maior = NaN;
+        try { maior = parseInt(String(require("node-firebird/package.json").version).split(".")[0], 10); } catch (_) {}
+        if (!(maior >= 0)) {
+            try {
+                var _fsV = require("fs"), _pV = require("path"), _dV = _pV.dirname(require.resolve("node-firebird"));
+                for (var _iV = 0; _iV < 6 && !(maior >= 0); _iV++) {
+                    try {
+                        var _pkV = JSON.parse(_fsV.readFileSync(_pV.join(_dV, "package.json"), "utf8"));
+                        if (_pkV && _pkV.name === "node-firebird") maior = parseInt(String(_pkV.version).split(".")[0], 10);
+                    } catch (_) {}
+                    _dV = _pV.dirname(_dV);
+                }
+            } catch (_) {}
+        }
         // node-firebird 1.x aceita objeto de opções; versões antigas só a lista de isolamento.
         var ISO_REC_VERSION = [15, 17]; // isc_tpb_read_committed + isc_tpb_rec_version
-        var TX = maior >= 1 ? { isolation: ISO_REC_VERSION, readOnly: true, wait: false } : ISO_REC_VERSION;
+        // Lista só no 0.x CONFIRMADO. No 1.x uma lista vira transação de ESCRITA com
+        // espera (readOnly:false, wait:true) — por isso versão desconhecida usa o objeto.
+        var TX = maior === 0 ? ISO_REC_VERSION : { isolation: ISO_REC_VERSION, readOnly: true, wait: false };
         var SQL_LEITURA = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(select|with)\b/i;
         var recusar = function(sql, cb) {
             var cmd = String(sql || "").trim().split(/\s+/)[0] || "(vazio)";
@@ -964,17 +982,22 @@
 			const _tipoDoModelo = (m) => m === 65 ? "nfce" : m === 55 ? "nfe" : m === 99 ? "gerencial" : "desconhecido";
 			const _situacaoCache = _horaSituacoes;
 			for (const n of rNfce.rows) {
-				const _idPr = validCols.map(c => String(n["VAL_" + c] || "").trim().replace(/^0+/, "")).find(Boolean);
+				const _idsL = validCols.map(c => String(n["VAL_" + c] || "").trim().replace(/^0+/, "")).filter(Boolean);
+				const _idPr = _idsL[0];
 				if (!_idPr) continue;
 				const _ch = toISO(n.DATA) + "|" + _idPr;
 				const _mod = Number(n.MODELO || 65);
+				// Mesmo critério do laço principal: gerencial com documento fiscal
+				// válido apontando para QUALQUER um dos seus números.
+				const _dest = _mod === 99 ? _idsL.map(i => _gerenciaisAbsorvidasPorDocFiscal.get(i)).find(Boolean) : null;
 				let _sit = null;
-				if (n.CANC === 'S' || n.SIT === 'C' || n.EMI === 'C') {
-					_sit = { situacao: "cancelada" };
-				} else if (n.CANC === 'T' || (_mod === 99 && _gerenciaisAbsorvidasPorDocFiscal.has(_idPr))) {
-					const _dest = _gerenciaisAbsorvidasPorDocFiscal.get(_idPr);
+				// O vínculo GERENCIAL (documento válido) vem primeiro: o PDV pode marcar
+				// a gerencial de origem como cancelada ('S') ao converter.
+				if (_dest || n.CANC === 'T') {
 					_sit = { situacao: "convertida" };
 					if (_dest) _sit.convertidaEm = { tipo: _tipoDoModelo(_dest.docModelo), numero: String(_dest.docNumero) };
+				} else if (n.CANC === 'S' || n.SIT === 'C' || n.EMI === 'C') {
+					_sit = { situacao: "cancelada" };
 				}
 				// Mais de uma linha com a mesma chave: cancelada/convertida prevalece.
 				if (!_situacaoCache.has(_ch) || _sit) _situacaoCache.set(_ch, _sit);
@@ -1144,7 +1167,6 @@
 						WHERE ${_cVd} BETWEEN cast(? as date) AND cast(? as date)
 						  AND ${_cVm} = '55'
 						  AND v.TOTAL > 0
-						  AND ${_cVcc} IS NULL
 					`, [dataInicioISO, dataFimISO]);
 					tick("VENDAS NF-e");
 					if (_rV.e) _falhasLeitura.push({ fonte: "VENDAS (NF-e)", detalhe: String(_rV.e.message || _rV.e) });
@@ -1152,6 +1174,17 @@
 						for (const vr of _rV.rows) {
 							const _vTotal = Number(vr.TOTAL_V || 0);
 							if (_vTotal <= 0) continue;
+							// NF-e cancelada (antes filtrada no SQL): fica fora do relatório
+							// como sempre, e a entrada dela no cache de hora ganha a situação.
+							if (vr.CANCEL_V) {
+								const _dtC = toISO(vr.DATA_V);
+								const _nfC = String(vr.NF_NUM || "").trim();
+								if (_dtC && _nfC) {
+									_situacaoCache.set(_dtC + "|" + numeroNfeParaExibir(_nfC), { situacao: "cancelada" });
+									_situacaoCache.set(_dtC + "|" + (_nfC.replace(/^0+/, "") || _nfC), { situacao: "cancelada" });
+								}
+								continue;
+							}
 							// Descarta NF-e rejeitada pela SEFAZ (ex.: "Rejeicao: Informado Cupom
 							// Fiscal referenciado") — comparação em maiúsculas e sem acento para
 							// cobrir "Rejeição"/"Rejeicao" e variações de charset do Firebird.
@@ -1282,7 +1315,7 @@
 						if (alvoKey === gerKey) { idIndex.set(alias, escolhida.key); _aliasesGerencialAbsorvida.add(alias); }
 					}
 					mapVendas.delete(gerKey);
-					_situacaoCache.set(gerKey, { situacao: "convertida", convertidaEm: { tipo: "nfe", numero: String(alvo.numero) } });
+					_situacaoCache.set(gerKey, { situacao: "convertida", convertidaEm: { tipo: "nfe", numero: String(alvo.numero).replace(/^0+/, "") || String(alvo.numero) } });
 					const _obs = candidatas.length > 1 ? ` (${candidatas.length} candidatas disponíveis, escolhida a mais próxima)` : "";
 					console.log(`RECONCILIACAO: Gerencial ${gerVenda.numero} absorvida pela NF-e ${alvo.numero} (mesma data/valor, ${escolhida.horaMin - gerHoraMin}min depois)${_obs}.`);
 					_duplicatasProvaveis.push({
@@ -1615,6 +1648,12 @@
 					}
 				}
 			}
+
+			// Venda que vai para a tela é ATIVA no cache de hora, mesmo que outra linha
+			// com a mesma chave (número repetido, NFC-e ainda sem número próprio)
+			// esteja cancelada/convertida. "Recebimento" (pagamento sem venda) não
+			// conta: sobra de uma gerencial cancelada não a faz parecer ativa.
+			for (const [k, v] of mapVendas) if (!v.is_recebimento && _situacaoCache.get(k)) _situacaoCache.set(k, null);
 
 			const linhas = [];
 

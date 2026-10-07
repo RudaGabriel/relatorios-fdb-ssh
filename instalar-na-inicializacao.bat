@@ -142,9 +142,20 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.13.0
+:: instalar-na-inicializacao.bat                       v1.13.1
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
+::
+:: CHANGELOG 1.13.1 - 2026-10-07 22:30 - Acentos (nome e caminhos).
+::   - O nome do sistema ia para o config.json por um .ps1 temporario gravado
+::     em UTF-8 (chcp 65001) que o PowerShell 5.1 le como ANSI: "Farmacia"
+::     com acento virava lixo. Agora nome e caminho vao por variavel de
+::     ambiente (Unicode, sem escape).
+::   - O atalho da pasta Inicializar (alternativa a tarefa) gravava o caminho
+::     do bootstrap em UTF-8 dentro de um .vbs, que o wscript le como ANSI:
+::     perfil com acento nunca iniciava. Agora o .vbs monta o caminho na hora
+::     com %%LOCALAPPDATA%%. O bootstrap.vbs v1.1.0 le o launcher.path em UTF-8.
+::   - Removido o rotulo :bootstrap_ok duplicado ("Bootstrap criado" saia 2x).
 ::
 :: CHANGELOG 1.13.0 - 2026-10-07 10:00 - Tarefa agendada com a configuracao
 ::   completa (via _criar-tarefa.ps1, ao lado deste .bat): dispara "Ao fazer
@@ -306,25 +317,20 @@ set "NOVO_NOME="
 set /p NOVO_NOME=Nome do sistema: 
 if "!NOVO_NOME!"=="" set "NOVO_NOME=Relatorios"
 
-:: BUG FIX (quebra silenciosa): NOVO_NOME e CFG sao embutidos dentro de
-:: strings PowerShell delimitadas por aspas simples ($n = '...'). Nomes de
-:: loja com apostrofo sao COMUNS ("Bob's Pet Shop", "D'Angelo Modas") e o
-:: caminho do script pode estar sob um perfil de usuario com apostrofo
-:: (ex: C:\Users\O'Brien\...) - sem escapar, a aspas simples fecha a string
-:: PowerShell prematuramente, quebrando a sintaxe. O script gerado falhava
-:: silenciosamente (stderr redirecionado para nul na linha de execucao
-:: abaixo), e o config.json NUNCA era atualizado, sem nenhum aviso ao
-:: usuario. Em PowerShell, uma aspa simples dentro de string de aspas
-:: simples se escapa DOBRANDO-A (' vira '') - replicado aqui via
-:: substituicao de variavel do proprio cmd.exe (!VAR:'=''!).
-set "NOVO_NOME_PS=!NOVO_NOME:'=''!"
-set "CFG_PS=!CFG:'=''!"
+:: NOVO_NOME e CFG vao ao PowerShell por VARIAVEL DE AMBIENTE (v1.13.1), e nao
+:: embutidos no texto do .ps1 temporario. Assim: (1) apostrofo no nome ("Bob's
+:: Pet Shop") ou no caminho (C:\Users\O'Brien) nao quebra a string PowerShell -
+:: nao ha string a escapar; (2) acento nao vira lixo: o .ps1 e' gravado em
+:: UTF-8 (chcp 65001) e o PowerShell 5.1 o le como ANSI, mas o ambiente e'
+:: Unicode. Antes, o valor ia escapado ('' ) dentro do texto do script.
+set "REL_NOVO_NOME=!NOVO_NOME!"
+set "REL_CFG=!CFG!"
 
 :: Salva appName no config.json via PowerShell (lida com BOM e JSON corrompido)
 set "_TMPPS=%TEMP%\_relcfgwrite_%RANDOM%.ps1"
 (
-    echo $n = '!NOVO_NOME_PS!'
-    echo $p = '!CFG_PS!'
+    echo $n = $env:REL_NOVO_NOME
+    echo $p = $env:REL_CFG
     echo $o = @{}
     echo try{
     echo   $raw = [System.IO.File]::ReadAllText($p,[System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
@@ -471,16 +477,6 @@ pause
 exit /b 1
 
 :bootstrap_ok
-
-
-:bootstrap_ok
-if not exist "!BOOTSTRAP_FILE!" (
-    echo ERRO: Nao foi possivel criar o bootstrap local.
-    echo Verifique permissoes em: !BOOTSTRAP_DIR!
-    pause
-    exit /b 1
-)
-echo Bootstrap criado com sucesso.
 echo.
 
 :: ---------------------------------------------------------------------------
@@ -562,7 +558,7 @@ if defined APP_NAME_LEGADO if exist "!STARTUP!\!APP_NAME_LEGADO! Relatorios.vbs"
 (
     echo Dim sh
     echo Set sh = CreateObject^("WScript.Shell"^)
-    echo sh.Run "wscript.exe " ^& Chr^(34^) ^& "!BOOTSTRAP_FILE!" ^& Chr^(34^), 0, False
+    echo sh.Run "wscript.exe " ^& Chr^(34^) ^& sh.ExpandEnvironmentStrings^("%%LOCALAPPDATA%%"^) ^& "\RelatoriosBootstrap\bootstrap.vbs" ^& Chr^(34^), 0, False
 ) > "!SHORTCUT!"
 
 if exist "!SHORTCUT!" (
