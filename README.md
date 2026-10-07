@@ -60,10 +60,11 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
   - NFC-e autorizada; vendedor ou forma de pagamento preenchidos depois da venda.
 
 - **Tempo até a tela atualizar:** ~140 ms do registro da venda no banco até o navegador ser avisado (medido num Firebird 3 local; era ~315 ms). Para isso:
-  - fast-poll a partir de 15 ms, que se ajusta sozinho ao tempo da consulta (no máximo 1/3 do tempo do Firebird; com 300 mil vendas e índice em `DATA`, ~45 ms). Se a consulta passar de 100 ms, o log avisa para conferir o índice no campo `DATA` das tabelas NFCE/PAGAMENT;
+  - fast-poll a partir de 15 ms, que se ajusta sozinho ao tempo da consulta (no máximo 1/3 do tempo do Firebird; com 300 mil vendas e índice em `DATA`, ~45 ms);
+  - fast-poll **dividido pelos índices** (v2.15.0): ao conectar, o sistema lê no catálogo quais tabelas têm índice na coluna de data (`NFCE.DATA`, `PAGAMENT.DATA`, `VENDAS.SAIDAD`/`EMISSAO`). As que têm vão para a **consulta rápida** (até 1/4 do tempo do banco); as que não têm, para a **complementar** (1/12, entre 250 ms e 30 s). Se todas têm índice — ou nenhuma tem — fica uma **consulta única**, como antes. O log mostra a divisão e o tempo de cada parte, por exemplo: `FastPoll: consulta rápida (NFCE, com índice) ~13 ms → a cada ~52 ms | complementar (PAGAMENT, VENDAS (NF-e), sem índice) ~269 ms → a cada ~3228 ms`. Numa base como a da loja (índice só em `NFCE.DATA`, 300 mil vendas), a venda nova passou a ser detectada em ~327 ms em vez de ~730 ms;
   - um **gerador pré-aquecido** fica sempre pronto (Node e driver do Firebird já carregados) e só lê configuração, data e hora quando recebe a ordem;
   - o gerador avisa "HTML pronto" assim que grava o arquivo, sem esperar fechar as conexões com o banco;
-  - a verificação completa (reserva do fast-poll) roda a cada 1 s e não regera em dobro o que o fast-poll já regerou;
+  - a verificação completa (reserva do fast-poll) roda a cada 1 s — a cada 10 s enquanto o fast-poll completo está saudável — e não regera em dobro o que o fast-poll já regerou;
   - numa rajada de vendas, a geração em andamento **termina** e a próxima começa logo em seguida (antes, cada venda nova cancelava a geração e a tela só atualizava quando o movimento parava).
 
   Cada venda e cada pagamento entram numa assinatura (hash) somada por tipo, numa única leitura por tabela. Se o Firebird não aceitar essa consulta, o fast-poll segue automaticamente no modo básico (quantidade e total), sem parar a detecção.
@@ -312,7 +313,7 @@ Verificado num Firebird 3 com o sistema em uso e vendas simuladas: milhares de t
 
 Arquivos que o sistema grava ficam **só na pasta dele** (`config.json`, `relatorio.log`, `hora-fixada-cache.json`).
 
-**Índices:** ao conectar, o sistema confere no catálogo do banco (só lendo) se `NFCE.DATA`, `PAGAMENT.DATA` e `VENDAS.SAIDAD` têm índice e escreve no log `Índices: ... ok` ou `AVISO índices: sem índice em ...`. Sem índice cada leitura percorre a tabela inteira; como o sistema é somente leitura, ele **não cria** índices — o aviso diz o que pedir ao suporte do Small Commerce.
+**Índices:** ao conectar, o sistema confere no catálogo do banco (só lendo) se `NFCE.DATA`, `PAGAMENT.DATA` e `VENDAS.SAIDAD` têm índice e escreve no log `Índices: ... ok` ou `AVISO índices: sem índice em ...`. Sem índice cada leitura percorre a tabela inteira; como o sistema é somente leitura, ele **não cria** índices — o aviso diz o que pedir ao suporte do Small Commerce. O fast-poll usa essa mesma leitura para decidir o que vai na consulta rápida (ver acima).
 
 ---
 

@@ -33,9 +33,13 @@ function query(sql, params, cb) {
                 .filter(r => r.hora > params[2] || (r.hora >= params[3] && r.hora < params[4]))
                 .map(r => ({ NUMERO: r.numero, HORA_VAL: r.hora, CANC: "N", TOT: 10 })));
             // (antes do esquema: esta consulta também cita RDB$RELATION_NAME IN (...))
-            // Índices (catálogo): estado.semIndice=true simula banco sem índice em DATA.
-            if (/RDB\$INDEX_SEGMENTS/.test(s))
-                return cb(null, st.semIndice ? [] : [{ T: "NFCE", C: "DATA" }, { T: "PAGAMENT", C: "DATA" }, { T: "VENDAS", C: "SAIDAD" }]);
+            // Índices (catálogo): estado.semIndice=true simula banco sem nenhum
+            // índice; estado.indices=["NFCE.DATA", ...] só os listados.
+            if (/RDB\$INDEX_SEGMENTS/.test(s)) {
+                if (st.semIndice) return cb(null, []);
+                const lista = st.indices || ["NFCE.DATA", "PAGAMENT.DATA", "VENDAS.SAIDAD"];
+                return cb(null, lista.map(x => ({ T: x.split(".")[0], C: x.split(".")[1] })));
+            }
             // Fast-poll completo (servidor v2.12.0): esquema das tabelas e a consulta
             // por tipo com assinatura. estado.semHash=true simula um Firebird que
             // recusa a consulta completa (o servidor deve cair no modo básico).
@@ -49,7 +53,10 @@ function query(sql, params, cb) {
                 Object.keys(esq).forEach(t => esq[t].forEach(c => linhas.push({ T: t, C: c })));
                 return cb(null, linhas);
             }
-            if (/G_SIG/.test(s)) {
+            // Servidor v2.15.0+: a consulta pode trazer qualquer combinação das
+            // tabelas (NFCE tem G_SIG, PAGAMENT tem PAG_SIG, VENDAS tem NFV_SIG) —
+            // devolve só os campos das tabelas consultadas.
+            if (/\bG_SIG|PAG_SIG|NFV_SIG/.test(s)) {
                 if (st.semHash) return cb(new Error("Function unknown: HASH"));
                 const h = txt => { let x = 0; for (const ch of String(txt)) x = (x * 31 + ch.charCodeAt(0)) % 1000003; return x; };
                 const o = {};
@@ -74,6 +81,11 @@ function query(sql, params, cb) {
                 const vd = st.vendas || [];
                 o.NFV_QT = vd.length; o.NFV_TOT = vd.reduce((a, r) => a + (r.total || 10), 0);
                 o.NFV_SIG = vd.reduce((a, r) => a + h([r.numero, r.total || 10, r.vendedor || ""].join("|")), 0); o.NFV_CANC = 0;
+                const temN = /\bG_SIG/.test(s), temP = /PAG_SIG/.test(s), temV = /NFV_SIG/.test(s);
+                Object.keys(o).forEach(k => {
+                    const tab = /^PAG_/.test(k) ? temP : /^NFV_/.test(k) ? temV : temN;
+                    if (!tab) delete o[k];
+                });
                 return cb(null, [o]);
             }
             if (/FP_QT/.test(s)) return cb(null, [{ FP_QT: (st.nfce || []).length, FP_TOT: (st.nfce || []).length * 10, FP_PEND: 0, FP_SVEND: 0, FP_SFORMA: 0 }]);
