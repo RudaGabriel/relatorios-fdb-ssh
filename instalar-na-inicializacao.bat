@@ -142,11 +142,21 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.12.0
+:: instalar-na-inicializacao.bat                       v1.13.0
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
-:: CHANGELOG 1.12.0 - 2026-10-06 16:30 - Tarefa agendada roda IMEDIATAMENTE
+:: CHANGELOG 1.13.0 - 2026-10-07 10:00 - Tarefa agendada com a configuracao
+::   completa (via _criar-tarefa.ps1, ao lado deste .bat): dispara "Ao fazer
+::   logon" de qualquer usuario E "Ao inicializar"; nenhuma condicao (ocioso,
+::   energia AC, reativar, rede); executa por demanda, executa assim que
+::   possivel se a inicializacao foi perdida, reinicia a cada 1 min ate 99x
+::   em caso de falha, sem limite de tempo, forca a interrupcao e nunca inicia
+::   uma segunda instancia. Sem o auxiliar (ou se ele falhar), cria a tarefa
+::   basica pelo schtasks como antes.
+::   NOVO ARQUIVO NECESSARIO: _criar-tarefa.ps1 na pasta do sistema.
+::
+:: CHANGELOG (anterior) 1.12.0 - 2026-10-06 16:30 - Tarefa agendada roda IMEDIATAMENTE
 ::   no logon (inclusive no logon automatico logo apos ligar o computador):
 ::   removido o atraso de 2 min (/delay 0002:00). A espera pela pasta de
 ::   rede continua garantida pelo bootstrap.vbs (ate 30 min). Alem disso a
@@ -476,43 +486,67 @@ echo.
 :: ---------------------------------------------------------------------------
 :: 5. Registra tarefa agendada apontando para o BOOTSTRAP LOCAL
 ::    - Nunca falha com "arquivo nao encontrado" (bootstrap e local)
-::    - Dispara no logon, sem atraso (v1.12.0): a espera pela pasta de rede
-::      fica com o bootstrap, que tenta na hora e repete por ate 30 min.
-::    - ONLOGON (e nao ONSTART) de proposito: o icone da bandeja precisa da
-::      area de trabalho do usuario. Com logon automatico, dispara assim que
-::      o computador liga.
+::    - Sem atraso: a espera pela pasta de rede fica com o bootstrap, que
+::      tenta na hora e repete por ate 30 min.
+::    - v1.13.0: configuracao completa por _criar-tarefa.ps1 - "Ao fazer
+::      logon" (qualquer usuario) + "Ao inicializar", sem condicoes,
+::      reinicio a cada 1 min ate 99x, sem limite de tempo, uma instancia so'.
+::      Roda como o usuario, "somente quando conectado": o icone da bandeja
+::      precisa da area de trabalho.
+::    - Se o auxiliar nao existir ou falhar: tarefa basica pelo schtasks
+::      (so' no logon) + ajuste de bateria/limite, como na v1.12.0.
 :: ---------------------------------------------------------------------------
 schtasks /delete /tn "!TASK_NAME!" /f >nul 2>&1
 if defined APP_NAME_LEGADO if not "!APP_NAME_LEGADO!"=="!APP_NAME!" schtasks /delete /tn "!APP_NAME_LEGADO! - Relatorios" /f >nul 2>&1
 
+set "TAREFA_OK="
+if not exist "%~dp0_criar-tarefa.ps1" goto :tarefa_schtasks
+echo Criando tarefa agendada...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_criar-tarefa.ps1" -Nome "!TASK_NAME!" -Bootstrap "!BOOTSTRAP_FILE!"
+if errorlevel 1 goto :tarefa_schtasks
+set "TAREFA_OK=completa"
+set "_LT=%TIME: =0%"
+set "_LT=!_LT:~0,8!"
+>>"%LOGF%" echo [!_LD!] [!_LT!] [INSTALL] Tarefa criada: logon de qualquer usuario + inicializacao, sem condicoes, reinicio 1 min x99, sem limite.
+goto :tarefa_criada
+
+:tarefa_schtasks
+echo   Criando tarefa basica pelo schtasks ^(somente no logon^)...
 schtasks /create /tn "!TASK_NAME!" ^
     /tr "wscript.exe \"!BOOTSTRAP_FILE!\"" ^
     /sc ONLOGON /ru "%USERNAME%" /rl LIMITED /f >nul 2>&1
+if errorlevel 1 goto :tarefa_falhou
+call :ajustar_tarefa
+set "TAREFA_OK=basica"
 
-if %errorlevel% equ 0 (
-    call :ajustar_tarefa
-    echo =======================================================
-    echo   Sucesso^^!
-    echo =======================================================
-    echo.
-    echo   Cadeia de inicializacao:
+:tarefa_criada
+echo.
+echo =======================================================
+echo   Sucesso^^!
+echo =======================================================
+echo.
+echo   Cadeia de inicializacao:
+if "!TAREFA_OK!"=="completa" (
+    echo     1. Tarefa agendada ao fazer logon e ao inicializar ^(imediata^)
+) else (
     echo     1. Tarefa agendada no logon ^(imediata, sem atraso^)
-    echo     2. bootstrap.vbs LOCAL aguarda ate 30 min pelo launcher.vbs na rede
-    echo     3. launcher.vbs lanca iniciar-tray.ps1 ^(oculto^)
-    echo     4. iniciar-tray.ps1 aguarda ate 30 min pelo servidor-relatorio.js
-    echo     5. servidor-relatorio.js aguarda ate 30 min pelo banco Firebird
-    echo.
-    echo   Bootstrap local ^(tarefa aponta aqui^):
-    echo     !BOOTSTRAP_FILE!
-    echo.
-    echo   Launcher na rede ^(bootstrap espera este^):
-    echo     !LAUNCHER_PATH!
-    echo.
-    echo   Para remover: execute remover-inicializacao.bat
-    echo.
-    goto :iniciar_agora
 )
+echo     2. bootstrap.vbs LOCAL aguarda ate 30 min pelo launcher.vbs na rede
+echo     3. launcher.vbs lanca iniciar-tray.ps1 ^(oculto^)
+echo     4. iniciar-tray.ps1 aguarda ate 30 min pelo servidor-relatorio.js
+echo     5. servidor-relatorio.js aguarda ate 30 min pelo banco Firebird
+echo.
+echo   Bootstrap local ^(tarefa aponta aqui^):
+echo     !BOOTSTRAP_FILE!
+echo.
+echo   Launcher na rede ^(bootstrap espera este^):
+echo     !LAUNCHER_PATH!
+echo.
+echo   Para remover: execute remover-inicializacao.bat
+echo.
+goto :iniciar_agora
 
+:tarefa_falhou
 :: Fallback: atalho na pasta Startup
 echo  schtasks falhou. Usando pasta de Inicializacao como fallback...
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"

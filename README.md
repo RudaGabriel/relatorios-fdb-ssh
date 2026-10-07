@@ -72,7 +72,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 ### Operação
 - **Ícone na bandeja do Windows** com abrir relatório, atualizar, gerar por período, configurações, selecionar banco, reiniciar e sair.
 - **Watchdog:** o servidor é reiniciado sozinho se cair ou travar.
-- **Inicialização automática no logon**, imediata (sem atraso; com logon automático, assim que o computador liga), inclusive em notebook na bateria, com espera de até 30 min pela pasta de rede e pelo banco.
+- **Inicialização automática** ao fazer logon (qualquer usuário) e ao ligar o computador, imediata e sem condições (funciona também em notebook na bateria), reiniciando a cada 1 min em caso de falha, com espera de até 30 min pela pasta de rede e pelo banco.
 - **Detecção automática do banco:**
   - caminhos locais conhecidos;
   - endereço salvo no `config.json`;
@@ -129,6 +129,9 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
    - instala o Node.js e o `node-firebird`, se necessário;
    - pergunta o nome do sistema (ex.: o nome da loja);
    - cria a tarefa de inicialização automática e libera a porta no firewall;
+     a tarefa dispara **ao fazer logon** (qualquer usuário) e **ao inicializar**, sem condições
+     (ocioso, energia, rede), reinicia a cada 1 min até 99 vezes se falhar, não tem limite de
+     tempo e nunca abre uma segunda cópia;
    - inicia o servidor imediatamente.
 3. Se o banco não usar as credenciais de fábrica, defina `fbUser` e `fbPass` no `config.json`.
 4. Abra o relatório pelo ícone da bandeja (duplo clique) ou em `http://localhost:7734`.
@@ -334,6 +337,7 @@ Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos,
 ├── iniciar-tray.ps1               Ícone na bandeja + watchdog
 ├── launcher.vbs / bootstrap.vbs   Inicialização oculta
 ├── instalar-na-inicializacao.bat  Instalação da inicialização automática
+├── _criar-tarefa.ps1              Auxiliar do instalador: cria a tarefa agendada completa
 ├── remover-inicializacao.bat      Remove a inicialização automática
 ├── _remover-inicializacao.ps1     Auxiliar do remover-inicializacao.bat
 ├── gerar_relatorio_do_dia.bat     Abre o relatório de hoje
