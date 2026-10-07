@@ -105,8 +105,10 @@ function query(sql, params, cb) {
                 registrar("GERACAO");
                 // estado.atrasoGeracaoMs: simula banco lento na consulta da geração.
                 const _resp = (st.nfce || []).map(r => ({
-                    DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: 10, CAIXA: "1", VENDEDOR_NFCE: "ANA",
-                    CANC: "N", SIT: "", EMI: "", HORA: r.hora, CLI_NOME: "", NAT_OP: "",
+                    // r.canc: "S" = cancelada, "T" = gerencial convertida (vínculo na coluna
+                    // GERENCIAL da NFC-e/NF-e nova, r.gerencial).
+                    DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: r.total === undefined ? 10 : r.total, CAIXA: "1", VENDEDOR_NFCE: "ANA",
+                    CANC: r.canc || "N", SIT: "", EMI: "", HORA: r.hora, CLI_NOME: "", NAT_OP: "",
                     VAL_NUMERONF: r.numero, VAL_GERENCIAL: r.gerencial || null
                 }));
                 return st.atrasoGeracaoMs ? setTimeout(() => cb(null, _resp), st.atrasoGeracaoMs) : cb(null, _resp);

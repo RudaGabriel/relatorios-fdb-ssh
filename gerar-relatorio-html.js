@@ -1,20 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.7.0
+ * @version 3.8.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.7.0 - 2026-10-07 16:30 - Somente leitura e correção de horário só na tela.
- *     - Duas travas em toda conexão (_somenteLeitura, bloco idêntico ao do servidor): só
- *       SELECT/WITH sai para o banco e toda transação é read-only, READ COMMITTED com
- *       rec_version e sem espera. Antes passava ISOLATION_READ_UNCOMMITTED, que no
- *       node-firebird 1.x abria transação de ESCRITA com espera.
- *     - --linha-de-base (enviado pelo servidor ao ligar/reconectar/trocar de banco): venda
- *       de hoje ainda sem decisão de hora é registrada como está (só hora no futuro é
- *       ajustada) — evita "corrigir" vendas legítimas ao ligar no meio do dia.
- *     - Correções feitas na geração são informadas ao servidor ("@@CORRECOES_HORA@@") para
- *       log e aviso na tela. Aviso "@@RELATORIO_PRONTO@@" ao gravar o HTML (o servidor avisa
- *       o navegador sem esperar o fechamento das conexões). Polling padrão 100 ms.
+ *   3.8.0 - 2026-10-07 22:00 - Situação da venda no hora-fixada-cache.json.
+ *     - Venda que já tinha hora fixada e depois foi CANCELADA ou CONVERTIDA (gerencial →
+ *       NFC-e/NF-e) continuava no arquivo como ativa. Agora a entrada ganha
+ *       "situacao": "cancelada" | "convertida" e, na conversão, "convertidaEm": {tipo,
+ *       numero} do documento fiscal (vínculo GERENCIAL da NFCE, ou a reconciliação com a
+ *       NF-e da tabela VENDAS). Voltou a ficar ativa → os campos saem. A hora fixada nunca
+ *       muda; só entradas que já existem são atualizadas; o arquivo só é regravado quando
+ *       algo mudou.
  */
 
 (function() {
@@ -22,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.7.0";
+    const SCRIPT_VERSION = "3.8.0";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -672,6 +669,9 @@
 	// Chaves criadas/alteradas NESTA execução — só elas são gravadas no fim
 	// (ver a mescla com o disco antes da gravação).
 	const _horaChavesAlteradas = new Set();
+	// Situação de cada venda do dia (ver "SITUAÇÃO NO hora-fixada-cache.json"):
+	// chave -> null (ativa) | {situacao: "cancelada"|"convertida", convertidaEm?}.
+	const _horaSituacoes = new Map();
 	const _definirHoraCache = (chave, valor) => {
 		_horaCache[chave] = valor;
 		_horaChavesAlteradas.add(chave);
@@ -954,6 +954,30 @@
 					const _docNumero = validCols.map(c => String(n["VAL_" + c] || "").trim().replace(/^0+/, "")).find(v => v && v !== _gVal) || "?";
 					_gerenciaisAbsorvidasPorDocFiscal.set(_gVal, { docNumero: _docNumero, docModelo: _modeloDoc });
 				}
+			}
+
+			// SITUAÇÃO NO hora-fixada-cache.json (v3.8.0): a venda que já tinha hora
+			// fixada e depois foi CANCELADA ou CONVERTIDA (gerencial → NFC-e/NF-e)
+			// continuava no arquivo como se estivesse ativa. Aqui cada linha do dia
+			// diz a situação da SUA chave (data|número próprio = ids[0], a mesma
+			// chave do cache); a gravação no fim só atualiza chaves que já existem.
+			const _tipoDoModelo = (m) => m === 65 ? "nfce" : m === 55 ? "nfe" : m === 99 ? "gerencial" : "desconhecido";
+			const _situacaoCache = _horaSituacoes;
+			for (const n of rNfce.rows) {
+				const _idPr = validCols.map(c => String(n["VAL_" + c] || "").trim().replace(/^0+/, "")).find(Boolean);
+				if (!_idPr) continue;
+				const _ch = toISO(n.DATA) + "|" + _idPr;
+				const _mod = Number(n.MODELO || 65);
+				let _sit = null;
+				if (n.CANC === 'S' || n.SIT === 'C' || n.EMI === 'C') {
+					_sit = { situacao: "cancelada" };
+				} else if (n.CANC === 'T' || (_mod === 99 && _gerenciaisAbsorvidasPorDocFiscal.has(_idPr))) {
+					const _dest = _gerenciaisAbsorvidasPorDocFiscal.get(_idPr);
+					_sit = { situacao: "convertida" };
+					if (_dest) _sit.convertidaEm = { tipo: _tipoDoModelo(_dest.docModelo), numero: String(_dest.docNumero) };
+				}
+				// Mais de uma linha com a mesma chave: cancelada/convertida prevalece.
+				if (!_situacaoCache.has(_ch) || _sit) _situacaoCache.set(_ch, _sit);
 			}
 
 			for (const n of rNfce.rows) {
@@ -1258,6 +1282,7 @@
 						if (alvoKey === gerKey) { idIndex.set(alias, escolhida.key); _aliasesGerencialAbsorvida.add(alias); }
 					}
 					mapVendas.delete(gerKey);
+					_situacaoCache.set(gerKey, { situacao: "convertida", convertidaEm: { tipo: "nfe", numero: String(alvo.numero) } });
 					const _obs = candidatas.length > 1 ? ` (${candidatas.length} candidatas disponíveis, escolhida a mais próxima)` : "";
 					console.log(`RECONCILIACAO: Gerencial ${gerVenda.numero} absorvida pela NF-e ${alvo.numero} (mesma data/valor, ${escolhida.horaMin - gerHoraMin}min depois)${_obs}.`);
 					_duplicatasProvaveis.push({
@@ -5853,7 +5878,7 @@ try {
 
     // Persiste cache de horas fixadas somente quando houve nova entrada,
     // evitando escrita desnecessária em disco a cada execução.
-    if (_horaChavesAlteradas.size > 0) {
+    if (_horaChavesAlteradas.size > 0 || _horaSituacoes.size > 0) {
         try {
             // CONCORRÊNCIA FIX (v2.8.0): este arquivo é gravado também pelo
             // servidor e por outras gerações rodando em paralelo. Antes, aqui
@@ -5879,6 +5904,28 @@ try {
                 const _discoTemFormatoNovo = _atual && typeof _atual === "object" && !Array.isArray(_atual);
                 if (!_discoTemFormatoNovo) _final[k] = _horaCache[k];
             }
+            // SITUAÇÃO (v3.8.0): venda com hora fixada que foi cancelada ou
+            // convertida (gerencial → NFC-e/NF-e) ganha "situacao" (e
+            // "convertidaEm"); se voltou a ficar ativa, os campos saem. A hora
+            // fixada nunca muda aqui. Só chaves que já existem no arquivo.
+            let _mudouSituacao = false;
+            for (const [k, sit] of _horaSituacoes) {
+                const _ent = _final[k];
+                if (_ent === undefined) continue;
+                const _obj = (_ent && typeof _ent === "object" && !Array.isArray(_ent))
+                    ? Object.assign({}, _ent) : _normalizarEntradaHoraCache(_ent);
+                const _antes = JSON.stringify([_obj.situacao || null, _obj.convertidaEm || null]);
+                if (sit) {
+                    _obj.situacao = sit.situacao;
+                    if (sit.convertidaEm) _obj.convertidaEm = sit.convertidaEm; else delete _obj.convertidaEm;
+                } else {
+                    delete _obj.situacao; delete _obj.convertidaEm;
+                }
+                if (JSON.stringify([_obj.situacao || null, _obj.convertidaEm || null]) !== _antes) {
+                    _final[k] = _obj; _mudouSituacao = true;
+                }
+            }
+            if (_horaChavesAlteradas.size === 0 && !_mudouSituacao) throw { semMudanca: true };
             // ORDENAÇÃO: reordena por tipo/número antes de gravar — ver
             // comentário completo em _ordenarHoraCache, acima.
             const _json = JSON.stringify(_ordenarHoraCache(_final), null, 2);
@@ -5893,7 +5940,8 @@ try {
                 fs.writeFileSync(_horaCacheFile, _json, "utf8");
             }
         } catch (e) {
-            console.warn("Aviso: não foi possível salvar hora-fixada-cache.json —", e.message);
+            // {semMudanca:true}: nada novo para gravar (nem hora nem situação).
+            if (!(e && e.semMudanca)) console.warn("Aviso: não foi possível salvar hora-fixada-cache.json —", e && e.message);
         }
     }
 

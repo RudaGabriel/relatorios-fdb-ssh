@@ -2,11 +2,22 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.15.3
+ * @version 2.15.4
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
+ *   2.15.4 - 2026-10-07 22:00 - Log categorizado e cache de hora sem sobrescrever.
+ *     - Toda linha do relatorio.log leva a categoria logo após o horário:
+ *       [VENDAS], [FASTPOLL], [BANCO], [GERADOR], [SERVIDOR], [API],
+ *       [NAVEGADOR], [CONFIG], [REDE], [DEBUG], [SISTEMA] — além de [TRAY],
+ *       [INSTALL] e [REMOVER], que já existiam. Etiquetas antigas no meio da
+ *       mensagem ([BROWSER-ERROR], [FDB Manual]...) viraram categoria.
+ *       console.error/warn e exceções não tratadas também ganham horário e
+ *       categoria. A leitura das mensagens únicas do dia aceita os dois formatos.
+ *     - hora-fixada-cache.json: o disco prevalece sobre a cópia em memória do
+ *       servidor (lida no boot) — senão um reinício apagaria a "situacao"
+ *       (cancelada/convertida) que o gerador v3.8.0 grava.
  *   2.15.3 - 2026-10-07 21:00 - Um refresh também na exclusão e na conversão em NFC-e.
  *     - Log da loja: venda excluída ainda dava 2 refresh (a venda sai, depois
  *       o pagamento) e gerencial convertido em NFC-e dava 3 (some do
@@ -77,7 +88,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.15.3";
+const SERVER_VERSION = "2.15.4";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -171,7 +182,15 @@ function logToFile(...args) {
         const msg = args.map(a => typeof a === "string" ? a : _util.inspect(a)).join(" ");
         const d = new Date();
         const ts = "[" + padDois(d.getDate()) + "-" + padDois(d.getMonth()+1) + "-" + d.getFullYear() + "]";
-        const linha = ts + " " + msg;
+        // Linha que não veio de logTs (console.error/warn, exceção não tratada):
+        // ganha horário e categoria aqui, no mesmo formato das demais (v2.15.4).
+        let corpo = msg;
+        if (!/^\[\d\d:\d\d:\d\d\] \[[A-Z]+\] /.test(corpo)) {
+            corpo = corpo.replace(/^ERROR:\s*/, "ERRO: ").replace(/^WARN:\s*/, "AVISO: ")
+                         .replace(/^\[(UNCAUGHT EXCEPTION|UNHANDLED REJECTION)\]\s*/, "ERRO não tratado: ");
+            corpo = "[" + padDois(d.getHours()) + ":" + padDois(d.getMinutes()) + ":" + padDois(d.getSeconds()) + "] [SISTEMA] " + corpo;
+        }
+        const linha = ts + " " + corpo;
         _logBuffer.push(linha);
         // PERF FIX: slice() criava novo array a cada push que ultrapassava o limite.
         // splice(0,1) remove o primeiro elemento in-place — O(1) vs O(n).
@@ -307,9 +326,69 @@ try { Firebird = _somenteLeitura(require("node-firebird")); } catch(e) {}
 // ---------------------------------------------------------------------------
 // Utilitarios
 // ---------------------------------------------------------------------------
-var logTs = function(msg) {
+// ---------------------------------------------------------------------------
+// CATEGORIAS DO LOG (v2.15.4)
+// ---------------------------------------------------------------------------
+// Toda linha do relatorio.log leva, logo depois do horário, a categoria entre
+// colchetes — para achar e filtrar rápido (ex.: procurar "[VENDAS]"):
+//   [DD-MM-AAAA] [HH:MM:SS] [VENDAS] FastPoll: Gerencial: vendas 30 → 31 ...
+// Categorias (as mesmas em todos os arquivos que gravam no log):
+//   VENDAS     venda nova/alterada/cancelada detectada, hora corrigida, reconciliação
+//   FASTPOLL   detecção rápida: modo, ritmo das consultas, virada de dia
+//   BANCO      conexão com o Firebird, FDB, índices, verificação de reserva
+//   GERADOR    geração do relatório (processo filho, HTML)
+//   SERVIDOR   início/parada/reinício do servidor, processos
+//   API        chamadas de outros computadores (api.ps1 etc.)
+//   NAVEGADOR  erros enviados pela tela do relatório
+//   CONFIG     configurações, proibidos, favicon
+//   REDE       IP da máquina
+//   DEBUG      detalhes (só com "logDebug": true no config.json)
+//   SISTEMA    o que não se encaixa acima
+//   TRAY / INSTALL / REMOVER  gravadas pelo ícone da bandeja e pelos .bat
+// A categoria vem do 2º argumento de logTs ou, sem ele, do início da
+// mensagem (tabela abaixo). Etiquetas antigas no começo da mensagem
+// ("[BROWSER-ERROR]", "[FDB Manual]", "[DEBUG]"...) viram a categoria.
+var _LOG_TAGS = [
+    // [etiqueta antiga no início da msg, categoria, texto que a substitui]
+    [/^\[DEBUG\]\s*/,                          "DEBUG",     ""],
+    [/^\[BROWSER-ERROR\]\s*\[API-CLIENTE\]\s*/, "API",       ""],
+    [/^\[BROWSER-ERROR\]\s*/,                  "NAVEGADOR", "Erro na tela: "],
+    [/^\[filho stderr\]\s*/,                   "GERADOR",   "Erro do gerador: "],
+    [/^\[FDB Manual\]\s*/,                     "BANCO",     "FDB manual: "]
+];
+// Ordem importa: a 1ª regra que casar decide.
+var _LOG_REGRAS = [
+    [/→ regerando|^Dados alterados|^Hora corrigida|^(AVISO )?RECONCILIACAO|^Dados atualizados durante/, "VENDAS"],
+    [/^===|Servidor pronto\.$| \| https?:\/\//,                                     "SERVIDOR"],
+    [/^Fast-?[Pp]oll|^FastPoll|^pollStatus/,                                        "FASTPOLL"],
+    [/^API: /,                                                                      "API"],
+    [/^(FDB|Banco|Arquivo (local|FDB))|credenciais/,                                "BANCO"],
+    [/[Cc]onfigura|^Janela de correção|[Ff]avicon|proibidos|config\.json/,           "CONFIG"],
+    [/maquinaIP/,                                                                   "REDE"],
+    [/servidor HTTP|^Servidor |taskkill|^Matando|_matarProcessoFilho/,              "SERVIDOR"],
+    [/[Bb]anco|FDB|Firebird|[Íí]ndices|^Poll: |^Verificando|^Escaneando|^Hosts com porta|credenciais|^Máximo de tentativas|^Timeout|itens-detalhe/, "BANCO"],
+    [/spawn|[Gg]era|HTML|<\/head>|<\/body>|proc\.close|agendarRegen|[Pp]eriodo|^Script /, "GERADOR"]
+];
+var _categoriaLog = function(msg, cat) {
+    var m = String(msg == null ? "" : msg);
+    for (var i = 0; i < _LOG_TAGS.length; i++) {
+        if (_LOG_TAGS[i][0].test(m)) {
+            m = _LOG_TAGS[i][2] + m.replace(_LOG_TAGS[i][0], "");
+            if (!cat) cat = _LOG_TAGS[i][1];
+            break;
+        }
+    }
+    if (!cat) {
+        for (var j = 0; j < _LOG_REGRAS.length; j++) {
+            if (_LOG_REGRAS[j][0].test(m)) { cat = _LOG_REGRAS[j][1]; break; }
+        }
+    }
+    return { cat: cat || "SISTEMA", msg: m };
+};
+var logTs = function(msg, categoria) {
     var d=new Date();
-    console.log("["+padDois(d.getHours())+":"+padDois(d.getMinutes())+":"+padDois(d.getSeconds())+"] "+msg);
+    var c = _categoriaLog(msg, categoria);
+    console.log("["+padDois(d.getHours())+":"+padDois(d.getMinutes())+":"+padDois(d.getSeconds())+"] ["+c.cat+"] "+c.msg);
 };
 
 // ---------------------------------------------------------------------------
@@ -718,14 +797,16 @@ try {
     var _logFullRaw = _fs.readFileSync(LOG_PATH, "utf8").split("\n");
     _logFullRaw.forEach(function(linha) {
         if (linha.indexOf("[" + _logProtDia) === 0) {
-            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(.+)$/);
+            // [data] [hora] [CATEGORIA] mensagem — a categoria (v2.15.4) é opcional
+            // para continuar lendo as linhas gravadas por versões anteriores.
+            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(?:\[[A-Z]+\]\s*)?(.+)$/);
             if (m) _logProtSet.add(m[1].trim());
         }
     });
 } catch(e) {
     _logBuffer.forEach(function(linha) {
         if (linha.indexOf("[" + _logProtDia) === 0) {
-            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(.+)$/);
+            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(?:\[[A-Z]+\]\s*)?(.+)$/);
             if (m) _logProtSet.add(m[1].trim());
         }
     });
@@ -1175,9 +1256,15 @@ var _salvarHoraFixadaCache = (function() {
                 if (String(k).split("|")[0] < _dhHoje) return; // dias anteriores: descartados
                 _mesclado[k] = _disco[k];
             });
+            // v2.15.4: o DISCO prevalece. Desde a v2.14.0 este processo não cria
+            // nem altera entradas (quem grava é o gerador, inclusive a
+            // "situacao" de vendas canceladas/convertidas); a cópia em memória
+            // é a do boot e, se prevalecesse, apagaria essas atualizações a
+            // cada reinício. Da memória entra só o que faltar no disco.
             Object.keys(_horaFixadaCache).forEach(function(k) {
                 if (String(k).split("|")[0] < _dhHoje) return; // idem para a memória
-                _mesclado[k] = _horaFixadaCache[k];
+                if (_horaCacheRemovidas.has(k)) return;
+                if (!Object.prototype.hasOwnProperty.call(_mesclado, k)) _mesclado[k] = _horaFixadaCache[k];
             });
             _horaCacheRemovidas.clear();
             // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de cada gravação —
@@ -1972,7 +2059,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         _procEncerrado = true;
         clearTimeout(_spawnTimer);
         // Flush de qualquer conteúdo restante no buffer (linha sem \n final)
-        if (_stdoutBuf.trim()) { logTs(_stdoutBuf.trim()); }
+        if (_stdoutBuf.trim()) { logTs(_stdoutBuf.trim(), "GERADOR"); }
         _stdoutBuf = "";
         if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
 
@@ -5130,6 +5217,11 @@ function _encerrarServidor(motivo, codigoSaida, reiniciando) {
     if (_encerrando) return;
     _encerrando = true;
     logTs("=== Servidor " + (reiniciando ? "reiniciando" : "encerrado") + ": " + motivo + " ===");
+    // Para a detecção já: sem isto, nos ~0,7 s até sair, o fast-poll (ou uma
+    // venda pendente esperando o pagamento) ainda registrava "→ regerando"
+    // DEPOIS da linha de encerramento.
+    try { if (_fpIntervalId) { clearInterval(_fpIntervalId); _fpIntervalId = null; } } catch(_) {}
+    try { _fpDescartarPendente(); } catch(_) {}
     try { broadcastSSE({ type: "encerrando", reiniciando: !!reiniciando }); } catch(_) {}
     try { clearTimeout(_logFlushTimer); _flushLog(); } catch(_) {}
     try { server.close(); } catch(_) {}

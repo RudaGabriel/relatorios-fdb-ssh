@@ -319,6 +319,16 @@ A **janela de correção** fica em *Configurações → Janela de correção de 
 
 Cada correção é registrada no log (`Hora corrigida na tela (banco não alterado)`) e avisada na tela.
 
+Se uma venda com hora fixada for **cancelada** ou **convertida** (gerencial → NFC-e/NF-e), a entrada dela no `hora-fixada-cache.json` passa a mostrar isso — a hora fixada não muda:
+
+```json
+"2026-10-07|63467": { "tipo": "gerencial", "hora": "12:55", "situacao": "cancelada" },
+"2026-10-07|63449": { "tipo": "gerencial", "hora": "11:48", "situacao": "convertida",
+                      "convertidaEm": { "tipo": "nfce", "numero": "125269" } }
+```
+
+Se a venda voltar a ficar ativa, os campos `situacao`/`convertidaEm` saem.
+
 ---
 
 ## Somente leitura
@@ -350,11 +360,28 @@ Arquivos que o sistema grava ficam **só na pasta dele** (`config.json`, `relato
 
 ## Logs e diagnóstico
 
-Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, instalador e removedor, no formato `[DD-MM-AAAA] [HH:MM:SS] mensagem`. A primeira linha de cada dia mostra as versões em uso:
+Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, instalador e removedor, no formato `[DD-MM-AAAA] [HH:MM:SS] [CATEGORIA] mensagem`. A categoria logo após o horário facilita achar e filtrar (por exemplo, procure `[VENDAS]`):
 
 ```
-[05-10-2026] [08:00:01] === Servidor iniciado 05/10/2026 === Servidor v2.10.0 | Gerador v3.3.0
+[07-10-2026] [08:00:01] [SERVIDOR] === Servidor iniciado 07/10/2026 === Servidor v2.15.4 | Gerador v3.8.0
+[07-10-2026] [08:00:06] [BANCO] Índices: NFCE.DATA, PAGAMENT.DATA — ok (consultas rápidas).
+[07-10-2026] [12:43:31] [VENDAS] FastPoll: Gerencial: vendas 30 → 31 (↑ +1), ... | Pagamentos: 40 → 41 ... → regerando.
 ```
+
+| Categoria | O que registra |
+|---|---|
+| `[VENDAS]` | Venda nova, alterada, excluída ou convertida detectada; hora corrigida; reconciliação gerencial → NF-e |
+| `[FASTPOLL]` | Detecção rápida: modo, ritmo das consultas, virada de dia |
+| `[BANCO]` | Conexão com o Firebird, caminho do FDB, índices, credenciais |
+| `[GERADOR]` | Geração do relatório (processo filho, HTML) |
+| `[SERVIDOR]` | Início, parada e reinício do servidor |
+| `[API]` | Chamadas de outros computadores (`api.ps1` etc.) |
+| `[NAVEGADOR]` | Erros enviados pela tela do relatório |
+| `[CONFIG]` | Configurações, proibidos, ícone |
+| `[REDE]` | IP da máquina |
+| `[TRAY]` / `[INSTALL]` / `[REMOVER]` | Ícone da bandeja, instalador e removedor |
+| `[DEBUG]` | Detalhes (só com `"logDebug": true`) |
+| `[SISTEMA]` | Demais mensagens e erros não tratados |
 
 - Chamadas à API vindas de **outros computadores** são registradas com IP e nome da máquina.
 - Para investigar desempenho, ative `"logDebug": true` no `config.json`.
