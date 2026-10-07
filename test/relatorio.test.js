@@ -400,6 +400,34 @@ test("servidor: venda e pagamento gravados em momentos diferentes geram UM refre
         assert.match(linhas[0], /vendas 1 → 2 .*Pagamentos: 1 → 2/, "a linha deve trazer a venda e o pagamento");
         assert.strictEqual(geracoes() - g0, 1, "deveria gerar o relatório UMA vez");
 
+        // Venda EXCLUÍDA: a venda sai e o pagamento sai 400 ms depois → um refresh.
+        const g2 = geracoes(), r2 = regerando();
+        alterar(st => { st.nfce = st.nfce.filter(r => r.numero !== "102"); });
+        await esperar(400);
+        alterar(st => { st.pag = st.pag.filter(r => r.numero !== "102"); });
+        await esperar(4000);
+        const lx = log().split("\n").filter(l => /FastPoll: .*→ regerando\./.test(l)).slice(r2);
+        assert.strictEqual(lx.length, 1, "exclusão: uma detecção (venda + pagamento):\n" + lx.join("\n"));
+        assert.match(lx[0], /vendas 2 → 1 .*Pagamentos: 2 → 1/);
+        assert.strictEqual(geracoes() - g2, 1, "exclusão: uma geração");
+
+        // Gerencial CONVERTIDO em NFC-e (como no caixa): some do gerencial e fica
+        // "aguardando autorização" (total 0) ~1,5 s, vira NFC-e autorizada e, logo
+        // depois, a forma do pagamento muda → antes 3 refresh, agora UM.
+        alterar(st => { st.nfce.push({ numero: "103", hora: horaHaMin(0.1), modelo: 99, total: 20 }); st.pag.push({ numero: "103", hora: horaHaMin(0.1), valor: 20 }); });
+        await esperar(4000);
+        const g3 = geracoes(), r3 = regerando();
+        alterar(st => { const v = st.nfce.find(r => r.numero === "103"); v.modelo = 65; v.total = 0; });
+        await esperar(1500);
+        alterar(st => { st.nfce.find(r => r.numero === "103").total = 20; });
+        await esperar(300);
+        alterar(st => { st.pag.find(r => r.numero === "103").forma = "05 PIX"; });
+        await esperar(4000);
+        const lc = log().split("\n").filter(l => /FastPoll: .*→ regerando\./.test(l)).slice(r3);
+        assert.strictEqual(lc.length, 1, "conversão em NFC-e: uma detecção:\n" + lc.join("\n"));
+        assert.match(lc[0], /Gerencial: vendas 1 → 0 .*NFC-e: vendas 1 → 2 .*Pagamentos: forma ou valor alterado/);
+        assert.strictEqual(geracoes() - g3, 1, "conversão em NFC-e: uma geração");
+
         // Mudança que não traz pagamento (troca de vendedor): gera logo, uma vez.
         const g1 = geracoes(), r1 = regerando();
         alterar(st => { st.nfce[0].vendedor = "BIA"; });
