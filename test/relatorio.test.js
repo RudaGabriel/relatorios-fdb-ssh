@@ -277,10 +277,12 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
     const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
     const geracoes = () => lerSqlLog(dir).split("\n").filter(l => l === "GERACAO").length;
     const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st)); };
+    // Espera pela condição (até 10 s) em vez de um tempo fixo: com a máquina
+    // ocupada a geração pode demorar mais, e o teste não deve depender disso.
     const etapa = async (fn, padrao, msg) => {
         const g0 = geracoes();
         alterar(fn);
-        await esperar(3000);
+        for (let t = 0; t < 100 && !(padrao.test(log()) && geracoes() > g0); t++) await esperar(100);
         assert.match(log(), padrao, msg + "\n" + log().split("\n").filter(l => /FastPoll/.test(l)).join("\n"));
         assert.ok(geracoes() > g0, msg + ": deveria regerar o relatório");
     };
@@ -312,5 +314,26 @@ test("servidor: sem suporte à consulta completa, o fast-poll segue no modo bás
         fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
         await esperar(3000);
         assert.match(log(), /FastPoll: vendas 2 > 1/, "o modo básico ainda deve detectar venda nova");
+    } finally { srv.parar(); }
+});
+
+test("servidor: gerador pré-aquecido fica pronto e não sobra processo ao encerrar", { timeout: 60000, skip: process.platform === "win32" ? "usa ps (Linux/macOS)" : false }, async () => {
+    const dir = montarPasta({}, { nfce: [{ numero: "101", hora: horaHaMin(0.1) }] });
+    const srv = await iniciarServidor(dir);
+    const reservas = () => spawnSync("ps", ["-eo", "pid,args"], { encoding: "utf8" }).stdout
+        .split("\n").filter(l => l.includes("node-firebird") && l.includes(dir));
+    try {
+        await esperar(4000);
+        assert.ok(reservas().length >= 1, "deveria haver um gerador pré-aquecido esperando a ordem");
+        // Uma venda nova usa a reserva e uma nova é preparada em seguida.
+        const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
+        st.nfce.push({ numero: "102", hora: horaHaMin(0.1) });
+        fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+        await esperar(3000);
+        assert.strictEqual(reservas().length, 1, "deveria repor exatamente uma reserva");
+        const r = await fetch(srv.base + "/api/encerrar?origem=teste");
+        assert.strictEqual(r.status, 200);
+        await esperar(2500);
+        assert.strictEqual(reservas().length, 0, "nenhum gerador pode sobrar depois de encerrar:\n" + reservas().join("\n"));
     } finally { srv.parar(); }
 });

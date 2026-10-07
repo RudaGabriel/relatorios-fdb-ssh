@@ -1,18 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.5.0
+ * @version 3.6.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.5.0 - 2026-10-06 16:00 - Volta o chip de desconto na coluna Itens (tinha se perdido
- *     numa atualização): depois dos 3 itens e do "+N mais…", a venda com desconto ganha o
- *     chip vermelho "tdItemChip tdItemDesc" com o texto "Desconto de 10% (−R$ 7,50)",
- *     cortado com reticências quando não couber na célula. Ao passar o
- *     mouse mostra o detalhamento (valor e % do desconto, soma dos itens, total com
- *     desconto e cada linha de desconto); o clique abre o modal normalmente. Mesma regra
- *     do modal: item com valor negativo é desconto, % sobre a soma dos itens positivos.
- *     Percentual abaixo de 1% aparece com uma casa (0,5%) no chip e no modal, que antes
- *     arredondava para 1%. Altura máxima da célula de itens ampliada para caber o chip.
+ *   3.6.0 - 2026-10-07 14:30 - Aviso de pronto: assim que o HTML e o cache de horas estão
+ *     gravados, imprime a linha "@@RELATORIO_PRONTO@@". O servidor (v2.13.0+) conclui a
+ *     geração e avisa o navegador nesse instante, sem esperar o fechamento das conexões
+ *     com o Firebird (~100 ms). Configurações: intervalo de polling padrão 100 ms
+ *     (mínimo 100). Com servidor antigo a linha é ignorada e tudo segue como antes.
  */
 
 (function() {
@@ -20,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.5.0";
+    const SCRIPT_VERSION = "3.6.0";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -5083,7 +5079,7 @@ var __abrirModalConfig = function() {
         // XSS FIX (v2.8.0): valores do servidor entram no HTML abaixo — escapados
         // com esc() (& < > "), não só aspas.
         var _pn  = esc(String(cfg.appName  || ""));
-        var _pi  = parseInt(cfg.pollInterval || 800, 10);
+        var _pi  = parseInt(cfg.pollInterval || 100, 10);
         var _ml  = parseInt(cfg.maxLogLines  || 1000, 10);
         var _fv  = String(cfg.favicon        || "");
         var _td  = parseInt(cfg.toastDuration || 5000, 10);
@@ -5109,7 +5105,7 @@ var __abrirModalConfig = function() {
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Intervalo de atualização automática (ms)</div>' +
-                '<input type="number" id="cfgPollInterval" value="' + _pi + '" min="200" step="100" class="input" style="flex:1">' +
+                '<input type="number" id="cfgPollInterval" value="' + _pi + '" min="100" step="50" class="input" style="flex:1">' +
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Máx. linhas de log interno</div>' +
@@ -5359,7 +5355,7 @@ var __abrirModalConfig = function() {
             var _btn = document.getElementById("cfgSalvar");
             var _st  = document.getElementById("cfgStatus");
             var an   = String(document.getElementById("cfgAppName").value     || "").trim();
-            var pi   = parseInt(document.getElementById("cfgPollInterval").value, 10) || 800;
+            var pi   = parseInt(document.getElementById("cfgPollInterval").value, 10) || 100;
             var ml   = parseInt(document.getElementById("cfgMaxLogLines").value, 10)  || 1000;
             var td   = parseInt(document.getElementById("cfgToastDuracao").value, 10) || 5000;
             var jh   = parseInt(document.getElementById("cfgJanelaHora").value, 10);
@@ -5368,7 +5364,7 @@ var __abrirModalConfig = function() {
             var favFile = _fileInp.files && _fileInp.files[0];
 
             if (!an) { toast("Erro", "O nome do sistema não pode estar vazio."); return; }
-            if (pi < 200) { toast("Erro", "Intervalo mínimo: 200 ms."); return; }
+            if (pi < 100) { toast("Erro", "Intervalo mínimo: 100 ms."); return; }
             if (ml < 100) { toast("Erro", "Mínimo de 100 linhas de log."); return; }
             if (td < 500) { toast("Erro", "Duração mínima de aviso: 500 ms."); return; }
             if (!(jh >= 5 && jh <= 720)) { toast("Erro", "Janela de correção de horário: entre 5 e 720 minutos."); return; }
@@ -5802,6 +5798,10 @@ try {
         }
     }
 
+    // Aviso de pronto (v3.6.0): HTML e cache de horas já estão gravados. O
+    // servidor conclui a geração e avisa o navegador NESTE momento, sem esperar
+    // o fechamento das conexões abaixo (~100 ms). Linha exata, sozinha.
+    tentarSilencioso(() => process.stdout.write("@@RELATORIO_PRONTO@@\n"));
     clearTimeout(_globalTimeout);
     _dbRef = null;
     // PRECISÃO FIX (v2.6.4): detach() sem try/catch AQUI, no caminho de

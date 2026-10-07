@@ -2,34 +2,28 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.12.0
+ * @version 2.13.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.12.0 - 2026-10-07 11:00 - Fast-poll com detecção completa por tipo.
- *     A consulta antiga somava tudo (gerencial + NFC-e + NF-e + pagamentos) em
- *     uma quantidade e um total, e era cega para mudanças que se compensam.
- *     - Quantidade, total e ASSINATURA (soma de MOD(HASH(...))) por tipo:
- *       Gerencial (99), NFC-e (65), NF-e (55) e outros; canceladas; NFC-e
- *       aguardando autorização; vendas sem vendedor.
- *     - Pagamentos: quantidade, total, assinatura de pedido|caixa|forma|valor
- *       de todas as linhas do dia (troca Dinheiro → PIX agora é detectada).
- *     - NF-e da tabela VENDAS (antes fora do fast-poll): quantidade, total,
- *       assinatura e canceladas.
- *     - Detecta: venda que muda de tipo com o mesmo valor, troca de vendedor,
- *       valores que sobem numa venda e descem em outra, troca de forma de
- *       pagamento. Log por tipo com sentido e diferença (↑/↓).
- *     - Uma varredura por tabela (antes 3 a 4 na NFCE e 2 na PAGAMENT); 6 ms
- *       num Firebird 3 de teste.
- *     - HORA fora da assinatura: a correção de horário do próprio servidor
- *       não dispara regeneração extra.
- *     - Montada a partir das colunas reais (sondadas uma vez por banco, com
- *       timeout) e testada ao conectar. Banco que não aceita a consulta
- *       (sem HASH, coluna diferente) fica no modo básico; se ela passar a
- *       falhar depois, o servidor testa a básica na mesma conexão e, se esta
- *       funciona, muda para o modo básico em vez de entrar em laço de
- *       reconexão.
+ *   2.13.0 - 2026-10-07 14:30 - Detecção e atualização no menor tempo possível.
+ *     Medido num Firebird 3 local (COMMIT no banco → aviso SSE no navegador):
+ *     ~314 ms → ~140 ms.
+ *     - Conclusão antecipada: o gerador avisa "@@RELATORIO_PRONTO@@" assim que
+ *       grava o HTML; o servidor avisa o navegador nesse instante, sem esperar
+ *       o fechamento das conexões do filho com o Firebird (~100 ms).
+ *     - Gerador pré-aquecido: um processo reserva fica com o Node e o
+ *       node-firebird carregados (~45 ms) e recebe a ordem pela entrada padrão;
+ *       só então carrega o gerador, que lê config/data/hora na hora. Reposto a
+ *       cada uso, descartado ao encerrar; qualquer problema → spawn normal.
+ *     - Fast-poll: 50 → 15 ms (a trava de ciclo pula ciclos se o banco estiver
+ *       lento; nunca empilha consultas).
+ *     - pollStatus: 2 s → 1 s; roda na hora quando o fast-poll detecta algo
+ *       (correções de horário sem esperar o próximo ciclo) e não regera de novo
+ *       o que o fast-poll completo já regerou (antes: geração e recarga de tela
+ *       em dobro a cada venda).
+ *     - Polling de reserva do navegador: padrão 200 → 100 ms (mínimo 100).
  */
 
 
@@ -37,7 +31,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.12.0";
+const SERVER_VERSION = "2.13.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -450,7 +444,11 @@ var APP_NAME      = (appCfg.appName&&appCfg.appName.trim()) ? appCfg.appName.tri
     if (_favBoot.ok && _favBoot.valor) FAVICON = _favBoot.valor;
 })();
 var POLL_INTERVAL = (appCfg.pollInterval && parseInt(appCfg.pollInterval,10) >= 100)
-    ? parseInt(appCfg.pollInterval,10) : 200; // mínimo absoluto de 100ms — previne loop sem pausa
+    ? parseInt(appCfg.pollInterval,10) : 100; // mínimo absoluto de 100ms — previne loop sem pausa
+// pollStatus (reserva do fast-poll + correções de horário): 5× o intervalo do
+// navegador, nunca abaixo de 1 s (v2.13.0: era 2 s). Cada ciclo abre uma
+// conexão nova com o Firebird, por isso não acompanha o fast-poll.
+var _intervaloPollStatus = function() { return Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 1000); };
 // CONTRATO FIX: padrão unificado com gerar-relatorio-html.js (ambos usam 5000ms agora).
 var TOAST_DURATION = (appCfg.toastDuration && parseInt(appCfg.toastDuration,10)>=500)
     ? parseInt(appCfg.toastDuration,10) : 5000; // ms — duração padrão do toast de notificação
@@ -1152,11 +1150,11 @@ var _iniciarPolling = function(atrasoMs) {
         _pollStartTimer = null;
         pollStatus();
         // pollStatus: fallback de segurança + funções de correção de horário.
-        // Fast-poll (50ms, conexão persistente) trata toda a detecção de mudanças.
+        // Fast-poll (15 ms, conexão persistente) trata toda a detecção de mudanças.
         // pollStatus usa attach/detach por ciclo — rodar em excesso sobrecarrega
         // o Firebird desnecessariamente. Mínimo 2s independente de POLL_INTERVAL.
         if (_pollIntervalId) clearInterval(_pollIntervalId);
-        _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
+        _pollIntervalId = setInterval(pollStatus, _intervaloPollStatus());
         _iniciarFastPoll();
     }, Math.max(0, atrasoMs || 0));
 };
@@ -1517,6 +1515,57 @@ var _invalidarCache = function() {
 // ---------------------------------------------------------------------------
 // Gerador em background — com timeout e retry automático
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GERADOR PRÉ-AQUECIDO (v2.13.0)
+// Abrir um processo Node e carregar o node-firebird custa ~45 ms a cada
+// geração. Fica sempre UM processo reserva já com isso pronto, esperando a
+// ordem pela entrada padrão: {"argv":[script, ...args], "env":{...}}. Só
+// depois da ordem ele carrega o gerar-relatorio-html.js — que lê config.json,
+// data, hora e cache de horas naquele instante, como num processo novo (a
+// reserva nunca usa dado velho, por mais tempo que tenha esperado). Entrada
+// fechada sem ordem (servidor encerrou) → a reserva sai sozinha.
+// Qualquer problema com a reserva (morta, pipe fechado) → spawn normal.
+// ---------------------------------------------------------------------------
+var _BOOT_GERADOR =
+    "var d=process.argv[1];" +
+    "try{require(require.resolve('node-firebird',{paths:[d]}));}catch(_){}" +
+    "var b='';process.stdin.setEncoding('utf8');" +
+    "var fim=function(){process.exit(0);};" +
+    "process.stdin.on('end',fim);" +
+    "process.stdin.on('data',function(c){b+=c;var i=b.indexOf('\\n');if(i<0)return;" +
+    "process.stdin.removeListener('end',fim);process.stdin.removeAllListeners('data');process.stdin.pause();" +
+    "var m=JSON.parse(b.slice(0,i));var e=m.env||{};Object.keys(e).forEach(function(k){process.env[k]=e[k];});" +
+    "process.argv=[process.execPath].concat(m.argv);require(m.argv[0]);});";
+var _geradorReserva = null;
+var _prepararReserva = function() {
+    if (_geradorReserva || _encerrando) return;
+    try {
+        var p = spawn(process.execPath, ["-e", _BOOT_GERADOR, __dirname],
+                      {stdio:["pipe","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
+        p.on("error", function() { if (_geradorReserva === p) _geradorReserva = null; });
+        p.on("exit",  function() { if (_geradorReserva === p) _geradorReserva = null; });
+        if (p.stdin) p.stdin.on("error", function() {}); // EPIPE se a reserva morrer: tratado na hora de usar
+        _geradorReserva = p;
+    } catch (_) { _geradorReserva = null; }
+};
+var _descartarReserva = function() {
+    var p = _geradorReserva; _geradorReserva = null;
+    if (p) { try { p.kill(); } catch (_) {} }
+};
+var _obterGerador = function(nArgs) {
+    var p = _geradorReserva; _geradorReserva = null;
+    var proc = null;
+    if (p && p.exitCode === null && p.signalCode === null && p.stdin && p.stdin.writable) {
+        try {
+            p.stdin.end(JSON.stringify({ argv: nArgs, env: { RELATORIO_FB_USER: USER, RELATORIO_FB_PASS: PASS } }) + "\n");
+            proc = p;
+        } catch (_) { try { p.kill(); } catch (__) {} }
+    } else if (p) { try { p.kill(); } catch (_) {} }
+    if (!proc) proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
+    setImmediate(_prepararReserva); // repõe a reserva para a próxima geração
+    return proc;
+};
+
 var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     var ent=cache[chave];
     if(ent&&ent.gerando)return;
@@ -1574,7 +1623,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // {gerando:true} para sempre, deixando a página presa no paginaLoading.
     var proc = null;
     try {
-        proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
+        proc = _obterGerador(nArgs);
     } catch(spawnErr) {
         logTs("ERRO spawn síncrono ("+label+"): "+(spawnErr && spawnErr.message || spawnErr));
         cache[chave] = {html:null, gerando:false, erro:"Falha ao iniciar o gerador: "+(spawnErr && spawnErr.message || String(spawnErr))};
@@ -1718,6 +1767,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         lines.forEach(function(l) {
             var t = l.trim();
             if (!t) return;
+            if (t === "@@RELATORIO_PRONTO@@") { _concluir(0); return; }
             // RECONCILIACAO/AVISO RECONCILIACAO (gerar-relatorio-html.js v2.7.7+):
             // fusão automática Gerencial→NF-e por valor idêntico é evento de
             // negócio relevante (afeta o total do dia) — sempre grava via
@@ -1764,8 +1814,14 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         cache[chave]={html:null,gerando:false,erro:"Falha ao iniciar node: "+e.message};
         _gerarTentativas[chave] = 0;
     });
-    proc.on("close",function(code){
-        if (_procEncerrado) return; // timeout já tratou este processo
+    // CONCLUSÃO ANTECIPADA (v2.13.0): o gerador imprime "@@RELATORIO_PRONTO@@"
+    // assim que o HTML e o cache de horas estão gravados, ANTES de fechar as
+    // conexões com o Firebird. Fechar (detach) leva ~100 ms e só depois o
+    // processo terminava — e só então o navegador era avisado. Agora a
+    // conclusão roda no aviso (o processo segue fechando as conexões sozinho);
+    // "close" continua cobrindo gerador antigo (sem o aviso) e falhas.
+    var _concluir = function(code){
+        if (_procEncerrado) return; // timeout (ou o aviso de pronto) já tratou este processo
         _procEncerrado = true;
         clearTimeout(_spawnTimer);
         // Flush de qualquer conteúdo restante no buffer (linha sem \n final)
@@ -2065,6 +2121,10 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             logTs("ERRO FATAL em proc.close ("+chave+"): "+(fatalErr&&fatalErr.stack||fatalErr));
             try { cache[chave]={html:null,gerando:false,erro:"Erro interno: "+(fatalErr&&fatalErr.message||String(fatalErr))}; } catch(_) {}
         }
+    };
+    proc.on("close", function(code) {
+        if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
+        _concluir(code);
     });
 };
 
@@ -2087,7 +2147,10 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
 //
 // Resultado: detecção em 200-400ms; POLL_INTERVAL vira fallback de segurança.
 // ---------------------------------------------------------------------------
-var _FP_INTERVAL_MS  = 50;    // fixo — detecção a cada 50ms (conexão persistente: sem overhead)
+// v2.13.0: 50 → 15 ms. A consulta completa leva ~6 ms num Firebird local; a
+// trava _fpBusy pula ciclos se o banco estiver mais lento (nunca empilha
+// consultas). 15 ms também é a resolução do relógio do Windows (~15,6 ms).
+var _FP_INTERVAL_MS  = 15;
 var _fpDb            = null;  // conexão Firebird persistente (reutilizada entre ciclos)
 var _fpConectando    = false; // evita tentativas de attach paralelas
 var _fpBusy          = false; // evita ciclos sobrepostos
@@ -2347,6 +2410,19 @@ var _fpEsquema        = null;  // colunas sondadas (uma vez por banco)
 var _FP_SQL_COMPLETO  = null;
 var _fpParesCompleto  = 0;
 var _fpUltimoCompleto = null;  // último vetor visto no modo completo (null = sem baseline)
+var _fpUltimoOkTs     = 0;     // instante do último ciclo completo bem-sucedido
+// Fast-poll completo saudável = já cobre tudo que o pollStatus compara (e mais).
+// Nesse caso o pollStatus não regera por conta própria (v2.13.0): antes ele
+// percebia a MESMA mudança ~2 s depois e regerava de novo — processo e
+// recarga de tela em dobro a cada venda.
+var _fpCompletoSaudavel = function() {
+    return _fpModo === "completo" && Date.now() - _fpUltimoOkTs < 1500;
+};
+// Na detecção, roda o pollStatus na hora (correções de horário) em vez de
+// esperar o próximo ciclo dele. Ele tem trava própria (_pollBusy).
+var _fpAcionarPollStatus = function() {
+    setImmediate(function() { try { pollStatus(); } catch (_) {} });
+};
 
 // Sonda o esquema (NFCE, PAGAMENT, VENDAS) UMA vez por banco e decide o modo:
 // monta a consulta completa a partir das colunas que existem e a executa uma
@@ -2540,9 +2616,11 @@ var _fpPoll = function() {
                 }
                 clearTimeout(_wdFp);
                 var atual = _fpLerCompleto(rowsC[0]);
+                _fpUltimoOkTs = Date.now();
                 if (_fpUltimoCompleto && _fpDiferente(_fpUltimoCompleto, atual)) {
                     logTs("FastPoll: " + _descreverMudancaCompleta(_fpUltimoCompleto, atual) + " → regerando.");
                     _fpRegerar(dh);
+                    _fpAcionarPollStatus();
                 }
                 _fpUltimoCompleto = atual;
                 _fpBusy = false;
@@ -2588,6 +2666,7 @@ var _fpPoll = function() {
                 // garantindo que o browser recarregue direto para a página final sem paginaLoading.
 
                 _fpRegerar(dh);
+                _fpAcionarPollStatus();
             }
 
             _fpUltimoQt    = qt;
@@ -2699,6 +2778,7 @@ var _matarConexao = function(db) {
 // Chamado quando poll ou attach ultrapassam o timeout — garante que
 // subprocessos aguardando o mesmo banco também sejam encerrados.
 var _matarTodosFilhos = function() {
+    _descartarReserva();
     var pids = _spawnedPids.slice();
     if (!pids.length) return;
     logTs("Matando " + pids.length + " processo(s) filho(s) por timeout de poll.");
@@ -3307,7 +3387,10 @@ var pollStatus = function() {
                 };
             }
 
-            if (resultado.mudou) {
+            if (resultado.mudou && _fpCompletoSaudavel()) {
+                // O fast-poll completo já regerou esta mudança (ver _fpCompletoSaudavel).
+                logDebug("pollStatus: " + resultado.descricao + " — já tratado pelo fast-poll.");
+            } else if (resultado.mudou) {
                 logTs("Dados alterados: " + resultado.descricao + " → regerando.");
                 // SSE NÃO é disparado aqui. É disparado em gerarEmBackground (proc.on("close"))
                 // quando o HTML está pronto, via _pollTriggered=true.
@@ -4290,7 +4373,7 @@ var server=http.createServer(function(req,res){
     if(rota==="/api/config" && req.method==="GET"){
         sendJson({
             appName:               _config.appName              || "",
-            pollInterval:          _config.pollInterval         || 200,
+            pollInterval:          _config.pollInterval         || 100,
             maxLogLines:           _config.maxLogLines          || 1000,
             favicon:               _config.favicon              || "",
             toastDuration:         _config.toastDuration        || 5000, // CONTRATO FIX: padrão unificado com filho (era 4000)
@@ -4320,7 +4403,7 @@ var server=http.createServer(function(req,res){
                 if(typeof obj!=="object"||Array.isArray(obj)) obj={};
 
                 if(p.appName       !== undefined){ var n=_textoSeguroLog(p.appName, 80);    if(n) obj.appName=n; }
-                if(p.pollInterval  !== undefined){ var pi=parseInt(p.pollInterval,10);    if(pi>=200) obj.pollInterval=pi; }
+                if(p.pollInterval  !== undefined){ var pi=parseInt(p.pollInterval,10);    if(pi>=100) obj.pollInterval=pi; }
                 if(p.maxLogLines   !== undefined){ var ml=parseInt(p.maxLogLines,10);     if(ml>=100) obj.maxLogLines=ml; }
                 if(p.favicon       !== undefined){
                     // SEGURANÇA FIX (v2.5.0): ver _faviconCaminhoSeguro — rejeita caminhos
@@ -4392,7 +4475,7 @@ var server=http.createServer(function(req,res){
                     // o campo "salvava" mas o comportamento real não mudava.
                     if (Firebird && dbStatus.ok) {
                         if (_pollIntervalId) clearInterval(_pollIntervalId);
-                        _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
+                        _pollIntervalId = setInterval(pollStatus, _intervaloPollStatus());
                     }
                 }
                 if(obj.maxLogLines&&parseInt(obj.maxLogLines,10)>=100){
@@ -4487,7 +4570,7 @@ var server=http.createServer(function(req,res){
             "<div id=\"msg\"></div>"+
             "<div class=\"field\"><label>Nome do sistema (appName)</label><input type=\"text\" id=\"appName\" value=\""+_pn+"\"><p class=\"hint\">Exibido no titulo da pagina e no icone da bandeja.</p></div>"+
             "<div class=\"row\">"+
-            "<div class=\"field\"><label>Intervalo de polling (ms)</label><input type=\"number\" id=\"pollInterval\" value=\""+_pi+"\" min=\"200\" step=\"100\"><p class=\"hint\">Minimo: 200 ms</p></div>"+
+            "<div class=\"field\"><label>Intervalo de polling (ms)</label><input type=\"number\" id=\"pollInterval\" value=\""+_pi+"\" min=\"100\" step=\"50\"><p class=\"hint\">Minimo: 100 ms</p></div>"+
             "<div class=\"field\"><label>Maximo de linhas de log</label><input type=\"number\" id=\"maxLogLines\" value=\""+_ml+"\" min=\"100\" step=\"100\"><p class=\"hint\">Minimo: 100 linhas</p></div>"+
             "</div>"+
             "<div class=\"field\"><label>Janela de correcao de horario (min)</label><input type=\"number\" id=\"janelaHora\" value=\""+_jh+"\" min=\""+JANELA_HORA_MIN_MIN+"\" max=\""+JANELA_HORA_MAX_MIN+"\" step=\"5\"><p class=\"hint\">Vendas gerenciais com hora no futuro ou entre 3 min e este tempo atras passam a usar a hora atual; mais antigas sao ignoradas. Padrao: 180 (3 horas). Minimo "+JANELA_HORA_MIN_MIN+", maximo "+JANELA_HORA_MAX_MIN+".</p></div>"+
@@ -4526,7 +4609,7 @@ var server=http.createServer(function(req,res){
             "var btn=document.getElementById('salvarBtn'),msg=document.getElementById('msg');"+
             "btn.disabled=true;btn.textContent='Salvando...';msg.style.display='none';"+
             "var an=document.getElementById('appName').value.trim();"+
-            "var pi=parseInt(document.getElementById('pollInterval').value,10)||200;"+
+            "var pi=parseInt(document.getElementById('pollInterval').value,10)||100;"+
             "var ml=parseInt(document.getElementById('maxLogLines').value,10)||1000;"+
             "var td=parseInt(document.getElementById('toastDuration').value,10)||4000;"+
             "var jh=parseInt(document.getElementById('janelaHora').value,10);"+
@@ -4991,7 +5074,8 @@ server.listen(PORT, BIND_ADDR, function(){
         // comportamento do servidor, confundindo qualquer debug futuro.
         // Intervalo REAL do pollStatus (mesma fórmula de _iniciarPolling) — o
         // log anterior mostrava POLL_INTERVAL, 10× menor que o valor efetivo.
-        logTs("Fast-poll: " + _FP_INTERVAL_MS + "ms (detecção instantânea) | pollStatus fallback: " + (Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000)/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
+        setImmediate(_prepararReserva); // gerador pré-aquecido já para a 1ª venda
+        logTs("Fast-poll: " + _FP_INTERVAL_MS + " ms (detecção instantânea) | gerador pré-aquecido | pollStatus fallback: " + (_intervaloPollStatus()/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
     });
 });
 

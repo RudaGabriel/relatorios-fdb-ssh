@@ -50,13 +50,19 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Vendas aguardando autorização da SEFAZ** aparecem na hora, com rótulo próprio. Vendedor e hora são herdados da gerencial de origem.
 
 ### Tempo real
-- **Fast-poll:** consulta leve a cada 50 ms numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
+- **Fast-poll:** consulta leve a cada 15 ms numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
   - venda nova e cancelamento;
   - total que **sobe ou desce** em cada tipo (o log mostra o sentido e a diferença, ex.: `NFC-e: total R$ 80,00 → R$ 90,00 (↑ +R$ 10,00)`);
   - venda que **muda de tipo** com o mesmo valor (gerencial → NFC-e);
   - venda alterada sem mudar quantidade nem total geral: **troca de vendedor**, de número ou valores que se compensam entre vendas;
   - **troca de forma de pagamento** (ex.: Dinheiro → PIX) ou de valor entre pagamentos;
   - NFC-e autorizada; vendedor ou forma de pagamento preenchidos depois da venda.
+
+- **Tempo até a tela atualizar:** ~140 ms do registro da venda no banco até o navegador ser avisado (medido num Firebird 3 local; era ~315 ms). Para isso:
+  - fast-poll a cada 15 ms;
+  - um **gerador pré-aquecido** fica sempre pronto (Node e driver do Firebird já carregados) e só lê configuração, data e hora quando recebe a ordem;
+  - o gerador avisa "HTML pronto" assim que grava o arquivo, sem esperar fechar as conexões com o banco;
+  - a verificação completa (correções de horário) roda na hora da detecção e não regera em dobro o que o fast-poll já regerou.
 
   Cada venda e cada pagamento entram numa assinatura (hash) somada por tipo, numa única leitura por tabela. Se o Firebird não aceitar essa consulta, o fast-poll segue automaticamente no modo básico (quantidade e total), sem parar a detecção.
 - **Atualização automática do navegador por SSE** (Server-Sent Events), com polling HTTP como reserva.
@@ -94,8 +100,8 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
  Windows (logon)
    └─ Tarefa agendada ─▶ bootstrap.vbs ─▶ launcher.vbs ─▶ iniciar-tray.ps1  (ícone na bandeja + watchdog)
                                                             └─▶ node servidor-relatorio.js
-                                                                  ├─ fast-poll (50 ms) ─┐
-                                                                  ├─ pollStatus (≥2 s)  ├─▶ Firebird (SMALL.FDB)
+                                                                  ├─ fast-poll (15 ms) ─┐
+                                                                  ├─ pollStatus (≥1 s)  ├─▶ Firebird (SMALL.FDB)
                                                                   ├─ correções de hora ─┘
                                                                   └─ gera o HTML em subprocesso:
                                                                        node gerar-relatorio-html.js ─▶ Firebird
@@ -219,7 +225,7 @@ Os botões **Todos / Gerencial / NFC-e / NF-e**, ao lado da busca, restringem o 
 | `fbHost` | `""` | Host do Firebird; salvo automaticamente quando o banco é encontrado |
 | `fbUser` / `fbPass` | `SYSDBA` / `masterkey` | Credenciais do Firebird (repassadas aos processos por variável de ambiente, nunca pela linha de comando) |
 | `maquinaIP` | automático | IP desta máquina na rede; atualizado a cada inicialização |
-| `pollInterval` | `200` | Intervalo (ms) de verificação do navegador; o servidor usa no mínimo 2 s para a verificação completa |
+| `pollInterval` | `100` | Intervalo (ms, mínimo 100) da verificação de reserva do navegador (o aviso principal chega na hora por SSE); a verificação completa do servidor usa 5× esse valor, no mínimo 1 s |
 | `spawnTimeoutMs` | `120000` | Tempo máximo (30 s a 600 s) para gerar um relatório; aumente para períodos longos |
 | `toastDuration` | `5000` | Duração dos avisos na tela (ms) |
 | `janelaCorrecaoHoraMin` | `180` | Janela (min) da correção automática de horário das gerenciais, de 5 a 720 (veja [Correção automática de horário](#correção-automática-de-horário)) |
