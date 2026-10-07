@@ -353,6 +353,11 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
     try {
         await esperar(7000);
         assert.match(log(), /FastPoll: modo completo/, "deveria entrar no modo completo");
+        // /api/status: contagem por tipo preenchida pelo fast-poll (antes ficava -1
+        // até a 1ª conferência do pollStatus).
+        const st0 = await (await fetch(srv.base + "/api/status")).json();
+        assert.deepStrictEqual({ g: st0.g, nfc: st0.nfc, nf: st0.nf },
+            { g: { qt: 0, tot: 0 }, nfc: { qt: 1, tot: 10 }, nf: { qt: 0, tot: 0 } }, "contagem por tipo no /api/status");
         assert.match(log(), /AVISO índices: sem índice em PAGAMENT\.DATA —/, "deveria avisar só o que falta");
         assert.match(log(), /duas partes pelos índices — rápida: NFCE \(com índice\) \| complementar: PAGAMENT \(sem índice/, "deveria dividir pelos índices");
         assert.match(log(), /FastPoll: consulta rápida \(NFCE, com índice\) ~\d+ ms → a cada ~\d+ ms \| complementar \(PAGAMENT, sem índice\) ~\d+ ms/, "deveria medir as duas partes separadamente");

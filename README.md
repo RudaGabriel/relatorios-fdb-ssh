@@ -280,9 +280,27 @@ Cliente PowerShell para todas as rotas acima. Pode ser usado na própria máquin
 .\api.ps1 -Endpoint proibidos -Payload @("GRANEL","ENTREGA")
 .\api.ps1 -Endpoint navigate-periodo -Payload @("2026-10-01","2026-10-05")
 .\api.ps1 -Endpoint restart -MaquinaIP 192.168.1.50
+.\api.ps1 -Endpoint meu-ip                  # nome e IP(s) desta máquina
+.\api.ps1 -Endpoint itens-venda -Payload @("2026-10-07","000123")
+.\api.ps1 -Endpoint abrir-periodo -Payload @("2026-10-01","2026-10-05")
+.\api.ps1 -Endpoint encerrar -Payload SIM   # desliga o servidor
 ```
 
-Repete automaticamente em falha de rede ou erro 5xx; erros 4xx falham na hora. Cada chamada se identifica no log do servidor com o nome do computador e do usuário.
+O cabeçalho do menu mostra o **nome e o IP desta máquina** (a que abriu o `api.ps1`) — o IP da placa de rede usada para chegar ao servidor — e avisa quando ela é a própria máquina do servidor.
+
+| Opção | O que faz |
+|---|---|
+| `meu-ip` | Nome, usuário e todos os IPv4 desta máquina |
+| `encerrar` | Desliga o servidor de forma ordenada (pede `SIM`); para ligar de novo, `restart` ou o atalho |
+| `foco` | Traz a aba do relatório para frente |
+| `modal-config` / `modal-periodo` | Abre a janela de configuração / "gerar por período" na aba aberta |
+| `atualizar` | Força uma nova geração do relatório de hoje |
+| `itens-venda` | Itens de uma venda (data + número do cupom/pedido) |
+| `abrir-navegador` / `abrir-periodo` | Abre o relatório (de hoje / de um período) no navegador **desta** máquina |
+
+No `status`, o valor `-1` significa "ainda não lido do banco" (servidor recém-ligado ou banco fora do ar) — a resposta traz um campo `obs` explicando.
+
+Repete automaticamente em falha de rede ou erro 5xx; erros 4xx falham na hora. Erros mostram também o motivo enviado pelo servidor. Cada chamada se identifica no log do servidor com o nome do computador e do usuário.
 
 ---
 

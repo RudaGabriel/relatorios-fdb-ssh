@@ -9,9 +9,25 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 - Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
-@version 1.4.0
+@version 1.5.0
 @author Ruda Gabriel
 @changelog
+  1.5.0 - 2026-10-07 19:00 - IP desta maquina e rotas que faltavam.
+    - Cabecalho do menu mostra o nome e o IP DESTA maquina (a que abriu o
+      api.ps1): o IP e' o da placa de rede usada para chegar ao servidor
+      (nao um IP qualquer de VPN/VirtualBox); avisa quando esta maquina e' a
+      propria maquina do servidor. Opcao 20 lista todos os IPs.
+    - Novas opcoes para rotas do servidor que existiam e nao estavam no menu:
+      encerrar (desligar o servidor, com confirmacao), foco (trazer a aba do
+      relatorio para frente), modal-config / modal-periodo (abrir essas
+      janelas na aba aberta), atualizar (forcar nova geracao do relatorio de
+      hoje), itens-venda (itens de uma venda: data + numero), abrir-navegador
+      e abrir-periodo (abrir o relatorio NESTA maquina).
+    - status: quando algum valor vem -1 ("ainda nao lido"), a resposta traz
+      um campo "obs" explicando (servidor 2.15.1+ preenche a contagem por
+      tipo logo na primeira leitura do fast-poll).
+    - Erros HTTP mostram tambem o motivo enviado pelo servidor (antes so'
+      "500 (Internal Server Error)", sem dizer o que falhou).
   1.4.0 - 2026-10-05 16:24 - Revisao completa.
     - Invoke-ApiCall repetia (com espera exponencial) ate' respostas 4xx do
       servidor - erros definitivos como 400/403/404, que nunca mudam numa nova
@@ -27,7 +43,8 @@ PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
 [CmdletBinding()]
 param(
     [string]$ConfigPath = "$PSScriptRoot\config.json",
-    [ValidateSet("status","db-status","sse-clients","proibidos","config","salvar-fdb","abrir-picker","navigate-hoje","navigate-config","navigate-fdb","navigate-periodo","upload-favicon","restart","pronto","log-error","sse-test","menu")]
+    [ValidateSet("status","db-status","sse-clients","proibidos","config","salvar-fdb","abrir-picker","navigate-hoje","navigate-config","navigate-fdb","navigate-periodo","upload-favicon","restart","pronto","log-error","sse-test",
+                 "meu-ip","encerrar","foco","modal-config","modal-periodo","atualizar","itens-venda","abrir-navegador","abrir-periodo","menu")]
     [string]$Endpoint = "menu",
     [object]$Payload,
     [string]$MaquinaIP = $null
@@ -81,6 +98,68 @@ if ($IpDefinido -notmatch "^[a-zA-Z0-9.\-_:]+$") {
 }
 
 $BaseUri = "http://${IpDefinido}:$($Config.porta)"
+
+# ===========================================================================
+# 2.1 IP DESTA MAQUINA (a que abriu o api.ps1)
+# ===========================================================================
+# IP principal = o da placa de rede que o Windows usa para chegar ao servidor
+# (socket UDP "conectado" ao servidor: nao envia nenhum pacote, so' pergunta a
+# rota ao sistema). Assim nao aparece um IP de VPN/VirtualBox/Hyper-V por
+# engano. Se nao der (servidor = localhost, nome que nao resolve, sem rede),
+# cai para a lista de IPv4 da maquina. Nunca derruba o script.
+function Get-IpLocal {
+    param([string]$Destino)
+    $info = [ordered]@{ computador = $(if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [Environment]::MachineName }); usuario = $(if ($env:USERNAME) { $env:USERNAME } else { [Environment]::UserName }); ip = $null; todos = @(); mesmaMaquinaDoServidor = $false }
+    $todos = @()
+    try {
+        $todos = @([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+            Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+            ForEach-Object { $_.ToString() } |
+            Where-Object { $_ -notmatch '^(127\.|169\.254\.)' } |
+            Select-Object -Unique)
+    } catch {}
+    $info.todos = $todos
+    $sock = $null
+    try {
+        $alvo = $null
+        $tmp = [System.Net.IPAddress]::None
+        if ([System.Net.IPAddress]::TryParse($Destino, [ref]$tmp)) { $alvo = $tmp }
+        elseif ($Destino -and $Destino -ne 'localhost') {
+            $alvo = [System.Net.Dns]::GetHostAddresses($Destino) |
+                Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+                Select-Object -First 1
+        }
+        if ($alvo -and $alvo.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork,
+                        [System.Net.Sockets.SocketType]::Dgram, [System.Net.Sockets.ProtocolType]::Udp)
+            $sock.Connect($alvo, 9)
+            $local = $sock.LocalEndPoint.Address.ToString()
+            if ($local -match '^127\.') {
+                $info.mesmaMaquinaDoServidor = $true   # servidor apontado como 127.x
+            } elseif ($local -ne '0.0.0.0') {
+                $info.ip = $local
+            }
+        }
+    } catch {
+    } finally {
+        try { if ($sock) { $sock.Close() } } catch {}
+    }
+    if (-not $info.ip -and $todos.Count -gt 0) { $info.ip = $todos[0] }
+    if ($Destino -eq 'localhost' -or ($info.ip -and $info.ip -eq $Destino) -or ($todos -contains $Destino)) {
+        $info.mesmaMaquinaDoServidor = $true
+    }
+    return $info
+}
+function Get-TextoIpLocal {
+    $i = Get-IpLocal -Destino $IpDefinido
+    $txt = "$($i.computador) | IP: " + $(if ($i.ip) { $i.ip } else { "(nao detectado)" })
+    $outros = @($i.todos | Where-Object { $_ -ne $i.ip })
+    if ($outros.Count -gt 0) { $txt += " (outros: " + ($outros -join ", ") + ")" }
+    if ($i.mesmaMaquinaDoServidor) { $txt += " - e' a propria maquina do servidor" }
+    return $txt
+}
+$TextoIpLocal = Get-TextoIpLocal
+Write-Host "[CONFIG] Esta maquina: ${TextoIpLocal}" -ForegroundColor DarkGray
 
 # Anuncia a sessao no relatorio.log do SERVIDOR (v1.3.0). Feito via
 # /api/log-error de proposito: e' a unica rota que ja aceita texto livre do
@@ -144,14 +223,29 @@ function Invoke-ApiCall {
             # com .Response; PS 7: HttpResponseException com .Response).
             $codigoHttp = 0
             try { if ($_.Exception.Response) { $codigoHttp = [int]$_.Exception.Response.StatusCode } } catch {}
+            # Motivo dado pelo SERVIDOR (campo "erro"/"msg" do JSON de resposta):
+            # antes so' aparecia o generico "500 (Internal Server Error)" e o
+            # motivo real (ex: "Table unknown ALTERACA") ficava escondido.
+            $motivo = ""
+            try {
+                $corpoErro = $_.ErrorDetails.Message
+                if ($corpoErro) {
+                    $j = $null
+                    try { $j = $corpoErro | ConvertFrom-Json -ErrorAction Stop } catch {}
+                    if ($j -and $j.erro) { $motivo = [string]$j.erro }
+                    elseif ($j -and $j.msg) { $motivo = [string]$j.msg }
+                    elseif ($corpoErro.Length -le 200 -and $corpoErro -notmatch '<') { $motivo = $corpoErro.Trim() }
+                }
+            } catch {}
+            $sufixo = if ($motivo) { " | servidor: $motivo" } else { "" }
             if ($codigoHttp -ge 400 -and $codigoHttp -lt 500) {
                 # Erro definitivo do cliente - repetir nao muda o resultado.
-                throw "HTTP $codigoHttp - $($_.Exception.Message)"
+                throw "HTTP $codigoHttp - $($_.Exception.Message)$sufixo"
             }
             $ehFalhaDeRede = ($codigoHttp -eq 0) -and (
                 ($_.Exception -is [System.Net.WebException]) -or
                 ($_.Exception.GetType().FullName -match 'HttpRequestException|SocketException|TaskCanceledException'))
-            if ($codigoHttp -gt 0)   { $ultimoErro = "HTTP $codigoHttp - $($_.Exception.Message)" }
+            if ($codigoHttp -gt 0)   { $ultimoErro = "HTTP $codigoHttp - $($_.Exception.Message)$sufixo" }
             elseif ($ehFalhaDeRede) { $ultimoErro = "Falha de rede: $($_.Exception.Message)" }
             else                    { $ultimoErro = "Erro: $($_.Exception.Message)" }
         }
@@ -195,7 +289,18 @@ function ConvertTo-HashtableSegura {
 function Executar-Endpoint {
     param([string]$Ep, [object]$Data)
     switch ($Ep) {
-        "status" { return Invoke-ApiCall -Rota "/api/status" }
+        "status" {
+            $st = Invoke-ApiCall -Rota "/api/status"
+            # -1 = "ainda nao lido" (servidor acabou de ligar ou banco fora do ar).
+            try {
+                $pend = @("g","nfc","nf") | Where-Object { $st.$_ -and $st.$_.qt -eq -1 }
+                if ($st.qt -eq -1 -or @($pend).Count -gt 0) {
+                    $st | Add-Member -NotePropertyName obs -NotePropertyValue ("-1 = ainda nao lido do banco (servidor recem-ligado " +
+                        "ou banco fora do ar). Consulte de novo em alguns segundos; se continuar, veja a opcao 2 (db-status).") -Force
+                }
+            } catch {}
+            return $st
+        }
         "db-status" { return Invoke-ApiCall -Rota "/api/db-status" }
         "sse-clients" { return Invoke-ApiCall -Rota "/api/sse-clients" }
         "proibidos" {
@@ -374,6 +479,82 @@ function Executar-Endpoint {
                 try { if ($res) { $res.Close() } } catch {}
             }
         }
+        "meu-ip" {
+            $i = Get-IpLocal -Destino $IpDefinido
+            return [ordered]@{
+                computador = $i.computador
+                usuario    = $i.usuario
+                ip_usado_para_o_servidor = $i.ip
+                todos_os_ipv4 = @($i.todos)
+                servidor   = $BaseUri
+                esta_e_a_maquina_do_servidor = $i.mesmaMaquinaDoServidor
+            }
+        }
+        "encerrar" {
+            # Desliga o servidor de forma ordenada (registra no relatorio.log e
+            # avisa as abas). Ele NAO volta sozinho: para ligar de novo use a
+            # opcao "restart" (que inicia via launcher.vbs) ou o icone/atalho.
+            if ($Data -ne "SIM") { throw "Cancelado: o servidor so' e' desligado com a confirmacao SIM." }
+            $origem = [System.Uri]::EscapeDataString("api.ps1 em " + $(if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [Environment]::MachineName }))
+            return Invoke-ApiCall -Rota "/api/encerrar?origem=${origem}" -MaxRetries 0
+        }
+        "foco"          { return Invoke-ApiCall -Rota "/api/navigate/foco" }
+        "modal-config"  { return Invoke-ApiCall -Rota "/api/navigate/hash/config" }
+        "modal-periodo" { return Invoke-ApiCall -Rota "/api/navigate/hash/periodo" }
+        "atualizar" {
+            # /atualizar descarta o relatorio de hoje em memoria e responde com
+            # redirecionamento (302) para "/"; e' o pedido a "/" que dispara a
+            # nova geracao. Feito sem seguir o redirecionamento automatico (o
+            # comportamento do Invoke-WebRequest com 302 muda entre PS 5.1 e 7).
+            $res = $null
+            try {
+                $req = [System.Net.HttpWebRequest]::Create("${BaseUri}/atualizar")
+                $req.AllowAutoRedirect = $false
+                $req.Timeout = 10000
+                $req.Headers.Add("X-Cliente", "$env:COMPUTERNAME/$env:USERNAME")
+                $res = $req.GetResponse()
+                $codigo = [int]$res.StatusCode
+            } catch {
+                throw "Falha ao pedir a atualizacao: $($_.Exception.Message)"
+            } finally {
+                try { if ($res) { $res.Close() } } catch {}
+            }
+            if ($codigo -ne 302 -and ($codigo -lt 200 -or $codigo -ge 300)) { throw "Servidor respondeu HTTP $codigo." }
+            try { Invoke-WebRequest -Uri "${BaseUri}/" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop | Out-Null } catch {}
+            return @{ ok = $true; msg = "Relatorio de hoje sendo gerado de novo; as abas abertas atualizam sozinhas ao terminar." }
+        }
+        "itens-venda" {
+            if ($Data -isnot [array] -or $Data.Count -ne 2) { throw "Informe @('AAAA-MM-DD','numero da venda')" }
+            $dIt = ([string]$Data[0]).Trim() -replace '/','-'
+            $nIt = ([string]$Data[1]).Trim()
+            $dtIt = [datetime]::MinValue
+            if ($dIt -notmatch '^\d{4}-\d{2}-\d{2}$' -or
+                -not [datetime]::TryParseExact($dIt, 'yyyy-MM-dd', $null, [Globalization.DateTimeStyles]::None, [ref]$dtIt)) {
+                throw "Data invalida: '$dIt'. Use AAAA-MM-DD (ex: 2026-10-07)."
+            }
+            if ([string]::IsNullOrWhiteSpace($nIt) -or $nIt.Length -gt 60) { throw "Numero da venda invalido." }
+            $q = "data=" + [System.Uri]::EscapeDataString($dIt) + "&chave=" + [System.Uri]::EscapeDataString($nIt)
+            return Invoke-ApiCall -Rota "/api/itens-detalhe?${q}" -Timeout 15
+        }
+        "abrir-navegador" {
+            Start-Process "${BaseUri}/"
+            return @{ ok = $true; msg = "Relatorio de hoje aberto no navegador desta maquina: ${BaseUri}/" }
+        }
+        "abrir-periodo" {
+            if ($Data -isnot [array] -or $Data.Count -ne 2) { throw "Informe 2 datas: @('AAAA-MM-DD','AAAA-MM-DD')" }
+            $p1 = ([string]$Data[0]).Trim() -replace '/','-'; $p2 = ([string]$Data[1]).Trim() -replace '/','-'
+            foreach ($__d in @($p1, $p2)) {
+                $__dt = [datetime]::MinValue
+                if ($__d -notmatch '^\d{4}-\d{2}-\d{2}$' -or
+                    -not [datetime]::TryParseExact($__d, 'yyyy-MM-dd', $null, [Globalization.DateTimeStyles]::None, [ref]$__dt)) {
+                    throw "Data invalida: '$__d'. Use AAAA-MM-DD (ex: 2026-10-07)."
+                }
+            }
+            if ($p1 -gt $p2) { throw "A data inicial ($p1) e posterior a final ($p2)." }
+            $urlP = "${BaseUri}/periodo?i=${p1}&f=${p2}"
+            Start-Process $urlP
+            return @{ ok = $true; msg = "Relatorio do periodo aberto no navegador desta maquina: $urlP" }
+        }
         default { throw "Endpoint desconhecido: ${Ep}" }
     }
 }
@@ -385,6 +566,7 @@ function Mostrar-Menu {
     Write-Host "`n================================================================" -ForegroundColor Cyan
     Write-Host " CLIENTE API - SERVIDOR RELATORIO (${BaseUri})" -ForegroundColor Cyan
     Write-Host " IP Ativo: ${IpDefinido}" -ForegroundColor DarkGray
+    Write-Host " Esta maquina: ${TextoIpLocal}" -ForegroundColor DarkGray
     Write-Host "================================================================`n" -ForegroundColor Cyan
     Write-Host "=== OPERACOES PRINCIPAIS ==="
     Write-Host " 1. status           | Qt/vendas e total do dia"
@@ -406,6 +588,17 @@ function Mostrar-Menu {
     Write-Host "17. log-error        | Simular envio de erro do browser"
     Write-Host "18. sse-test         | Testar conexao Server-Sent Events"
     Write-Host "19. alterar-ip       | Redefinir IP manualmente agora"
+    Write-Host ""
+    Write-Host "=== MAIS OPCOES ==="
+    Write-Host "20. meu-ip           | Nome e IP(s) desta maquina"
+    Write-Host "21. encerrar         | Desligar o servidor (pede confirmacao)"
+    Write-Host "22. foco             | Trazer a aba do relatorio para frente"
+    Write-Host "23. modal-config     | Abrir a janela de configuracao na aba"
+    Write-Host "24. modal-periodo    | Abrir 'gerar por periodo' na aba"
+    Write-Host "25. atualizar        | Forcar nova geracao do relatorio de hoje"
+    Write-Host "26. itens-venda      | Itens de uma venda (data + numero)"
+    Write-Host "27. abrir-navegador  | Abrir o relatorio de hoje NESTA maquina"
+    Write-Host "28. abrir-periodo    | Abrir relatorio de um periodo NESTA maquina"
     Write-Host "`n 0. Sair"
     Write-Host "================================================================`n" -ForegroundColor Cyan
 }
@@ -424,6 +617,7 @@ if ($Endpoint -eq "menu") {
             if (-not [string]::IsNullOrWhiteSpace($novoIp)) {
                 $IpDefinido = $novoIp.Trim()
                 $BaseUri = "http://${IpDefinido}:$($Config.porta)"
+                $TextoIpLocal = Get-TextoIpLocal   # a rota ate o novo servidor pode usar outra placa
                 Write-Host "[SUCESSO] IP alterado para ${IpDefinido}" -ForegroundColor Green
                 Mostrar-Menu
             } else {
@@ -439,7 +633,9 @@ if ($Endpoint -eq "menu") {
                 "8"="salvar-fdb"; "9"="abrir-picker"; "10"="navigate-hoje"
                 "11"="navigate-config"; "12"="navigate-fdb"; "13"="navigate-periodo"
                 "14"="upload-favicon"; "15"="restart"; "16"="pronto"; "17"="log-error"
-                "18"="sse-test"
+                "18"="sse-test"; "20"="meu-ip"; "21"="encerrar"; "22"="foco"
+                "23"="modal-config"; "24"="modal-periodo"; "25"="atualizar"; "26"="itens-venda"
+                "27"="abrir-navegador"; "28"="abrir-periodo"
             }
             $epNome = $epMap[$escolha]
             if (-not $epNome) { Write-Warning "Opcao invalida"; continue }
@@ -474,6 +670,24 @@ if ($Endpoint -eq "menu") {
                 "14" { $dados = Read-Host "Caminho da imagem (PNG/ICO/JPG)" }
                 "16" { $dados = Read-Host "Chave de polling" }
                 "17" { $dados = @{ msg = Read-Host "Mensagem de erro"; stack = "Simulado CLI" } }
+                "21" {
+                    Write-Host "O servidor sera DESLIGADO e as telas do relatorio vao parar de atualizar." -ForegroundColor Yellow
+                    Write-Host "Para ligar de novo: opcao 15 (restart) ou o atalho/icone do relatorio." -ForegroundColor Yellow
+                    $conf = Read-Host "Digite SIM para confirmar"
+                    if ($conf -cne "SIM") { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue }
+                    $dados = "SIM"
+                }
+                "26" {
+                    $di = Read-Host "Data da venda (AAAA-MM-DD, Enter = hoje)"
+                    if ([string]::IsNullOrWhiteSpace($di)) { $di = (Get-Date).ToString('yyyy-MM-dd') }
+                    $dados = @($di, (Read-Host "Numero da venda (cupom/pedido)"))
+                }
+                "28" {
+                    $p1 = Read-Host "Data inicio (AAAA-MM-DD)"
+                    $p2 = Read-Host "Data fim (AAAA-MM-DD, Enter = mesma)"
+                    if ([string]::IsNullOrWhiteSpace($p2)) { $p2 = $p1 }
+                    $dados = @($p1, $p2)
+                }
             }
 
             $resultado = Executar-Endpoint -Ep $epNome -Data $dados
