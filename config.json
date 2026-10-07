@@ -1,7 +1,7 @@
 {
   "appName": "Relatorios",
   "porta": 7734,
-  "pollInterval": 200,
+  "pollInterval": 100,
   "fbHost": "",
   "fdbPath": "",
   "maquinaIP": "",

@@ -1,18 +1,20 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.5.0
+ * @version 3.7.0
  * @author Ruda Gabriel
- * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor).
+ * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
- *   3.5.0 - 2026-10-06 16:00 - Volta o chip de desconto na coluna Itens (tinha se perdido
- *     numa atualização): depois dos 3 itens e do "+N mais…", a venda com desconto ganha o
- *     chip vermelho "tdItemChip tdItemDesc" com o texto "Desconto de 10% (−R$ 7,50)",
- *     cortado com reticências quando não couber na célula. Ao passar o
- *     mouse mostra o detalhamento (valor e % do desconto, soma dos itens, total com
- *     desconto e cada linha de desconto); o clique abre o modal normalmente. Mesma regra
- *     do modal: item com valor negativo é desconto, % sobre a soma dos itens positivos.
- *     Percentual abaixo de 1% aparece com uma casa (0,5%) no chip e no modal, que antes
- *     arredondava para 1%. Altura máxima da célula de itens ampliada para caber o chip.
+ *   3.7.0 - 2026-10-07 16:30 - Somente leitura e correção de horário só na tela.
+ *     - Duas travas em toda conexão (_somenteLeitura, bloco idêntico ao do servidor): só
+ *       SELECT/WITH sai para o banco e toda transação é read-only, READ COMMITTED com
+ *       rec_version e sem espera. Antes passava ISOLATION_READ_UNCOMMITTED, que no
+ *       node-firebird 1.x abria transação de ESCRITA com espera.
+ *     - --linha-de-base (enviado pelo servidor ao ligar/reconectar/trocar de banco): venda
+ *       de hoje ainda sem decisão de hora é registrada como está (só hora no futuro é
+ *       ajustada) — evita "corrigir" vendas legítimas ao ligar no meio do dia.
+ *     - Correções feitas na geração são informadas ao servidor ("@@CORRECOES_HORA@@") para
+ *       log e aviso na tela. Aviso "@@RELATORIO_PRONTO@@" ao gravar o HTML (o servidor avisa
+ *       o navegador sem esperar o fechamento das conexões). Polling padrão 100 ms.
  */
 
 (function() {
@@ -20,7 +22,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.5.0";
+    const SCRIPT_VERSION = "3.7.0";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -42,7 +44,87 @@
         { id: "lavender",        nome: "Lavanda",          grupo: "claro" },
         { id: "sky",             nome: "Céu",              grupo: "claro" }
     ];
-    const Firebird = require("node-firebird");
+    // ===== SOMENTE LEITURA (v2.14.0) ============================================
+    // O sistema NUNCA escreve no banco do Small Commerce. Duas travas, em toda
+    // conexão aberta por este processo (bloco idêntico no servidor e no gerador):
+    //  1. Comando: só passa SQL que começa com SELECT ou WITH; qualquer outro
+    //     (UPDATE, INSERT, DELETE, EXECUTE, ALTER...) é recusado ANTES de chegar
+    //     ao Firebird.
+    //  2. Transação: toda consulta roda numa transação SOMENTE LEITURA (isc_tpb_read),
+    //     READ COMMITTED com rec_version e sem espera — o próprio Firebird recusa
+    //     qualquer escrita (inclusive por procedure chamada num SELECT) e a leitura
+    //     nunca fica esperando transação aberta do caixa.
+    // Vale SÓ para as conexões abertas por este projeto: é uma opção da transação
+    // que o próprio projeto inicia — o banco, os PDVs e as conexões deles não são
+    // afetados e continuam gravando normalmente (testado num Firebird 3). O banco
+    // NÃO é colocado em modo somente leitura.
+    // O padrão do node-firebird (db.query) abria transação de ESCRITA, com ESPERA e
+    // "no_rec_version": com o caixa no meio de uma gravação, a leitura ficava
+    // TRAVADA até ele confirmar (medido: ~3 s). Atenção aos nomes do driver:
+    // ISOLATION_READ_COMMITTED = read_committed + NO_rec_version (dá conflito);
+    // o certo é read_committed (15) + rec_version (17), escrito aqui por número.
+    var _somenteLeitura = function(FB) {
+        if (!FB || FB.__somenteLeitura) return FB;
+        var maior = 0;
+        try { maior = parseInt(String(require("node-firebird/package.json").version).split(".")[0], 10) || 0; } catch (_) {}
+        // node-firebird 1.x aceita objeto de opções; versões antigas só a lista de isolamento.
+        var ISO_REC_VERSION = [15, 17]; // isc_tpb_read_committed + isc_tpb_rec_version
+        var TX = maior >= 1 ? { isolation: ISO_REC_VERSION, readOnly: true, wait: false } : ISO_REC_VERSION;
+        var SQL_LEITURA = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(select|with)\b/i;
+        var recusar = function(sql, cb) {
+            var cmd = String(sql || "").trim().split(/\s+/)[0] || "(vazio)";
+            var e = new Error("Bloqueado: o sistema é somente leitura — comando " + cmd.toUpperCase() + " não é enviado ao banco.");
+            if (typeof cb === "function") setImmediate(function() { cb(e); });
+            return e;
+        };
+        var blindarTx = function(tx) {
+            ["query", "execute"].forEach(function(m) {
+                var orig = tx[m];
+                if (typeof orig !== "function") return;
+                tx[m] = function(sql, params, cb) {
+                    if (!SQL_LEITURA.test(String(sql || ""))) return recusar(sql, typeof params === "function" ? params : cb);
+                    // Repassa TODOS os argumentos: query() chama execute() com um 4º
+                    // (opções como asObject) que não pode se perder.
+                    return orig.apply(tx, arguments);
+                };
+            });
+            return tx;
+        };
+        var blindarDb = function(db) {
+            if (!db || db.__somenteLeitura) return db;
+            db.__somenteLeitura = true;
+            // Vai direto na conexão: Database.transaction chama this.startTransaction,
+            // que é substituído aqui — chamar o original de Database entraria em laço.
+            var conn = db.connection;
+            db.transaction = db.startTransaction = function(_opcoesIgnoradas, cb) {
+                if (typeof _opcoesIgnoradas === "function") cb = _opcoesIgnoradas;
+                conn.startTransaction(TX, function(err, tx) { cb(err, tx ? blindarTx(tx) : tx); });
+                return db;
+            };
+            db.query = db.execute = function(sql, params, cb) {
+                if (typeof params === "function") { cb = params; params = []; }
+                if (!SQL_LEITURA.test(String(sql || ""))) return recusar(sql, cb);
+                db.transaction(null, function(errTx, tx) {
+                    if (errTx) { if (cb) cb(errTx); return; }
+                    tx.query(sql, params || [], function(e, rows) {
+                        // Leitura pura: rollback encerra a transação sem custo de commit.
+                        try { tx.rollback(function() {}); } catch (_) {}
+                        if (cb) cb(e || null, rows);
+                    });
+                });
+                return db;
+            };
+            return db;
+        };
+        var api = Object.create(FB);
+        api.__somenteLeitura = true;
+        api.attach = function(opts, cb) {
+            return FB.attach(opts, function(err, db) { cb(err, db ? blindarDb(db) : db); });
+        };
+        return api;
+    };
+    // ===========================================================================
+    const Firebird = _somenteLeitura(require("node-firebird"));
     const fs = require("node:fs");
     const process = require("node:process");
     const args = process.argv.slice(2);
@@ -414,17 +496,18 @@
     }, _tGlobal);
     _globalTimeout.unref(); // nao impede o processo de terminar normalmente se tudo der certo
 
-	// Usa transação explícita com ISOLATION_READ_UNCOMMITTED (rec_version + read + nowait)
-	// para garantir que o relatório NUNCA fique esperando transações abertas do PDV,
-	// independentemente da versão do node-firebird instalada.
-	// db.query() herda o isolation do opts e em algumas versões usa write+wait, travando.
+	// Transação explícita SOMENTE LEITURA, READ COMMITTED com rec_version e sem
+	// espera (ver _somenteLeitura, no topo): o relatório nunca escreve no banco e
+	// nunca fica esperando transações abertas do PDV. (Antes passava
+	// ISOLATION_READ_UNCOMMITTED, que no node-firebird 1.x abre transação de
+	// ESCRITA com espera — o oposto do que este comentário prometia.)
 	// Aceita timeoutMs opcional — usado para escalonar por intervalo de datas.
 	const query = (db, sql, params, timeoutMs) => new Promise((resolve, reject) => {
 		const _qt = setTimeout(() => {
 			const seg = Math.round((timeoutMs || _tQuery) / 1000);
 			reject(new Error(`Timeout na query apos ${seg}s. Conexao pode estar travada.`));
 		}, timeoutMs || _tQuery);
-		db.transaction(Firebird.ISOLATION_READ_UNCOMMITTED, (errTx, tx) => {
+		db.transaction(null, (errTx, tx) => {
 			if (errTx) {
 				clearTimeout(_qt);
 				return resolve({ e: errTx, rows: [] });
@@ -476,6 +559,16 @@
 	// Antes eram 1,5 min de tolerancia e 18 min de janela, valores que nao
 	// batiam nem com a regra pedida nem com a janela usada pelo servidor.
 	const MAXIMO_ATRASO_MIN      = cfgJanelaHoraMin; // janela: mais antigo que isso -> ignora
+	// LINHA DE BASE (v3.7.0): o servidor passa --linha-de-base na 1ª geração do dia
+	// após ligar, reconectar ou trocar de banco. Nela, venda de hoje que ainda não
+	// está no cache é só REGISTRADA como está (OK) — não dá para saber se a hora
+	// dela estava errada quando chegou. Só hora no futuro continua corrigida.
+	// Sem isso, ligar o servidor no meio do dia "corrigia" para a hora atual
+	// todas as vendas legítimas das últimas horas. A correção é só na tela:
+	// nada é gravado no banco (ver _somenteLeitura).
+	const _LINHA_DE_BASE = args.includes("--linha-de-base");
+	// Correções feitas nesta geração — o servidor mostra o aviso na tela.
+	const _correcoesHora = [];
 
 	// ── CACHE DE HORAS DO PDV ─────────────────────────────────────────────────
 	// Quando uma venda de hoje tem hora futura (relógio do PDV adiantado), capamos
@@ -1611,10 +1704,12 @@
 						} else if (_cached && _cached.hora && _cached.hora !== HORA_CACHE_OK) {
 							/* marcador não-horário (ex: CANCELADA) — mantém a hora original da venda */
 						} else if (_diffMin > 0) {
+							_correcoesHora.push({ tipo: _tipoVenda, numero: v.numero, de: _hh5, para: horaGeradaBR });
 							finalHora = horaGeradaBR; _definirHoraCache(key, { tipo: _tipoVenda, hora: horaGeradaBR });
-						} else if (_diffMin >= -TOLERANCIA_RELOGIO_MIN) {
+						} else if (_diffMin >= -TOLERANCIA_RELOGIO_MIN || _LINHA_DE_BASE) {
 							_definirHoraCache(key, { tipo: _tipoVenda, hora: HORA_CACHE_OK });
 						} else if (_diffMin >= -MAXIMO_ATRASO_MIN) {
+							_correcoesHora.push({ tipo: _tipoVenda, numero: v.numero, de: _hh5, para: horaGeradaBR });
 							finalHora = horaGeradaBR; _definirHoraCache(key, { tipo: _tipoVenda, hora: horaGeradaBR });
 						}
 						// else: diff < −MAXIMO_ATRASO_MIN → ignora silenciosamente
@@ -5083,7 +5178,7 @@ var __abrirModalConfig = function() {
         // XSS FIX (v2.8.0): valores do servidor entram no HTML abaixo — escapados
         // com esc() (& < > "), não só aspas.
         var _pn  = esc(String(cfg.appName  || ""));
-        var _pi  = parseInt(cfg.pollInterval || 800, 10);
+        var _pi  = parseInt(cfg.pollInterval || 100, 10);
         var _ml  = parseInt(cfg.maxLogLines  || 1000, 10);
         var _fv  = String(cfg.favicon        || "");
         var _td  = parseInt(cfg.toastDuration || 5000, 10);
@@ -5109,7 +5204,7 @@ var __abrirModalConfig = function() {
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Intervalo de atualização automática (ms)</div>' +
-                '<input type="number" id="cfgPollInterval" value="' + _pi + '" min="200" step="100" class="input" style="flex:1">' +
+                '<input type="number" id="cfgPollInterval" value="' + _pi + '" min="100" step="50" class="input" style="flex:1">' +
               '</div>' +
               '<div class="kv">' +
                 '<div class="k">Máx. linhas de log interno</div>' +
@@ -5359,7 +5454,7 @@ var __abrirModalConfig = function() {
             var _btn = document.getElementById("cfgSalvar");
             var _st  = document.getElementById("cfgStatus");
             var an   = String(document.getElementById("cfgAppName").value     || "").trim();
-            var pi   = parseInt(document.getElementById("cfgPollInterval").value, 10) || 800;
+            var pi   = parseInt(document.getElementById("cfgPollInterval").value, 10) || 100;
             var ml   = parseInt(document.getElementById("cfgMaxLogLines").value, 10)  || 1000;
             var td   = parseInt(document.getElementById("cfgToastDuracao").value, 10) || 5000;
             var jh   = parseInt(document.getElementById("cfgJanelaHora").value, 10);
@@ -5368,7 +5463,7 @@ var __abrirModalConfig = function() {
             var favFile = _fileInp.files && _fileInp.files[0];
 
             if (!an) { toast("Erro", "O nome do sistema não pode estar vazio."); return; }
-            if (pi < 200) { toast("Erro", "Intervalo mínimo: 200 ms."); return; }
+            if (pi < 100) { toast("Erro", "Intervalo mínimo: 100 ms."); return; }
             if (ml < 100) { toast("Erro", "Mínimo de 100 linhas de log."); return; }
             if (td < 500) { toast("Erro", "Duração mínima de aviso: 500 ms."); return; }
             if (!(jh >= 5 && jh <= 720)) { toast("Erro", "Janela de correção de horário: entre 5 e 720 minutos."); return; }
@@ -5802,6 +5897,13 @@ try {
         }
     }
 
+    // Aviso de pronto (v3.6.0): HTML e cache de horas já estão gravados. O
+    // servidor conclui a geração e avisa o navegador NESTE momento, sem esperar
+    // o fechamento das conexões abaixo (~100 ms). Linha exata, sozinha.
+    if (_correcoesHora.length) {
+        tentarSilencioso(() => process.stdout.write("@@CORRECOES_HORA@@" + JSON.stringify(_correcoesHora.slice(0, 200)) + "\n"));
+    }
+    tentarSilencioso(() => process.stdout.write("@@RELATORIO_PRONTO@@\n"));
     clearTimeout(_globalTimeout);
     _dbRef = null;
     // PRECISÃO FIX (v2.6.4): detach() sem try/catch AQUI, no caminho de

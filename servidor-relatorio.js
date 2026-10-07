@@ -2,34 +2,36 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.12.0
+ * @version 2.14.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
- *              geração em subprocesso.
+ *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
- *   2.12.0 - 2026-10-07 11:00 - Fast-poll com detecção completa por tipo.
- *     A consulta antiga somava tudo (gerencial + NFC-e + NF-e + pagamentos) em
- *     uma quantidade e um total, e era cega para mudanças que se compensam.
- *     - Quantidade, total e ASSINATURA (soma de MOD(HASH(...))) por tipo:
- *       Gerencial (99), NFC-e (65), NF-e (55) e outros; canceladas; NFC-e
- *       aguardando autorização; vendas sem vendedor.
- *     - Pagamentos: quantidade, total, assinatura de pedido|caixa|forma|valor
- *       de todas as linhas do dia (troca Dinheiro → PIX agora é detectada).
- *     - NF-e da tabela VENDAS (antes fora do fast-poll): quantidade, total,
- *       assinatura e canceladas.
- *     - Detecta: venda que muda de tipo com o mesmo valor, troca de vendedor,
- *       valores que sobem numa venda e descem em outra, troca de forma de
- *       pagamento. Log por tipo com sentido e diferença (↑/↓).
- *     - Uma varredura por tabela (antes 3 a 4 na NFCE e 2 na PAGAMENT); 6 ms
- *       num Firebird 3 de teste.
- *     - HORA fora da assinatura: a correção de horário do próprio servidor
- *       não dispara regeneração extra.
- *     - Montada a partir das colunas reais (sondadas uma vez por banco, com
- *       timeout) e testada ao conectar. Banco que não aceita a consulta
- *       (sem HASH, coluna diferente) fica no modo básico; se ela passar a
- *       falhar depois, o servidor testa a básica na mesma conexão e, se esta
- *       funciona, muda para o modo básico em vez de entrar em laço de
- *       reconexão.
+ *   2.14.0 - 2026-10-07 16:30 - Somente leitura, detecção mais rápida e segura.
+ *     - SOMENTE LEITURA: o sistema nunca mais escreve no banco. Removidos os
+ *       UPDATE de correção de horário (nfce/pagament/gerencial); duas travas
+ *       em toda conexão (_somenteLeitura): só SELECT/WITH sai para o banco e
+ *       toda transação é read-only (isc_tpb_read, sem espera) — o Firebird
+ *       recusa escrita. O node-firebird abria transação de ESCRITA por padrão.
+ *       Verificado no MON$TRANSACTIONS de um Firebird 3: 100% read-only.
+ *     - Correção de horário só na TELA, decidida pelo gerador e guardada no
+ *       hora-fixada-cache.json; linha de base (--linha-de-base) ao ligar,
+ *       reconectar e trocar de banco; correções avisadas no log e na tela.
+ *       Sem as correções próprias, o pollStatus abre 2 a 3 conexões a menos
+ *       por segundo.
+ *     - Detecção (COMMIT → aviso no navegador ~314 → ~140 ms): conclusão
+ *       antecipada pelo aviso "@@RELATORIO_PRONTO@@"; gerador pré-aquecido;
+ *       fast-poll ADAPTATIVO (a partir de 15 ms, no máximo 1/3 do tempo do
+ *       banco; medido com 300 mil vendas: ~45 ms com índice, ~3 s sem);
+ *       pollStatus 2 → 1 s com a mesma folga e sem regerar em dobro;
+ *       polling de reserva do navegador 200 → 100 ms.
+ *     - Rajada de vendas: a geração em curso não é mais cancelada — termina,
+ *       atualiza a tela, e uma nova começa em seguida (antes, com vendas a
+ *       cada < ~150 ms, a tela só atualizava quando o movimento parava).
+ *     - Índices: confere no catálogo (só leitura, conexão própria) se
+ *       NFCE.DATA, PAGAMENT.DATA e VENDAS.SAIDAD têm índice e registra no
+ *       log "Índices: ... ok" ou "AVISO índices: sem índice em ...". Tempo da
+ *       consulta do fast-poll sempre registrado na 1ª medição.
  */
 
 
@@ -37,7 +39,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.12.0";
+const SERVER_VERSION = "2.14.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -181,8 +183,88 @@ var _fmtQuantidade = function(v) {
     return String(n).replace(".", ",");
 };
 
+// ===== SOMENTE LEITURA (v2.14.0) ============================================
+// O sistema NUNCA escreve no banco do Small Commerce. Duas travas, em toda
+// conexão aberta por este processo (bloco idêntico no servidor e no gerador):
+//  1. Comando: só passa SQL que começa com SELECT ou WITH; qualquer outro
+//     (UPDATE, INSERT, DELETE, EXECUTE, ALTER...) é recusado ANTES de chegar
+//     ao Firebird.
+//  2. Transação: toda consulta roda numa transação SOMENTE LEITURA (isc_tpb_read),
+//     READ COMMITTED com rec_version e sem espera — o próprio Firebird recusa
+//     qualquer escrita (inclusive por procedure chamada num SELECT) e a leitura
+//     nunca fica esperando transação aberta do caixa.
+// Vale SÓ para as conexões abertas por este projeto: é uma opção da transação
+// que o próprio projeto inicia — o banco, os PDVs e as conexões deles não são
+// afetados e continuam gravando normalmente (testado num Firebird 3). O banco
+// NÃO é colocado em modo somente leitura.
+// O padrão do node-firebird (db.query) abria transação de ESCRITA, com ESPERA e
+// "no_rec_version": com o caixa no meio de uma gravação, a leitura ficava
+// TRAVADA até ele confirmar (medido: ~3 s). Atenção aos nomes do driver:
+// ISOLATION_READ_COMMITTED = read_committed + NO_rec_version (dá conflito);
+// o certo é read_committed (15) + rec_version (17), escrito aqui por número.
+var _somenteLeitura = function(FB) {
+    if (!FB || FB.__somenteLeitura) return FB;
+    var maior = 0;
+    try { maior = parseInt(String(require("node-firebird/package.json").version).split(".")[0], 10) || 0; } catch (_) {}
+    // node-firebird 1.x aceita objeto de opções; versões antigas só a lista de isolamento.
+    var ISO_REC_VERSION = [15, 17]; // isc_tpb_read_committed + isc_tpb_rec_version
+    var TX = maior >= 1 ? { isolation: ISO_REC_VERSION, readOnly: true, wait: false } : ISO_REC_VERSION;
+    var SQL_LEITURA = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(select|with)\b/i;
+    var recusar = function(sql, cb) {
+        var cmd = String(sql || "").trim().split(/\s+/)[0] || "(vazio)";
+        var e = new Error("Bloqueado: o sistema é somente leitura — comando " + cmd.toUpperCase() + " não é enviado ao banco.");
+        if (typeof cb === "function") setImmediate(function() { cb(e); });
+        return e;
+    };
+    var blindarTx = function(tx) {
+        ["query", "execute"].forEach(function(m) {
+            var orig = tx[m];
+            if (typeof orig !== "function") return;
+            tx[m] = function(sql, params, cb) {
+                if (!SQL_LEITURA.test(String(sql || ""))) return recusar(sql, typeof params === "function" ? params : cb);
+                // Repassa TODOS os argumentos: query() chama execute() com um 4º
+                // (opções como asObject) que não pode se perder.
+                return orig.apply(tx, arguments);
+            };
+        });
+        return tx;
+    };
+    var blindarDb = function(db) {
+        if (!db || db.__somenteLeitura) return db;
+        db.__somenteLeitura = true;
+        // Vai direto na conexão: Database.transaction chama this.startTransaction,
+        // que é substituído aqui — chamar o original de Database entraria em laço.
+        var conn = db.connection;
+        db.transaction = db.startTransaction = function(_opcoesIgnoradas, cb) {
+            if (typeof _opcoesIgnoradas === "function") cb = _opcoesIgnoradas;
+            conn.startTransaction(TX, function(err, tx) { cb(err, tx ? blindarTx(tx) : tx); });
+            return db;
+        };
+        db.query = db.execute = function(sql, params, cb) {
+            if (typeof params === "function") { cb = params; params = []; }
+            if (!SQL_LEITURA.test(String(sql || ""))) return recusar(sql, cb);
+            db.transaction(null, function(errTx, tx) {
+                if (errTx) { if (cb) cb(errTx); return; }
+                tx.query(sql, params || [], function(e, rows) {
+                    // Leitura pura: rollback encerra a transação sem custo de commit.
+                    try { tx.rollback(function() {}); } catch (_) {}
+                    if (cb) cb(e || null, rows);
+                });
+            });
+            return db;
+        };
+        return db;
+    };
+    var api = Object.create(FB);
+    api.__somenteLeitura = true;
+    api.attach = function(opts, cb) {
+        return FB.attach(opts, function(err, db) { cb(err, db ? blindarDb(db) : db); });
+    };
+    return api;
+};
+// ===========================================================================
 var Firebird = null;
-try { Firebird = require("node-firebird"); } catch(e) {}
+try { Firebird = _somenteLeitura(require("node-firebird")); } catch(e) {}
 
 // ---------------------------------------------------------------------------
 // Utilitarios
@@ -450,7 +532,11 @@ var APP_NAME      = (appCfg.appName&&appCfg.appName.trim()) ? appCfg.appName.tri
     if (_favBoot.ok && _favBoot.valor) FAVICON = _favBoot.valor;
 })();
 var POLL_INTERVAL = (appCfg.pollInterval && parseInt(appCfg.pollInterval,10) >= 100)
-    ? parseInt(appCfg.pollInterval,10) : 200; // mínimo absoluto de 100ms — previne loop sem pausa
+    ? parseInt(appCfg.pollInterval,10) : 100; // mínimo absoluto de 100ms — previne loop sem pausa
+// pollStatus (reserva do fast-poll + correções de horário): 5× o intervalo do
+// navegador, nunca abaixo de 1 s (v2.13.0: era 2 s). Cada ciclo abre uma
+// conexão nova com o Firebird, por isso não acompanha o fast-poll.
+var _intervaloPollStatus = function() { return Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 1000); };
 // CONTRATO FIX: padrão unificado com gerar-relatorio-html.js (ambos usam 5000ms agora).
 var TOAST_DURATION = (appCfg.toastDuration && parseInt(appCfg.toastDuration,10)>=500)
     ? parseInt(appCfg.toastDuration,10) : 5000; // ms — duração padrão do toast de notificação
@@ -883,13 +969,15 @@ var _CORRECOES_TTL_MS    = _CORRECOES_JANELA_MS + 5000;
 // nfce e pagament) podem ser empurradas no mesmo milissegundo dentro do mesmo
 // ciclo de pollStatus, e nesse caso ts sozinho não distingue uma da outra.
 var _correcoesSeq = 0;
-var _pushCorrecao = function(msg, cor) {
+// semReload: o aviso só informa (o HTML que chegou junto já está atualizado e
+// o navegador já foi avisado por SSE) — evita uma segunda recarga.
+var _pushCorrecao = function(msg, cor, semReload) {
     var agora = Date.now();
     // Poda oportunista de entradas velhas — evita que o array cresça para sempre
     // em uma sessão de dias sem nunca reiniciar o servidor.
     _correcoesPendentes = _correcoesPendentes.filter(function(c) { return (agora - c.ts) < _CORRECOES_TTL_MS; });
     if (_correcoesPendentes.length < 50) {
-        _correcoesPendentes.push({ msg: msg, cor: cor, reload: true, ts: agora, seq: ++_correcoesSeq });
+        _correcoesPendentes.push({ msg: msg, cor: cor, reload: !semReload, ts: agora, seq: ++_correcoesSeq });
     }
 };
 
@@ -960,15 +1048,6 @@ var dbStatus    = {ok:false,ip:FDB_HOST,erro:null,scanCompleto:false,scanning:fa
 // formato à medida que cada entrada é reprocessada.
 // ---------------------------------------------------------------------------
 var HORA_CACHE_OK = "OK";
-// Marcadores de gerenciais que NÃO recebem hora fixada (v2.7.1). Existem para
-// que essas vendas apareçam no cache e a numeração não fique com buracos,
-// deixando claro no próprio arquivo POR QUE aquele número não tem horário.
-// Importante: são MARCADORES, não horários — quem lê o cache precisa tratar
-// como "não use isto como hora" (ver a checagem de formato HH:MM no
-// gerar-relatorio-html.js, que aceita apenas HH:MM e ignora o resto).
-var HORA_CACHE_CANCELADA  = "CANCELADA";   // cancelado = 'S'
-var HORA_CACHE_CONVERTIDA = "CONVERTIDA";  // cancelado = 'T' — virou NFC-e ou NF-e
-var HORA_CACHE_SEM_VALOR  = "SEM VALOR";   // total <= 0 (não cancelada nem convertida)
 
 // Aceita tanto o formato antigo (string solta) quanto o novo ({tipo,hora}) —
 // nunca lança, entrada inesperada vira tipo "desconhecido" em vez de
@@ -1029,23 +1108,10 @@ var _lerHoraFixadaCacheDisco = function() {
 };
 var _horaFixadaCache = _lerHoraFixadaCacheDisco();
 
-// Chaves removidas de propósito desde a última gravação (UPDATE que falhou e
-// foi revertido). Sem este registro, a mescla com o disco ressuscitaria a
+// Chaves removidas de propósito desde a última gravação (ex.: dias antigos
+// limpos na virada). Sem este registro, a mescla com o disco ressuscitaria a
 // entrada que já tinha sido gravada num flush anterior.
-// Chave "YYYY-MM-DD|numero" com o número SEM zeros à esquerda — o mesmo
-// formato que gerar-relatorio-html.js usa (ele normaliza os ids com
-// replace(/^0+/,"")). Antes este arquivo gravava o número cru do banco
-// ("061449") e o gerador "61449": a mesma venda podia ter duas entradas.
-var _chaveHoraCache = function(dh, id) {
-    var s = String(id == null ? "" : id).trim();
-    return dh + "|" + (s.replace(/^0+/, "") || s);
-};
-
 var _horaCacheRemovidas = new Set();
-var _removerHoraFixadaCache = function(chave) {
-    delete _horaFixadaCache[chave];
-    _horaCacheRemovidas.add(chave);
-};
 
 // _salvarHoraFixadaCache() → debounce de 500 ms (uso normal).
 // _salvarHoraFixadaCache.flush() → grava imediatamente (usado no exit).
@@ -1152,11 +1218,11 @@ var _iniciarPolling = function(atrasoMs) {
         _pollStartTimer = null;
         pollStatus();
         // pollStatus: fallback de segurança + funções de correção de horário.
-        // Fast-poll (50ms, conexão persistente) trata toda a detecção de mudanças.
+        // Fast-poll (15 ms, conexão persistente) trata toda a detecção de mudanças.
         // pollStatus usa attach/detach por ciclo — rodar em excesso sobrecarrega
         // o Firebird desnecessariamente. Mínimo 2s independente de POLL_INTERVAL.
         if (_pollIntervalId) clearInterval(_pollIntervalId);
-        _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
+        _pollIntervalId = setInterval(pollStatus, _intervaloPollStatus());
         _iniciarFastPoll();
     }, Math.max(0, atrasoMs || 0));
 };
@@ -1517,6 +1583,80 @@ var _invalidarCache = function() {
 // ---------------------------------------------------------------------------
 // Gerador em background — com timeout e retry automático
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GERADOR PRÉ-AQUECIDO (v2.13.0)
+// Abrir um processo Node e carregar o node-firebird custa ~45 ms a cada
+// geração. Fica sempre UM processo reserva já com isso pronto, esperando a
+// ordem pela entrada padrão: {"argv":[script, ...args], "env":{...}}. Só
+// depois da ordem ele carrega o gerar-relatorio-html.js — que lê config.json,
+// data, hora e cache de horas naquele instante, como num processo novo (a
+// reserva nunca usa dado velho, por mais tempo que tenha esperado). Entrada
+// fechada sem ordem (servidor encerrou) → a reserva sai sozinha.
+// Qualquer problema com a reserva (morta, pipe fechado) → spawn normal.
+// ---------------------------------------------------------------------------
+var _BOOT_GERADOR =
+    "var d=process.argv[1];" +
+    "try{require(require.resolve('node-firebird',{paths:[d]}));}catch(_){}" +
+    "var b='';process.stdin.setEncoding('utf8');" +
+    "var fim=function(){process.exit(0);};" +
+    "process.stdin.on('end',fim);" +
+    "process.stdin.on('data',function(c){b+=c;var i=b.indexOf('\\n');if(i<0)return;" +
+    "process.stdin.removeListener('end',fim);process.stdin.removeAllListeners('data');process.stdin.pause();" +
+    "var m=JSON.parse(b.slice(0,i));var e=m.env||{};Object.keys(e).forEach(function(k){process.env[k]=e[k];});" +
+    "process.argv=[process.execPath].concat(m.argv);require(m.argv[0]);});";
+var _geradorReserva = null;
+var _prepararReserva = function() {
+    if (_geradorReserva || _encerrando) return;
+    try {
+        var p = spawn(process.execPath, ["-e", _BOOT_GERADOR, __dirname],
+                      {stdio:["pipe","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
+        p.on("error", function() { if (_geradorReserva === p) _geradorReserva = null; });
+        p.on("exit",  function() { if (_geradorReserva === p) _geradorReserva = null; });
+        if (p.stdin) p.stdin.on("error", function() {}); // EPIPE se a reserva morrer: tratado na hora de usar
+        _geradorReserva = p;
+    } catch (_) { _geradorReserva = null; }
+};
+var _descartarReserva = function() {
+    var p = _geradorReserva; _geradorReserva = null;
+    if (p) { try { p.kill(); } catch (_) {} }
+};
+var _obterGerador = function(nArgs) {
+    var p = _geradorReserva; _geradorReserva = null;
+    var proc = null;
+    if (p && p.exitCode === null && p.signalCode === null && p.stdin && p.stdin.writable) {
+        try {
+            p.stdin.end(JSON.stringify({ argv: nArgs, env: { RELATORIO_FB_USER: USER, RELATORIO_FB_PASS: PASS } }) + "\n");
+            proc = p;
+        } catch (_) { try { p.kill(); } catch (__) {} }
+    } else if (p) { try { p.kill(); } catch (_) {} }
+    if (!proc) proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
+    setImmediate(_prepararReserva); // repõe a reserva para a próxima geração
+    return proc;
+};
+
+// O gerador avisa as horas que acabou de corrigir NA TELA (linha
+// "@@CORRECOES_HORA@@" + JSON [{tipo, numero, de, para}]). Vira log e aviso na
+// tela — o banco não é alterado.
+var _ROTULO_TIPO_HORA = { nfce: "NFC-e", nfe: "NF-e", gerencial: "gerencial", desconhecido: "venda" };
+var _registrarCorrecoesHora = function(json) {
+    var lista;
+    try { lista = JSON.parse(json); } catch (_) { return; }
+    if (!Array.isArray(lista) || !lista.length) return;
+    var porTipo = {};
+    lista.forEach(function(c) {
+        if (!c || typeof c !== "object") return;
+        var t = _ROTULO_TIPO_HORA[c.tipo] || "venda";
+        (porTipo[t] = porTipo[t] || []).push(c);
+    });
+    Object.keys(porTipo).forEach(function(t) {
+        var itens = porTipo[t], para = String(itens[0].para || "");
+        logTs("Hora corrigida na tela (banco não alterado): " + itens.length + " " + t + " → " + para + " — " +
+              itens.map(function(c) { return _textoSeguroLog(String(c.numero) + " (era " + String(c.de) + ")", 40); }).join(", ") + ".");
+        _pushCorrecao("🕐 " + itens.length + " " + t + (itens.length > 1 ? "s" : "") + " com hora antiga exibida(s) como " + para,
+                      "rgba(251,191,36,.45)", true);
+    });
+};
+
 var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     var ent=cache[chave];
     if(ent&&ent.gerando)return;
@@ -1567,6 +1707,10 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // Repassa o nível de log ao filho: sem "--debug" ele omite a cronometragem
     // por etapa (7 linhas por geração), que é ruído no uso normal.
     if (LOG_DEBUG) nArgs.push("--debug");
+    // Linha de base da correção de horário (ver "CORREÇÃO DE HORÁRIO — SÓ NA TELA"):
+    // só no relatório de hoje; vale até uma geração com ela concluir com sucesso.
+    var _comLinhaDeBase = _linhaDeBasePendente && inicio === fim && inicio === hoje();
+    if (_comLinhaDeBase) nArgs.push("--linha-de-base");
     // CRASH FIX: spawn() pode lançar de forma SÍNCRONA (EMFILE por esgotamento de
     // descritores, ENOMEM, execPath inválido). Como gerarEmBackground é chamado
     // direto de dentro do handler HTTP (rotas / e /periodo), a exceção subia até
@@ -1574,7 +1718,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
     // {gerando:true} para sempre, deixando a página presa no paginaLoading.
     var proc = null;
     try {
-        proc = spawn(process.execPath, nArgs, {stdio:["ignore","pipe","pipe"], env:_ENV_FILHO, windowsHide:true});
+        proc = _obterGerador(nArgs);
     } catch(spawnErr) {
         logTs("ERRO spawn síncrono ("+label+"): "+(spawnErr && spawnErr.message || spawnErr));
         cache[chave] = {html:null, gerando:false, erro:"Falha ao iniciar o gerador: "+(spawnErr && spawnErr.message || String(spawnErr))};
@@ -1718,6 +1862,8 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         lines.forEach(function(l) {
             var t = l.trim();
             if (!t) return;
+            if (t === "@@RELATORIO_PRONTO@@") { _concluir(0); return; }
+            if (t.indexOf("@@CORRECOES_HORA@@") === 0) { _registrarCorrecoesHora(t.slice(18)); return; }
             // RECONCILIACAO/AVISO RECONCILIACAO (gerar-relatorio-html.js v2.7.7+):
             // fusão automática Gerencial→NF-e por valor idêntico é evento de
             // negócio relevante (afeta o total do dia) — sempre grava via
@@ -1764,8 +1910,27 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         cache[chave]={html:null,gerando:false,erro:"Falha ao iniciar node: "+e.message};
         _gerarTentativas[chave] = 0;
     });
-    proc.on("close",function(code){
-        if (_procEncerrado) return; // timeout já tratou este processo
+    // CONCLUSÃO ANTECIPADA (v2.13.0): o gerador imprime "@@RELATORIO_PRONTO@@"
+    // assim que o HTML e o cache de horas estão gravados, ANTES de fechar as
+    // conexões com o Firebird. Fechar (detach) leva ~100 ms e só depois o
+    // processo terminava — e só então o navegador era avisado. Agora a
+    // conclusão roda no aviso (o processo segue fechando as conexões sozinho);
+    // "close" continua cobrindo gerador antigo (sem o aviso) e falhas.
+    var _concluir = function(code){
+        if (_procEncerrado) return;
+        _concluirInterno(code);
+        // Mudança chegou durante esta geração (_fpRegerar): gera de novo já.
+        if (_regerarAoConcluir[chave]) {
+            delete _regerarAoConcluir[chave];
+            setImmediate(function() {
+                if (cache[chave] && cache[chave].gerando) { _regerarAoConcluir[chave] = true; return; }
+                delete cache[chave];
+                gerarEmBackground(chave, chave, chave, true);
+            });
+        }
+    };
+    var _concluirInterno = function(code){
+        if (_procEncerrado) return; // timeout (ou o aviso de pronto) já tratou este processo
         _procEncerrado = true;
         clearTimeout(_spawnTimer);
         // Flush de qualquer conteúdo restante no buffer (linha sem \n final)
@@ -1797,6 +1962,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         try{html=fs.readFileSync(_tmpFile,"utf8");}
         catch(e){cache[chave]={html:null,gerando:false,erro:"Erro lendo HTML: "+e.message};return;}
         try{fs.unlinkSync(_tmpFile);}catch(_){}
+        if (_comLinhaDeBase) _linhaDeBasePendente = false; // linha de base registrada
 
         var st   = extrairStatusDoHtml(html);
         var qt   = st.qt, tot = st.tot;
@@ -2065,6 +2231,10 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             logTs("ERRO FATAL em proc.close ("+chave+"): "+(fatalErr&&fatalErr.stack||fatalErr));
             try { cache[chave]={html:null,gerando:false,erro:"Erro interno: "+(fatalErr&&fatalErr.message||String(fatalErr))}; } catch(_) {}
         }
+    };
+    proc.on("close", function(code) {
+        if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
+        _concluir(code);
     });
 };
 
@@ -2087,7 +2257,39 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
 //
 // Resultado: detecção em 200-400ms; POLL_INTERVAL vira fallback de segurança.
 // ---------------------------------------------------------------------------
-var _FP_INTERVAL_MS  = 50;    // fixo — detecção a cada 50ms (conexão persistente: sem overhead)
+// v2.13.0: intervalo ADAPTATIVO, mínimo 15 ms (resolução do relógio do
+// Windows, ~15,6 ms). O próximo ciclo só começa depois de 3× o tempo médio da
+// consulta: o fast-poll nunca ocupa mais de ~1/3 do tempo do Firebird, que é o
+// mesmo banco do caixa (PDV). Medido com 300 mil vendas: consulta de ~11 ms
+// com índice em DATA (→ ciclo de ~35 ms) e ~285 ms sem índice (→ ~850 ms);
+// antes, a 50 ms fixos, uma consulta lenta fazia o fast-poll consultar sem
+// parar, deixando o banco ocupado 100% do tempo.
+var _FP_INTERVAL_MS       = 15;
+var _FP_FATOR_FOLGA       = 3;
+var _FP_INTERVALO_MAX_MS  = 3000;
+var _fpMediaMs            = 0;   // média móvel do tempo de consulta
+var _fpInicioCiclo        = 0;
+var _fpFaixaLog           = 0;
+var _fpFaixaLogTs         = 0;
+var _fpIntervaloAlvo = function() {
+    return Math.max(_FP_INTERVAL_MS, Math.min(_FP_INTERVALO_MAX_MS, Math.round(_fpMediaMs * _FP_FATOR_FOLGA)));
+};
+var _FP_FAIXAS = [15, 30, 60, 120, 250, 500, 1000, 2000, 3000];
+var _fpRegistrarDuracao = function(ms) {
+    _fpMediaMs = _fpMediaMs ? (_fpMediaMs * 0.7 + ms * 0.3) : ms;
+    var alvo = _fpIntervaloAlvo(), faixa = _FP_FAIXAS[0];
+    for (var i = 0; i < _FP_FAIXAS.length; i++) if (alvo >= _FP_FAIXAS[i]) faixa = _FP_FAIXAS[i];
+    // Log na 1ª medição e quando a faixa muda — no máximo 1 por minuto (um tempo
+    // oscilando na divisa de duas faixas não enche o log).
+    if (faixa !== _fpFaixaLog && (!_fpFaixaLog || Date.now() - _fpFaixaLogTs > 60000)) {
+        {
+            logTs("FastPoll: consulta levando ~" + Math.round(_fpMediaMs) + " ms — intervalo ajustado para ~" + alvo +
+                  " ms (o fast-poll usa no máximo 1/3 do tempo do banco)." +
+                  (_fpMediaMs > 100 ? " Consulta lenta: verifique se as tabelas NFCE/PAGAMENT têm índice no campo DATA." : ""));
+        }
+        _fpFaixaLog = faixa; _fpFaixaLogTs = Date.now();
+    }
+};
 var _fpDb            = null;  // conexão Firebird persistente (reutilizada entre ciclos)
 var _fpConectando    = false; // evita tentativas de attach paralelas
 var _fpBusy          = false; // evita ciclos sobrepostos
@@ -2347,6 +2549,14 @@ var _fpEsquema        = null;  // colunas sondadas (uma vez por banco)
 var _FP_SQL_COMPLETO  = null;
 var _fpParesCompleto  = 0;
 var _fpUltimoCompleto = null;  // último vetor visto no modo completo (null = sem baseline)
+var _fpUltimoOkTs     = 0;     // instante do último ciclo completo bem-sucedido
+// Fast-poll completo saudável = já cobre tudo que o pollStatus compara (e mais).
+// Nesse caso o pollStatus não regera por conta própria (v2.13.0): antes ele
+// percebia a MESMA mudança ~2 s depois e regerava de novo — processo e
+// recarga de tela em dobro a cada venda.
+var _fpCompletoSaudavel = function() {
+    return _fpModo === "completo" && Date.now() - _fpUltimoOkTs < 1500;
+};
 
 // Sonda o esquema (NFCE, PAGAMENT, VENDAS) UMA vez por banco e decide o modo:
 // monta a consulta completa a partir das colunas que existem e a executa uma
@@ -2378,6 +2588,7 @@ var _fpSondar = function(db, gen, done) {
                 if (esq[t] && c) esq[t][c] = true;
             });
             _fpEsquema = esq;
+            _fpVerificarIndices(esq);
             var _vend = !!esq.NFCE.VENDEDOR;
             if (_fpTemVendedor !== _vend) {
                 _fpTemVendedor = _vend;
@@ -2412,20 +2623,63 @@ var _fpSondar = function(db, gen, done) {
     );
 };
 
-// Dispara a regeneração do dia (mata a geração em curso, que já está velha).
+// Confere no CATÁLOGO do banco (só leitura) se as colunas de data que o
+// fast-poll e o gerador filtram têm índice. Sem índice, cada consulta lê a
+// tabela inteira (medido: 300 mil vendas → ~285 ms a ~1 s em vez de ~11 ms).
+// O sistema é somente leitura e NÃO cria índices: o log diz o que falta para
+// quem administra o banco decidir.
+// Conexão PRÓPRIA e curta: duas consultas ao mesmo tempo na conexão do
+// fast-poll podem ter as respostas trocadas pelo driver.
+var _fpVerificarIndices = function(esq) {
+    var alvos = [["NFCE", "DATA"], ["PAGAMENT", "DATA"]];
+    if (esq.VENDAS && esq.VENDAS.NUMERONF) alvos.push(["VENDAS", esq.VENDAS.SAIDAD ? "SAIDAD" : "EMISSAO"]);
+    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
+                role:null, charset:FB_CHARSET, lowercase_keys:false};
+    var db = null, fim = false;
+    var encerrar = function() { if (fim) return; fim = true; clearTimeout(t); if (db) { try { db.detach(); } catch (_) {} } };
+    var t = setTimeout(function() { if (fim) return; fim = true; if (db) { try { _matarConexao(db); } catch (_) {} } }, 5000);
+    try {
+      Firebird.attach(opts, function(errA, dbA) {
+        if (fim) { if (dbA) { try { _matarConexao(dbA); } catch (_) {} } return; }
+        if (errA || !dbA) { encerrar(); return; }
+        db = dbA;
+        db.query(
+            "SELECT TRIM(i.RDB$RELATION_NAME) AS T, TRIM(s.RDB$FIELD_NAME) AS C " +
+            "FROM RDB$INDICES i JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = i.RDB$INDEX_NAME " +
+            "WHERE s.RDB$FIELD_POSITION = 0 AND (i.RDB$INDEX_INACTIVE IS NULL OR i.RDB$INDEX_INACTIVE = 0) " +
+            "AND TRIM(i.RDB$RELATION_NAME) IN ('NFCE','PAGAMENT','VENDAS')",
+            [],
+            function(err, rows) {
+                encerrar();
+                if (err || !rows) return; // diagnóstico apenas — nunca atrapalha a detecção
+                var tem = {};
+                rows.forEach(function(r) { tem[String(r.T || r.t || "").trim().toUpperCase() + "." + String(r.C || r.c || "").trim().toUpperCase()] = true; });
+                var faltam = alvos.filter(function(a) { return !tem[a[0] + "." + a[1]]; }).map(function(a) { return a[0] + "." + a[1]; });
+                if (!faltam.length) {
+                    logTs("Índices: " + alvos.map(function(a) { return a[0] + "." + a[1]; }).join(", ") + " — ok (consultas rápidas).");
+                } else {
+                    logTs("AVISO índices: sem índice em " + faltam.join(", ") + " — cada leitura percorre a tabela inteira " +
+                          "(mais lenta e mais pesada para o banco do caixa). O sistema é somente leitura e não cria índices; " +
+                          "peça ao suporte do Small Commerce (ou ao responsável pelo banco) para criar índice nessa(s) coluna(s).");
+                }
+            }
+        );
+      });
+    } catch (_) { encerrar(); }
+};
+
+// Dispara a regeneração do dia (v2.14.0: SEM cancelar a geração em curso).
+// Antes a geração em andamento era morta e recomeçada a cada mudança: com
+// vendas chegando a cada < ~150 ms sem pausa, nenhuma geração terminava e a
+// tela só atualizava quando o movimento parava. Agora a geração em curso
+// termina (a tela atualiza com ela) e, se chegou mudança no meio, UMA nova
+// geração começa logo em seguida — várias mudanças no meio viram uma só.
+var _regerarAoConcluir = Object.create(null);
 var _fpRegerar = function(dh) {
     var _ent = cache[dh];
-    if (_ent && _ent.gerando) {
-        var _killFn = _gerandoKill[dh];
-        _gerarIdCounter[dh] = (_gerarIdCounter[dh] || 0) + 1;
-        delete _gerandoKill[dh];
-        delete cache[dh];
-        gerarEmBackground(dh, dh, dh, true);
-        if (_killFn) { try { _killFn(); } catch(_) {} }
-    } else {
-        delete cache[dh];
-        gerarEmBackground(dh, dh, dh, true);
-    }
+    if (_ent && _ent.gerando) { _regerarAoConcluir[dh] = true; return; }
+    delete cache[dh];
+    gerarEmBackground(dh, dh, dh, true);
 };
 
 // Conecta (ou reconecta) a conexão persistente do fast-poll.
@@ -2478,6 +2732,9 @@ var _fpConectar = function(cb) {
 // Reutiliza _fpDb se disponível; reconecta silenciosamente se necessário.
 var _fpPoll = function() {
     if (!Firebird || !dbStatus.ok || _fpBusy || _fpConectando) return;
+    var _agoraFp = Date.now();
+    if (_agoraFp - _fpInicioCiclo < _fpIntervaloAlvo()) return; // folga para o banco (ver _FP_FATOR_FOLGA)
+    _fpInicioCiclo = _agoraFp;
     _fpBusy = true;
     var dh = hoje();
 
@@ -2512,9 +2769,16 @@ var _fpPoll = function() {
         if (_fpModo === "completo" && _FP_SQL_COMPLETO) {
             var _pc = [];
             for (var _bc = 0; _bc < _fpParesCompleto; _bc++) { _pc.push(dh, dh); }
-            var _dbC = _fpDb;
+            var _dbC = _fpDb, _tqC = Date.now();
             _dbC.query(_FP_SQL_COMPLETO, _pc, function(errC, rowsC) {
                 if (_wdFired) return;
+                if (errC && /deadlock|conflict|lock/i.test(String(errC.message || errC))) {
+                    // Conflito passageiro com gravação do caixa: só pula este ciclo
+                    // (não troca de modo nem derruba a conexão).
+                    clearTimeout(_wdFp);
+                    _fpBusy = false;
+                    return;
+                }
                 if (errC || !rowsC || !rowsC.length) {
                     // A consulta completa falhou: foi ela (ex.: valor maior que o
                     // CAST, função ausente) ou a conexão? Tenta a básica na MESMA
@@ -2539,7 +2803,9 @@ var _fpPoll = function() {
                     return;
                 }
                 clearTimeout(_wdFp);
+                _fpRegistrarDuracao(Date.now() - _tqC);
                 var atual = _fpLerCompleto(rowsC[0]);
+                _fpUltimoOkTs = Date.now();
                 if (_fpUltimoCompleto && _fpDiferente(_fpUltimoCompleto, atual)) {
                     logTs("FastPoll: " + _descreverMudancaCompleta(_fpUltimoCompleto, atual) + " → regerando.");
                     _fpRegerar(dh);
@@ -2550,8 +2816,10 @@ var _fpPoll = function() {
             return;
         }
 
+        var _tqB = Date.now();
         _fpDb.query(_FP_SQL, _paramsBasico(), function(err, rows) {
             clearTimeout(_wdFp);
+            if (!err && rows && rows.length && !_wdFired) _fpRegistrarDuracao(Date.now() - _tqB);
             // Se watchdog já disparou, descarta callback para evitar duplo processamento
             if (_wdFired) return;
 
@@ -2618,6 +2886,7 @@ var _iniciarFastPoll = function() {
     // Banco novo (ou reconfigurado): esquema e modo voltam a ser sondados.
     _fpUltimoCompleto = null;
     _fpModo = null; _fpEsquema = null; _fpTemVendedor = null;
+    _fpMediaMs = 0; _fpInicioCiclo = 0; // banco novo: tempo de consulta medido de novo
     _FP_SQL = _montarFpSql(false); _FP_SQL_COMPLETO = null; _fpParesCompleto = 0;
     _fpDhAtual  = null;
     _fpBusy     = false;
@@ -2633,13 +2902,12 @@ var _iniciarFastPoll = function() {
 //    e emite ">" (subiu) ou "<" (caiu) por tipo no log antes de regenerar.
 //  • Timeout de 5 s por consulta (_QUERY_TIMEOUT_MS): se ultrapassar, cancela
 //    o socket TCP e refaz após 500 ms.
-//  • Após detecção chama _corrigirHorariosVelhos e _corrigirHorariosGerencial,
-//    que usam o relógio local do servidor (mesmo fuso do Firebird).
+//  • Somente leitura: não corrige nada no banco (correção de horário é só na
+//    tela, feita pelo gerador — ver "CORREÇÃO DE HORÁRIO — SÓ NA TELA").
 // ---------------------------------------------------------------------------
 var _pollBusy = false;
 var _pollIntervalId = null; // guarda o ID do setInterval ativo — evita acúmulo de loops
 var _QUERY_TIMEOUT_MS = 5000;   // 5 segundos — cancela e refaz se exceder
-var _HORA_VELHA_MS               =  1 * 60 * 1000; // 1 minuto  — corrige horário de venda stale (NFC-e/NF-e)
 // REGRA DE HORA FIXA (v2.7.7) — janela ampliada de 30 min para 1 HORA a
 // pedido do usuário. Define até quando olhar para trás procurando vendas
 // com horário a corrigir. Vendas mais antigas que isso são deixadas em paz
@@ -2657,22 +2925,13 @@ var _normalizarJanelaHoraMin = function(v) {
     return n;
 };
 var _HORA_GERENCIAL_JANELA_MS    = _normalizarJanelaHoraMin(appCfg.janelaCorrecaoHoraMin) * 60 * 1000; // janela de verificação retroativa para gerenciais
-var _HORA_GERENCIAL_TOLERANCIA_MS =  3 * 60 * 1000; // 3 minutos  — notas com hora dentro desse intervalo passam sem ajuste
 
-// Throttle das funções de correção de horário.
-// Elas abrem conexão Firebird própria — chamá-las a cada poll (200ms) gera
-// 10 conexões extras/segundo ao banco, atrasando o próprio poll de detecção.
-// Solução: busy-flag por função — retorna imediatamente se já estiver em andamento.
-// Elimina throttle fixo de 5s: detecção dispara a cada poll (≤200ms), bloqueando
-// apenas enquanto a query Firebird anterior não terminou (~10-100ms em banco local).
-var _corriVelhosEmAndamento    = false; // true = _corrigirHorariosVelhos rodando
-var _corriGerencialEmAndamento = false; // true = _corrigirHorariosGerencial rodando
 
 // ---------------------------------------------------------------------------
 // Fuso horário informado pelo browser (POST /api/hora-usuario a cada 30 s).
-// Hoje é usado apenas para diagnóstico (log em modo debug): as correções de
-// horário usam o relógio LOCAL do servidor, que é o mesmo do Firebird — ver
-// _corrigirHorariosVelhos. CÓDIGO MORTO REMOVIDO (v2.9.0): agoraAjustado(),
+// Hoje é usado apenas para diagnóstico (log em modo debug): a correção de
+// horário (só na tela) usa o relógio LOCAL da máquina, o mesmo do Firebird.
+// CÓDIGO MORTO REMOVIDO (v2.9.0): agoraAjustado(),
 // que convertia a hora para o fuso do browser, não era mais chamada em lugar
 // nenhum desde que essa troca foi feita.
 // ---------------------------------------------------------------------------
@@ -2699,6 +2958,7 @@ var _matarConexao = function(db) {
 // Chamado quando poll ou attach ultrapassam o timeout — garante que
 // subprocessos aguardando o mesmo banco também sejam encerrados.
 var _matarTodosFilhos = function() {
+    _descartarReserva();
     var pids = _spawnedPids.slice();
     if (!pids.length) return;
     logTs("Matando " + pids.length + " processo(s) filho(s) por timeout de poll.");
@@ -2747,432 +3007,28 @@ var _executarConsultaPoll = function(db, sql, params, cb) {
 };
 
 // ---------------------------------------------------------------------------
-// REGRA DE "PRIMEIRA VISÃO" (v2.9.0) para correção de hora de NFC-e/NF-e e
-// pagamentos.
-//
-// BUG CRÍTICO CORRIGIDO: a versão anterior selecionava TODO documento do dia
-// com hora < (agora − 1 min) que ainda não estivesse num Set em memória e
-// gravava a hora atual nele. Dois efeitos:
-//   1. A cada reinício do servidor o Set nascia vazio → TODAS as NFC-e e
-//      pagamentos do dia com mais de 1 min tinham a hora reescrita no banco
-//      para o horário do reinício (o tray reinicia sozinho em travamento).
-//   2. Mesmo sem reinício, toda venda gravada com a hora CERTA passava a ser
-//      "velha" 1 min depois e era reescrita para hora+1 min.
-// Agora a correção só vale para documentos que APARECEM no banco já com hora
-// velha (a intenção original: venda que chega com horário de abertura antigo).
-//   - Cada número visto é lembrado em _xxxVistos; um número é avaliado uma
-//     única vez, na primeira varredura em que aparece.
-//   - A 1ª varredura após boot/troca de banco é LINHA DE BASE: registra o que
-//     já existe sem alterar nada (não dá para saber como esses chegaram).
-//   - Na virada do dia os conjuntos são zerados SEM linha de base: o dia novo
-//     começa vazio, então tudo o que surgir é primeira visão.
+// CORREÇÃO DE HORÁRIO — SÓ NA TELA (v2.14.0)
+// O servidor não corrige mais horários no banco (antes: UPDATE em nfce e
+// pagament). Quem decide a hora EXIBIDA é o gerador, pela mesma regra de
+// sempre (futuro, ou de 3 min até a janela configurada → hora da 1ª visão),
+// gravando a decisão só no hora-fixada-cache.json, fora do banco.
+// "Primeira visão": ao ligar, ao reconectar e ao trocar de banco, a primeira
+// geração do dia recebe --linha-de-base e só REGISTRA o que já existe (sem
+// corrigir) — não dá para saber como essas vendas chegaram. Na virada do dia
+// não há linha de base: o dia novo começa vazio e tudo é primeira visão.
 // ---------------------------------------------------------------------------
-var _nfceVistasHoje    = new Set(); // chave: String(numero)
-var _pagVistosHoje     = new Set(); // chave: String(numero)
-var _nfceBaselineFeita = false;
-var _pagBaselineFeita  = false;
+var _linhaDeBasePendente = true; // boot
 var _resetarBaselineCorrecoes = function(semLinhaDeBase) {
-    _nfceVistasHoje.clear();
-    _pagVistosHoje.clear();
-    _nfceBaselineFeita = !!semLinhaDeBase;
-    _pagBaselineFeita  = !!semLinhaDeBase;
+    _linhaDeBasePendente = !semLinhaDeBase;
 };
 
-// Processa o resultado de uma varredura (linhas com NUMERO e VELHA=1|0).
-// Devolve os números que devem ser corrigidos; atualiza vistos/linha de base.
-var _selecionarPrimeiraVisao = function(rows, vistos, baselineFeita) {
-    var corrigir = [];
-    (rows || []).forEach(function(r) {
-        var id = String(r.NUMERO != null ? r.NUMERO : (r.numero != null ? r.numero : "")).trim();
-        if (!id || vistos.has(id)) return;
-        vistos.add(id);
-        if (!baselineFeita) return; // linha de base: só registra
-        if (Number(r.VELHA != null ? r.VELHA : r.velha) === 1) corrigir.push(id);
-    });
-    return corrigir;
-};
-
-// Corrige vendas que aparecem com horário mais de _HORA_VELHA_MS no passado,
-// gravando o instante atual do relógio local do servidor (mesmo fuso do
-// Firebird). Executa de forma assíncrona sem bloquear o poll principal.
-// NOTA: abre suas próprias conexões Firebird — não usa o db do poll para evitar
-// race condition com _liberar(db) que pode destruir a conexão antes das
-// queries de correção completarem.
-var _corrigirHorariosVelhos = function(_dbIgnorado, dh) {
-    // Busy-flag: evita chamadas paralelas (poll a cada ≥2s, query ~10-100ms).
-    if (_corriVelhosEmAndamento) return;
-    _corriVelhosEmAndamento = true;
-
-    var _nowMs    = Date.now();
-    var _agoraD   = new Date(_nowMs);
-    var _threshD  = new Date(_nowMs - _HORA_VELHA_MS);
-    var horaAtual = padDois(_agoraD.getHours()) + ":" + padDois(_agoraD.getMinutes()) + ":" + padDois(_agoraD.getSeconds());
-    var horaLimite= padDois(_threshD.getHours()) + ":" + padDois(_threshD.getMinutes()) + ":" + padDois(_threshD.getSeconds());
-
-    // Guard meia-noite: nos primeiros _HORA_VELHA_MS ms do dia, horaLimite fica
-    // "23:5x:xx" (ontem) e TODA hora do dia novo pareceria velha. Aguarda.
-    var _agoraDiaStr  = _agoraD.getFullYear() + "-" + padDois(_agoraD.getMonth()+1) + "-" + padDois(_agoraD.getDate());
-    var _threshDiaStr = _threshD.getFullYear() + "-" + padDois(_threshD.getMonth()+1) + "-" + padDois(_threshD.getDate());
-    if (_threshDiaStr < _agoraDiaStr || dh !== _agoraDiaStr) {
-        _corriVelhosEmAndamento = false;
-        return;
-    }
-
-    // Dois ramos assíncronos (nfce + pagament), cada um com conexão própria.
-    var _pend = 2;
-    var _liberar = function() { if (--_pend <= 0) _corriVelhosEmAndamento = false; };
-
-    var _regenerarHoje = function() {
-        try {
-            if (!cache[dh] || !cache[dh].gerando) {
-                delete cache[dh];
-                gerarEmBackground(dh, dh, dh);
-            }
-        } catch(e) { logTs("WARN correção de horário (regeneração): " + e.message); }
-    };
-
-    // Abre conexão com timeout global; chama trabalho(db, fechar). Nunca lança.
-    var _comConexao = function(rotulo, trabalho) {
-        var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
-                    role:null, charset:FB_CHARSET, lowercase_keys:false};
-        var dbRef = null, encerrado = false;
-        var timer = setTimeout(function() {
-            if (encerrado) return;
-            encerrado = true;
-            logTs("_corrigirHorariosVelhos(" + rotulo + "): timeout de " + (_QUERY_TIMEOUT_MS/1000) + "s — encerrando conexão.");
-            if (dbRef) _matarConexao(dbRef);
-            _liberar();
-        }, _QUERY_TIMEOUT_MS);
-        var fechar = function() {
-            if (encerrado) return;
-            encerrado = true;
-            clearTimeout(timer);
-            if (dbRef) { try { dbRef.detach(); } catch(_) {} }
-            _liberar();
-        };
-        try {
-            Firebird.attach(opts, function(errConn, db) {
-                if (encerrado) { if (db) _matarConexao(db); return; }
-                if (errConn || !db) { fechar(); return; } // banco indisponível — tenta no próximo ciclo
-                dbRef = db;
-                try { trabalho(db, fechar, function() { return encerrado; }); }
-                catch(e) { logTs("WARN _corrigirHorariosVelhos(" + rotulo + "): " + e.message); fechar(); }
-            });
-        } catch(e) { fechar(); }
-    };
-
-    // ---- nfce (exceto gerenciais, tratadas por _corrigirHorariosGerencial) ----
-    _comConexao("nfce", function(db, fechar, encerrado) {
-        // Coluna de hora: DHORA quando existir, senão HORA.
-        db.query("SELECT FIRST 1 dhora FROM nfce WHERE data >= ? AND data < ? + 1 AND COALESCE(modelo,65) <> 99", [dh, dh], function(errProbe) {
-            if (encerrado()) return;
-            var campo = errProbe ? "hora" : "dhora";
-            // IIF compara no próprio Firebird, exatamente como a versão anterior
-            // comparava no WHERE (mesma semântica para colunas texto ou TIME).
-            var sqlSel =
-                "SELECT numero, IIF(" + campo + " < ?, 1, 0) AS VELHA FROM nfce " +
-                "WHERE data >= ? AND data < ? + 1 " +
-                "AND COALESCE(modelo,65) <> 99 " +
-                "AND " + campo + " IS NOT NULL " +
-                "AND COALESCE(cancelado,'N') NOT IN ('S','T') " +
-                "AND total > 0";
-            db.query(sqlSel, [horaLimite, dh, dh], function(errS, rows) {
-                if (encerrado()) return;
-                if (errS) { logTs("Correção nfce."+campo+": erro na query — "+errS.message); fechar(); return; }
-                var novos = _selecionarPrimeiraVisao(rows, _nfceVistasHoje, _nfceBaselineFeita);
-                _nfceBaselineFeita = true;
-                if (!novos.length) { fechar(); return; }
-
-                // Guard extra no UPDATE: nunca toca gerencial, mesmo por race.
-                var placeholders = novos.map(function() { return "?"; }).join(",");
-                var sqlUpd =
-                    "UPDATE nfce SET " + campo + " = ? " +
-                    "WHERE numero IN (" + placeholders + ") " +
-                    "AND COALESCE(modelo,65) <> 99 " +
-                    "AND data >= ? AND data < ? + 1";
-                db.query(sqlUpd, [horaAtual].concat(novos, [dh, dh]), function(errU) {
-                    if (errU) {
-                        // Esquece os números para que a próxima varredura tente de novo.
-                        novos.forEach(function(id) { _nfceVistasHoje.delete(id); });
-                        logTs("Poll: ERRO ao corrigir nfce." + campo + ": " + errU.message);
-                    } else {
-                        logTs("Poll: " + novos.length + " venda(s) nfce corrigida(s) para " + horaAtual +
-                              " (campo " + campo + ", numero(s): " + novos.join(",") + ").");
-                        _pushCorrecao("🕐 " + novos.length + " venda(s) NFC-e com hora antiga corrigida(s) para " + horaAtual,
-                                      "rgba(251,191,36,.45)");
-                        _regenerarHoje();
-                    }
-                    fechar();
-                });
-            });
-        });
-    });
-
-    // ---- pagament ----
-    _comConexao("pagament", function(db, fechar, encerrado) {
-        var sqlSel =
-            "SELECT numero, IIF(hora < ?, 1, 0) AS VELHA FROM pagament " +
-            "WHERE data >= ? AND data < ? + 1 " +
-            "AND hora IS NOT NULL " +
-            "AND valor > 0";
-        db.query(sqlSel, [horaLimite, dh, dh], function(errS, rows) {
-            if (encerrado()) return;
-            if (errS) { logTs("Correção pagament.hora: erro na query — "+errS.message); fechar(); return; }
-            var novos = _selecionarPrimeiraVisao(rows, _pagVistosHoje, _pagBaselineFeita);
-            _pagBaselineFeita = true;
-            if (!novos.length) { fechar(); return; }
-
-            var ph = novos.map(function() { return "?"; }).join(",");
-            // Restringe ao dia: "numero" de pagament não é garantidamente único
-            // entre dias — sem a data, o UPDATE podia alterar pagamentos antigos.
-            var sqlUpd = "UPDATE pagament SET hora = ? WHERE numero IN (" + ph + ") AND data >= ? AND data < ? + 1";
-            db.query(sqlUpd, [horaAtual].concat(novos, [dh, dh]), function(errU) {
-                if (errU) {
-                    novos.forEach(function(id) { _pagVistosHoje.delete(id); });
-                    logTs("Poll: ERRO ao corrigir pagament.hora: " + errU.message);
-                } else {
-                    logTs("Poll: " + novos.length + " pagamento(s) corrigido(s) para " + horaAtual +
-                          " (numero(s): " + novos.join(",") + ").");
-                    _pushCorrecao("🕐 " + novos.length + " pagamento(s) com hora antiga corrigido(s) para " + horaAtual,
-                                  "rgba(251,191,36,.45)");
-                    _regenerarHoje();
-                }
-                fechar();
-            });
-        });
-    });
-};
-
-// ---------------------------------------------------------------------------
-// Corrige horários de vendas GERENCIAIS (modelo=99 OU modelo IS NULL) com hora futura ou mais
-// de 1 minuto atrás.  NFC-e (65) e NF-e (55) nunca são tocados aqui.
-// BUG FIX: SmallSoft pode gravar vendas gerenciais com modelo=NULL (em vez de 99).
-// Usando (modelo = 99 OR modelo IS NULL) capturamos ambos os casos.
-// Persiste no hora-fixada-cache.json para não repetir entre reinicializações.
-// NOTA: abre sua própria conexão Firebird — não usa o db do poll para evitar
-// race condition com _liberar(db).
-// ---------------------------------------------------------------------------
-var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
-    // Busy-flag: evita chamadas paralelas (poll a cada 200ms, query ~10-100ms).
-    if (_corriGerencialEmAndamento) return;
-    _corriGerencialEmAndamento = true;
-
-    // USA O RELÓGIO LOCAL DO SERVIDOR DIRETAMENTE — mesma razão de _corrigirHorariosVelhos.
-    // Bug anterior: usava agoraAjustado() com _clientTzOffsetMs=0 → hora UTC errada.
-    var _nowMs    = Date.now();
-    var _agoraD   = new Date(_nowMs);
-    var _threshD30 = new Date(_nowMs - _HORA_GERENCIAL_JANELA_MS);    // início da janela (janelaCorrecaoHoraMin atrás)
-    var _threshD3  = new Date(_nowMs - _HORA_GERENCIAL_TOLERANCIA_MS); //  3 min atrás — limite da tolerância
-    var horaAtual   = padDois(_agoraD.getHours())    + ":" + padDois(_agoraD.getMinutes())    + ":" + padDois(_agoraD.getSeconds());
-    var horaLimite30 = padDois(_threshD30.getHours()) + ":" + padDois(_threshD30.getMinutes()) + ":" + padDois(_threshD30.getSeconds());
-    var horaLimite3  = padDois(_threshD3.getHours())  + ":" + padDois(_threshD3.getMinutes())  + ":" + padDois(_threshD3.getSeconds());
-
-    // Meia-noite. AJUSTE (v2.10.0): antes, se o INÍCIO da janela caísse no
-    // dia anterior, a função inteira era suspensa — com a janela de 1 h isso
-    // desligava as correções de 00:00 a 01:00; com 3 h desligaria até 03:00.
-    // Agora a janela só é recortada na meia-noite ("00:00:00"), pois horas do
-    // dia anterior não existem nas vendas de hoje. A suspensão fica apenas
-    // para os primeiros minutos da tolerância (horaLimite3 ainda "ontem"), em
-    // que a comparação de texto "23:5x" > "00:0x" inverteria a regra.
-    var _diaDe = function(d) { return d.getFullYear() + "-" + padDois(d.getMonth()+1) + "-" + padDois(d.getDate()); };
-    var _agoraDiaStr = _diaDe(_agoraD);
-    if (_diaDe(_threshD3) < _agoraDiaStr) {
-        _corriGerencialEmAndamento = false;
-        return;
-    }
-    if (_diaDe(_threshD30) < _agoraDiaStr) horaLimite30 = "00:00:00";
-
-    // NÃO loga no início — chamado a cada poll (200ms).
-    // Logs apenas quando efetivamente corrige ou ocorre erro.
-
-    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:FB_CHARSET, lowercase_keys:false};
-
-    // Timeout global para a conexão gerencial — mesma proteção de _corrigirHorariosVelhos:
-    // impede que conexão pendurada vaze para sempre se o Firebird travar após o poll.
-    var _cgDb = null, _cgEncerrado = false;
-    var _cgTimer = setTimeout(function() {
-        if (_cgEncerrado) return;
-        _cgEncerrado = true;
-        logTs("_corrigirHorariosGerencial: timeout de " + (_QUERY_TIMEOUT_MS/1000) + "s — encerrando conexão.");
-        if (_cgDb) _matarConexao(_cgDb);
-        _corriGerencialEmAndamento = false; // timeout = fim da função
-    }, _QUERY_TIMEOUT_MS);
-
-    Firebird.attach(opts, function(errConn, db) {
-        if (_cgEncerrado) { if (db) _matarConexao(db); return; } // timeout já limpou flag
-        _cgDb = db;
-        if (errConn || !db) { clearTimeout(_cgTimer); _corriGerencialEmAndamento = false; return; }
-        var _fechar = function() {
-            if (_cgEncerrado) return;
-            _cgEncerrado = true;
-            clearTimeout(_cgTimer);
-            try { db.detach(); } catch(_) {}
-            _corriGerencialEmAndamento = false; // fim normal
-        };
-
-    var _corrigirComCampo = function(campo) {
-        // Busca gerenciais de hoje fora do intervalo aceitável:
-        //   hora futura → campo > horaAtual
-        //   hora dentro da janela de 30 min (inclui zona de tolerância de 3 min) → campo >= horaLimite30 AND campo < horaAtual
-        // Notas com campo > horaAtual (futuro) e campo < horaLimite30 (> 30 min atrás) são ignoradas — fora da janela.
-        // BUG FIX: (modelo = 99 OR modelo IS NULL) captura gerenciais com campo NULL.
-        //
-        // AJUSTE (v2.7.0 — "não pule as numerações"): os filtros
-        // "COALESCE(cancelado,'N') NOT IN ('S','T')" e "total > 0" foram
-        // REMOVIDOS daqui. Eram eles que abriam buracos na numeração do
-        // hora-fixada-cache.json: uma gerencial cancelada ou convertida
-        // simplesmente nunca entrava no cache, então a sequência ficava
-        // 54891, 54890, 54889, 54886... sem explicação visível no arquivo.
-        // Agora essas vendas TAMBÉM entram no cache — mas apenas como
-        // registro (marcadas com HORA_CACHE_CANCELADA); elas nunca entram
-        // no UPDATE, porque reescrever a hora de uma venda cancelada no
-        // banco seria alterar um registro que não deve mais mudar. As
-        // colunas cancelado/total passam a ser lidas para permitir essa
-        // classificação.
-        var sqlSel =
-            "SELECT numero, " + campo + " AS HORA_VAL, " +
-            "COALESCE(cancelado,'N') AS CANC, COALESCE(total,0) AS TOT FROM nfce " +
-            "WHERE data >= ? AND data < ? + 1 " +
-            "AND (modelo = 99 OR modelo IS NULL) " +
-            "AND " + campo + " IS NOT NULL " +
-            "AND (" + campo + " > ? OR (" + campo + " >= ? AND " + campo + " < ?))";
-        //  params: dh, dh, horaAtual (futuro), horaLimite30 (janela início), horaAtual (janela fim)
-
-        db.query(sqlSel, [dh, dh, horaAtual, horaLimite30, horaAtual], function(errS, rows) {
-            if (errS) { logTs("Correção gerencial."+campo+": erro na query — "+errS.message); _fechar(); return; }
-            if (!rows || !rows.length) { _fechar(); return; } // nenhum para corrigir — silencioso
-
-            // Separa em três grupos — filtrados pelo cache persistente:
-            //   novosSemHora:    cancelada/convertida/sem valor → só registra no cache (não altera o banco)
-            //   novosParaFixar:  hora futura OU dentro da janela mas fora da tolerância (> 3 min atrás)
-            //   novosParaMarcar: hora dentro da tolerância (≤ 3 min atrás) — passa sem ajuste, apenas marca no cache
-            var novosParaFixar  = [];
-            var novosParaMarcar = [];
-            var novosSemHora    = []; // [{id, marcador}]
-
-            rows.forEach(function(r) {
-                var id = String(r.NUMERO || r.numero || "").trim();
-                if (!id) return;
-                // já processado (fixado ou marcado ok) — confere nos dois formatos de
-                // chave: o legado (número como veio do banco, ex: "061449") e o
-                // atual, sem zeros à esquerda (mesmo formato do gerador).
-                if (_horaFixadaCache[dh + "|" + id] || _horaFixadaCache[_chaveHoraCache(dh, id)]) return;
-                var canc = String(r.CANC || r.canc || "N").trim().toUpperCase();
-                var tot  = parseFloat(r.TOT !== undefined ? r.TOT : r.tot);
-                // AJUSTE (v2.7.1): 'S' e 'T' agora são distinguidos no cache em vez de
-                // caírem os dois em "CANCELADA" — no Small Commerce, 'T' significa que
-                // a gerencial foi CONVERTIDA em documento fiscal (NFC-e ou NF-e), que é
-                // um desfecho bem diferente de um cancelamento e merece aparecer como tal.
-                if (canc === "S") { novosSemHora.push({id:id, marcador:HORA_CACHE_CANCELADA});  return; }
-                if (canc === "T") { novosSemHora.push({id:id, marcador:HORA_CACHE_CONVERTIDA}); return; }
-                if (!(tot > 0))   { novosSemHora.push({id:id, marcador:HORA_CACHE_SEM_VALOR});  return; }
-                var hv = String(r.HORA_VAL || "").trim().substring(0, 8);
-                if (hv > horaAtual) {
-                    // hora futura → sempre fixar
-                    novosParaFixar.push(id);
-                } else if (hv >= horaLimite3) {
-                    // dentro da tolerância de 3 min → passou sem ajuste, marca no cache
-                    novosParaMarcar.push(id);
-                } else {
-                    // mais de 3 min atrás mas dentro da janela de 30 min → fixar
-                    novosParaFixar.push(id);
-                }
-            });
-
-            // ── Registro de canceladas/convertidas/sem valor (sem tocar no banco) ──
-            if (novosSemHora.length) {
-                novosSemHora.forEach(function(item) {
-                    _horaFixadaCache[_chaveHoraCache(dh, item.id)] = { tipo: "gerencial", hora: item.marcador };
-                });
-                _salvarHoraFixadaCache();
-                var _resumo = {};
-                novosSemHora.forEach(function(item){ _resumo[item.marcador] = (_resumo[item.marcador]||0) + 1; });
-                logTs("Poll: " + novosSemHora.length + " gerencial(is) registrada(s) no cache sem hora fixada (numeração sem buracos; banco não alterado) — " +
-                      Object.keys(_resumo).map(function(k){ return _resumo[k] + "x " + k; }).join(", ") + ".");
-            }
-
-            // ── Marcação sem ajuste (tolerância) ─────────────────────────────
-            // Grava HORA_CACHE_OK no cache para que essas notas não entrem mais
-            // na janela de 30 min. BUG FIX: gravava "ok" minúsculo antes — ver
-            // comentário completo na declaração de HORA_CACHE_OK.
-            if (novosParaMarcar.length) {
-                novosParaMarcar.forEach(function(id) {
-                    _horaFixadaCache[_chaveHoraCache(dh, id)] = { tipo: "gerencial", hora: HORA_CACHE_OK };
-                });
-                _salvarHoraFixadaCache();
-                logTs("Poll: " + novosParaMarcar.length + " gerencial(is) dentro da tolerância (≤3 min) — marcado(s) sem ajuste.");
-            }
-
-            if (!novosParaFixar.length) { _fechar(); return; } // só havia notas na tolerância
-
-            // ── Fixação ───────────────────────────────────────────────────────
-            // Marca no cache ANTES do UPDATE — evita dupla correção em paralelo.
-            // FORMATO FIX: grava "HH:MM" (sem segundos) — horaAtual tem segundos
-            // (precisão necessária para a comparação SQL acima), mas o valor
-            // persistido no cache precisa bater com o formato "HH:MM" que
-            // gerar-relatorio-html.js grava e exibe, senão os dois lados
-            // comparam formatos diferentes para o mesmo horário.
-            var horaAtualCache = horaAtual.substring(0, 5);
-            novosParaFixar.forEach(function(id) {
-                _horaFixadaCache[_chaveHoraCache(dh, id)] = { tipo: "gerencial", hora: horaAtualCache };
-            });
-            _salvarHoraFixadaCache();
-
-            var placeholders = novosParaFixar.map(function() { return "?"; }).join(",");
-            // BUG FIX: UPDATE também usa (modelo = 99 OR modelo IS NULL)
-            // para garantir que a mesma venda encontrada pelo SELECT seja atualizada.
-            var sqlUpd =
-                "UPDATE nfce SET " + campo + " = ? " +
-                "WHERE numero IN (" + placeholders + ") " +
-                "AND (modelo = 99 OR modelo IS NULL)";
-
-            db.query(sqlUpd, [horaAtual].concat(novosParaFixar), function(errU) {
-                if (errU) {
-                    // Reverte entradas do cache — poderá tentar novamente depois
-                    novosParaFixar.forEach(function(id) { _removerHoraFixadaCache(_chaveHoraCache(dh, id)); });
-                    _salvarHoraFixadaCache();
-                    logTs("Poll: ERRO ao corrigir gerencial." + campo + ": " + errU.message);
-                } else {
-                    logTs("Poll: " + novosParaFixar.length + " gerencial(is) corrigido(s) para " + horaAtual +
-                          " (campo " + campo + ", numero(s): " + novosParaFixar.join(",") + ").");
-                    _pushCorrecao(
-                        "🕐 " + novosParaFixar.length + " gerencial(is) com hora corrigido(s) para " + horaAtual,
-                        "rgba(167,139,250,.45)"
-                    );
-                    // Regenera para que o HTML com hora corrigida esteja pronto quando o browser recarregar.
-                    var _dhGer = dh;
-                    try {
-                        if (!cache[_dhGer] || !cache[_dhGer].gerando) {
-                            delete cache[_dhGer];
-                            gerarEmBackground(_dhGer, _dhGer, _dhGer);
-                        }
-                    } catch(_rgGErr) { logTs("WARN _corrigirGer regen: " + _rgGErr.message); }
-                }
-                _fechar();
-            });
-        });
-    };
-
-    // Detecta campo correto (DHORA ou HORA) com probe silencioso
-    // BUG FIX: probe também usa (modelo=99 OR modelo IS NULL)
-    db.query(
-        "SELECT FIRST 1 dhora FROM nfce WHERE data >= ? AND data < ? + 1 AND (modelo = 99 OR modelo IS NULL)",
-        [dh, dh],
-        function(errProbe) {
-            if (!errProbe) {
-                _corrigirComCampo("dhora");
-            } else {
-                _corrigirComCampo("hora");
-            }
-        }
-    );
-
-    }); // fecha Firebird.attach
-};
-
+// pollStatus também respeita a folga para o banco: o próximo ciclo só começa
+// depois de 3× a duração do anterior (cada ciclo abre conexão e varre o dia).
+var _pollInicioCiclo = 0, _pollMediaMs = 0;
 var pollStatus = function() {
     if (!Firebird || _pollBusy || !dbStatus.ok) return;
+    if (_pollMediaMs && Date.now() - _pollInicioCiclo < _pollMediaMs * _FP_FATOR_FOLGA) return;
+    _pollInicioCiclo = Date.now();
     _pollBusy = true;
     var dh   = hoje();
     var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
@@ -3193,6 +3049,8 @@ var pollStatus = function() {
         clearTimeout(_watchdog);
         clearTimeout(_attachTimer);
         if (db) { try { _matarConexao(db); } catch(_) {} }
+        var _durPoll = Date.now() - _pollInicioCiclo;
+        _pollMediaMs = _pollMediaMs ? (_pollMediaMs * 0.7 + _durPoll * 0.3) : _durPoll;
         _pollBusy = false;
         if (reagendar) setTimeout(pollStatus, 500);
     };
@@ -3282,8 +3140,6 @@ var pollStatus = function() {
 
             // Busy-flag interno de cada função impede paralelismo — detecção a cada poll (≤200ms).
             // Não precisa de throttle: o flag libera assim que a query Firebird termina (~10-100ms local).
-            _corrigirHorariosVelhos(db, dh);
-            _corrigirHorariosGerencial(db, dh);
 
             // -------------------------------------------------------------------
             // Detecção de mudança por tipo: gerencial, NFC-e, NF-e
@@ -3307,7 +3163,10 @@ var pollStatus = function() {
                 };
             }
 
-            if (resultado.mudou) {
+            if (resultado.mudou && _fpCompletoSaudavel()) {
+                // O fast-poll completo já regerou esta mudança (ver _fpCompletoSaudavel).
+                logDebug("pollStatus: " + resultado.descricao + " — já tratado pelo fast-poll.");
+            } else if (resultado.mudou) {
                 logTs("Dados alterados: " + resultado.descricao + " → regerando.");
                 // SSE NÃO é disparado aqui. É disparado em gerarEmBackground (proc.on("close"))
                 // quando o HTML está pronto, via _pollTriggered=true.
@@ -4290,7 +4149,7 @@ var server=http.createServer(function(req,res){
     if(rota==="/api/config" && req.method==="GET"){
         sendJson({
             appName:               _config.appName              || "",
-            pollInterval:          _config.pollInterval         || 200,
+            pollInterval:          _config.pollInterval         || 100,
             maxLogLines:           _config.maxLogLines          || 1000,
             favicon:               _config.favicon              || "",
             toastDuration:         _config.toastDuration        || 5000, // CONTRATO FIX: padrão unificado com filho (era 4000)
@@ -4320,7 +4179,7 @@ var server=http.createServer(function(req,res){
                 if(typeof obj!=="object"||Array.isArray(obj)) obj={};
 
                 if(p.appName       !== undefined){ var n=_textoSeguroLog(p.appName, 80);    if(n) obj.appName=n; }
-                if(p.pollInterval  !== undefined){ var pi=parseInt(p.pollInterval,10);    if(pi>=200) obj.pollInterval=pi; }
+                if(p.pollInterval  !== undefined){ var pi=parseInt(p.pollInterval,10);    if(pi>=100) obj.pollInterval=pi; }
                 if(p.maxLogLines   !== undefined){ var ml=parseInt(p.maxLogLines,10);     if(ml>=100) obj.maxLogLines=ml; }
                 if(p.favicon       !== undefined){
                     // SEGURANÇA FIX (v2.5.0): ver _faviconCaminhoSeguro — rejeita caminhos
@@ -4392,7 +4251,7 @@ var server=http.createServer(function(req,res){
                     // o campo "salvava" mas o comportamento real não mudava.
                     if (Firebird && dbStatus.ok) {
                         if (_pollIntervalId) clearInterval(_pollIntervalId);
-                        _pollIntervalId = setInterval(pollStatus, Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000));
+                        _pollIntervalId = setInterval(pollStatus, _intervaloPollStatus());
                     }
                 }
                 if(obj.maxLogLines&&parseInt(obj.maxLogLines,10)>=100){
@@ -4487,7 +4346,7 @@ var server=http.createServer(function(req,res){
             "<div id=\"msg\"></div>"+
             "<div class=\"field\"><label>Nome do sistema (appName)</label><input type=\"text\" id=\"appName\" value=\""+_pn+"\"><p class=\"hint\">Exibido no titulo da pagina e no icone da bandeja.</p></div>"+
             "<div class=\"row\">"+
-            "<div class=\"field\"><label>Intervalo de polling (ms)</label><input type=\"number\" id=\"pollInterval\" value=\""+_pi+"\" min=\"200\" step=\"100\"><p class=\"hint\">Minimo: 200 ms</p></div>"+
+            "<div class=\"field\"><label>Intervalo de polling (ms)</label><input type=\"number\" id=\"pollInterval\" value=\""+_pi+"\" min=\"100\" step=\"50\"><p class=\"hint\">Minimo: 100 ms</p></div>"+
             "<div class=\"field\"><label>Maximo de linhas de log</label><input type=\"number\" id=\"maxLogLines\" value=\""+_ml+"\" min=\"100\" step=\"100\"><p class=\"hint\">Minimo: 100 linhas</p></div>"+
             "</div>"+
             "<div class=\"field\"><label>Janela de correcao de horario (min)</label><input type=\"number\" id=\"janelaHora\" value=\""+_jh+"\" min=\""+JANELA_HORA_MIN_MIN+"\" max=\""+JANELA_HORA_MAX_MIN+"\" step=\"5\"><p class=\"hint\">Vendas gerenciais com hora no futuro ou entre 3 min e este tempo atras passam a usar a hora atual; mais antigas sao ignoradas. Padrao: 180 (3 horas). Minimo "+JANELA_HORA_MIN_MIN+", maximo "+JANELA_HORA_MAX_MIN+".</p></div>"+
@@ -4526,7 +4385,7 @@ var server=http.createServer(function(req,res){
             "var btn=document.getElementById('salvarBtn'),msg=document.getElementById('msg');"+
             "btn.disabled=true;btn.textContent='Salvando...';msg.style.display='none';"+
             "var an=document.getElementById('appName').value.trim();"+
-            "var pi=parseInt(document.getElementById('pollInterval').value,10)||200;"+
+            "var pi=parseInt(document.getElementById('pollInterval').value,10)||100;"+
             "var ml=parseInt(document.getElementById('maxLogLines').value,10)||1000;"+
             "var td=parseInt(document.getElementById('toastDuration').value,10)||4000;"+
             "var jh=parseInt(document.getElementById('janelaHora').value,10);"+
@@ -4991,7 +4850,8 @@ server.listen(PORT, BIND_ADDR, function(){
         // comportamento do servidor, confundindo qualquer debug futuro.
         // Intervalo REAL do pollStatus (mesma fórmula de _iniciarPolling) — o
         // log anterior mostrava POLL_INTERVAL, 10× menor que o valor efetivo.
-        logTs("Fast-poll: " + _FP_INTERVAL_MS + "ms (detecção instantânea) | pollStatus fallback: " + (Math.max(POLL_INTERVAL * POLL_RETRY_MULTIPLIER, 2000)/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
+        setImmediate(_prepararReserva); // gerador pré-aquecido já para a 1ª venda
+        logTs("Fast-poll: a partir de " + _FP_INTERVAL_MS + " ms (adaptativo: no máximo 1/3 do tempo do banco) | gerador pré-aquecido | pollStatus fallback: " + (_intervaloPollStatus()/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
     });
 });
 

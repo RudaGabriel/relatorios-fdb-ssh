@@ -20,6 +20,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - [API HTTP](#api-http)
 - [Cliente de linha de comando (`api.ps1`)](#cliente-de-linha-de-comando-apips1)
 - [Correção automática de horário](#correção-automática-de-horário)
+- [Somente leitura](#somente-leitura)
 - [Segurança](#segurança)
 - [Logs e diagnóstico](#logs-e-diagnóstico)
 - [Testes automáticos](#testes-automáticos)
@@ -50,13 +51,20 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Vendas aguardando autorização da SEFAZ** aparecem na hora, com rótulo próprio. Vendedor e hora são herdados da gerencial de origem.
 
 ### Tempo real
-- **Fast-poll:** consulta leve a cada 50 ms numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
+- **Fast-poll:** consulta leve a partir de 15 ms (adaptativo: nunca ocupa mais de 1/3 do tempo do banco do caixa) numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
   - venda nova e cancelamento;
   - total que **sobe ou desce** em cada tipo (o log mostra o sentido e a diferença, ex.: `NFC-e: total R$ 80,00 → R$ 90,00 (↑ +R$ 10,00)`);
   - venda que **muda de tipo** com o mesmo valor (gerencial → NFC-e);
   - venda alterada sem mudar quantidade nem total geral: **troca de vendedor**, de número ou valores que se compensam entre vendas;
   - **troca de forma de pagamento** (ex.: Dinheiro → PIX) ou de valor entre pagamentos;
   - NFC-e autorizada; vendedor ou forma de pagamento preenchidos depois da venda.
+
+- **Tempo até a tela atualizar:** ~140 ms do registro da venda no banco até o navegador ser avisado (medido num Firebird 3 local; era ~315 ms). Para isso:
+  - fast-poll a partir de 15 ms, que se ajusta sozinho ao tempo da consulta (no máximo 1/3 do tempo do Firebird; com 300 mil vendas e índice em `DATA`, ~45 ms). Se a consulta passar de 100 ms, o log avisa para conferir o índice no campo `DATA` das tabelas NFCE/PAGAMENT;
+  - um **gerador pré-aquecido** fica sempre pronto (Node e driver do Firebird já carregados) e só lê configuração, data e hora quando recebe a ordem;
+  - o gerador avisa "HTML pronto" assim que grava o arquivo, sem esperar fechar as conexões com o banco;
+  - a verificação completa (reserva do fast-poll) roda a cada 1 s e não regera em dobro o que o fast-poll já regerou;
+  - numa rajada de vendas, a geração em andamento **termina** e a próxima começa logo em seguida (antes, cada venda nova cancelava a geração e a tela só atualizava quando o movimento parava).
 
   Cada venda e cada pagamento entram numa assinatura (hash) somada por tipo, numa única leitura por tabela. Se o Firebird não aceitar essa consulta, o fast-poll segue automaticamente no modo básico (quantidade e total), sem parar a detecção.
 - **Atualização automática do navegador por SSE** (Server-Sent Events), com polling HTTP como reserva.
@@ -94,18 +102,17 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
  Windows (logon)
    └─ Tarefa agendada ─▶ bootstrap.vbs ─▶ launcher.vbs ─▶ iniciar-tray.ps1  (ícone na bandeja + watchdog)
                                                             └─▶ node servidor-relatorio.js
-                                                                  ├─ fast-poll (50 ms) ─┐
-                                                                  ├─ pollStatus (≥2 s)  ├─▶ Firebird (SMALL.FDB)
-                                                                  ├─ correções de hora ─┘
+                                                                  ├─ fast-poll (≥15 ms)─┐
+                                                                  ├─ pollStatus (≥1 s)  ├─▶ Firebird (SMALL.FDB)  — SOMENTE LEITURA
                                                                   └─ gera o HTML em subprocesso:
-                                                                       node gerar-relatorio-html.js ─▶ Firebird
+                                                                       node gerar-relatorio-html.js ─▶ Firebird  — SOMENTE LEITURA
  Navegador (qualquer PC da rede) ◀── HTTP :7734 + SSE ──┘
 ```
 
 | Componente | Função |
 |---|---|
-| `servidor-relatorio.js` | Servidor HTTP e SSE. Detecta o banco, monitora mudanças, corrige horários, mantém o cache de relatórios e coordena as gerações. |
-| `gerar-relatorio-html.js` | Subprocesso que consulta o Firebird e monta o HTML completo do relatório (dados, interface e scripts). |
+| `servidor-relatorio.js` | Servidor HTTP e SSE. Detecta o banco, monitora mudanças (somente leitura), mantém o cache de relatórios e coordena as gerações. |
+| `gerar-relatorio-html.js` | Subprocesso que consulta o Firebird (somente leitura) e monta o HTML completo do relatório (dados, interface e scripts); decide a hora exibida das vendas (correção só na tela). |
 | `iniciar-tray.ps1` | Ícone na bandeja, menu de ações e watchdog que reinicia o servidor se ele cair ou travar. |
 | `launcher.vbs` / `bootstrap.vbs` | Iniciam o tray de forma oculta. O bootstrap fica local e espera a pasta de rede aparecer no logon. |
 | `instalar-na-inicializacao.bat` | Configura a inicialização automática (tarefa agendada ou pasta Inicializar), a regra de firewall e o nome do sistema. |
@@ -219,10 +226,10 @@ Os botões **Todos / Gerencial / NFC-e / NF-e**, ao lado da busca, restringem o 
 | `fbHost` | `""` | Host do Firebird; salvo automaticamente quando o banco é encontrado |
 | `fbUser` / `fbPass` | `SYSDBA` / `masterkey` | Credenciais do Firebird (repassadas aos processos por variável de ambiente, nunca pela linha de comando) |
 | `maquinaIP` | automático | IP desta máquina na rede; atualizado a cada inicialização |
-| `pollInterval` | `200` | Intervalo (ms) de verificação do navegador; o servidor usa no mínimo 2 s para a verificação completa |
+| `pollInterval` | `100` | Intervalo (ms, mínimo 100) da verificação de reserva do navegador (o aviso principal chega na hora por SSE); a verificação completa do servidor usa 5× esse valor, no mínimo 1 s |
 | `spawnTimeoutMs` | `120000` | Tempo máximo (30 s a 600 s) para gerar um relatório; aumente para períodos longos |
 | `toastDuration` | `5000` | Duração dos avisos na tela (ms) |
-| `janelaCorrecaoHoraMin` | `180` | Janela (min) da correção automática de horário das gerenciais, de 5 a 720 (veja [Correção automática de horário](#correção-automática-de-horário)) |
+| `janelaCorrecaoHoraMin` | `180` | Janela (min) da correção de horário (só na tela), de 5 a 720 (veja [Correção automática de horário](#correção-automática-de-horário)) |
 | `maxLogLines` | `5000` | Linhas mantidas no `relatorio.log` |
 | `logDebug` | `false` | Registra detalhes de rotina (tempos de consulta etc.) |
 | `favicon` | `""` | Ícone personalizado (arquivo dentro da pasta do sistema) |
@@ -280,17 +287,32 @@ Repete automaticamente em falha de rede ou erro 5xx; erros 4xx falham na hora. C
 
 ## Correção automática de horário
 
-Relógios de PDV adiantados ou atrasados e vendas abertas há muito tempo gravam horários que embaralham a ordem do relatório. O sistema corrige isso com regras fixas:
+Relógios de PDV adiantados ou atrasados e vendas abertas há muito tempo gravam horários que embaralham a ordem do relatório. O sistema corrige isso **só na tela do relatório**: o banco de dados nunca é alterado (ver [Somente leitura](#somente-leitura)).
 
-| Documento | Regra |
+| Situação | Regra (Gerencial, NFC-e e NF-e) |
 |---|---|
-| **Gerencial** | Hora no futuro, ou entre 3 min e a **janela de correção** atrás → passa a ser a hora atual. Até 3 min atrás → aceita. Mais antiga que a janela → ignora. A janela é configurável e o padrão é **3 horas**. |
-| **NFC-e / NF-e e pagamentos** | Só documentos que **aparecem** no banco já com mais de 1 min de atraso são corrigidos. O que já existia quando o servidor iniciou nunca é alterado. |
-| **Exibição** | A hora fixada fica guardada em `hora-fixada-cache.json`, para a venda não "pular" de posição a cada atualização. |
+| **Venda nova** (apareceu com o sistema ligado) | Hora no futuro, ou entre 3 min e a **janela de correção** atrás → exibida com a hora em que apareceu. Até 3 min atrás → aceita. Mais antiga que a janela → ignora. A janela é configurável e o padrão é **3 horas**. |
+| **Venda que já existia** ao ligar, reconectar ou trocar de banco | Exibida como está (só hora no futuro é ajustada) — não dá para saber se a hora dela estava errada quando chegou. |
+| **Exibição** | A hora decidida fica guardada em `hora-fixada-cache.json` (arquivo da pasta do sistema, fora do banco), para a venda não "pular" de posição a cada atualização. |
 
 A **janela de correção** fica em *Configurações → Janela de correção de horário (min)*, no relatório ou em `/config`, ou na chave `janelaCorrecaoHoraMin` do `config.json`. O padrão é 180 min (3 horas), o mínimo é 5 min e o máximo é 720 min (12 horas). A mudança vale na hora, sem reiniciar. Perto da meia-noite a janela começa às 00:00 (nunca alcança vendas do dia anterior) e as correções continuam ativas.
 
-Cada correção é registrada no log e avisada na tela.
+Cada correção é registrada no log (`Hora corrigida na tela (banco não alterado)`) e avisada na tela.
+
+---
+
+## Somente leitura
+
+O sistema **nunca escreve no banco do Small Commerce** — nenhum `UPDATE`, `INSERT`, `DELETE` ou alteração de estrutura, em nenhuma situação. Duas travas, no servidor e no gerador:
+
+1. **Comando:** só é enviado ao banco SQL que começa com `SELECT` ou `WITH`. Qualquer outro comando é recusado antes de sair do sistema.
+2. **Transação:** toda leitura roda numa transação **somente leitura** do próprio Firebird (READ COMMITTED, sem espera). Mesmo que um comando de escrita escapasse da primeira trava, o Firebird o recusaria (`Attempted update during read-only transaction`) — e a leitura nunca fica esperando o caixa.
+
+Verificado num Firebird 3 com o sistema em uso e vendas simuladas: milhares de transações observadas pelo monitoramento do próprio Firebird (`MON$TRANSACTIONS`), **todas somente leitura**.
+
+Arquivos que o sistema grava ficam **só na pasta dele** (`config.json`, `relatorio.log`, `hora-fixada-cache.json`).
+
+**Índices:** ao conectar, o sistema confere no catálogo do banco (só lendo) se `NFCE.DATA`, `PAGAMENT.DATA` e `VENDAS.SAIDAD` têm índice e escreve no log `Índices: ... ok` ou `AVISO índices: sem índice em ...`. Sem índice cada leitura percorre a tabela inteira; como o sistema é somente leitura, ele **não cria** índices — o aviso diz o que pedir ao suporte do Small Commerce.
 
 ---
 
@@ -329,7 +351,7 @@ npm test
 
 No Windows, basta dar **duplo clique em `test\executar-testes.bat`**. Ele confere o Node.js, roda a bateria e mostra o resultado na tela; o código de saída é 0 se tudo passou.
 
-Eles cobrem a proteção contra XSS, a mescla do cache de horas entre processos, o painel de duplicatas, a regra de correção de horário (incluindo a janela configurável) e a validação das rotas da API.
+Eles cobrem a garantia de **somente leitura** (nenhum comando de escrita e nenhuma transação de escrita chega ao banco), a atualização da tela numa rajada de vendas, a proteção contra XSS, a mescla do cache de horas entre processos, o painel de duplicatas, a regra de correção de horário (incluindo a janela configurável) e a validação das rotas da API.
 
 ---
 
