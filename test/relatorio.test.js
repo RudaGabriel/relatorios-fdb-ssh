@@ -374,6 +374,42 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
     } finally { srv.parar(); }
 });
 
+test("servidor: venda e pagamento gravados em momentos diferentes geram UM refresh só", { timeout: 60000 }, async () => {
+    // Como no caixa real: a venda (NFCE) é gravada e o pagamento (PAGAMENT) vem
+    // numa transação separada um pouco depois. Antes: dois "→ regerando".
+    const dir = montarPasta({}, {
+        indices: ["NFCE.DATA"],
+        nfce: [{ numero: "101", hora: horaHaMin(0.1) }],
+        pag:  [{ numero: "101", hora: horaHaMin(0.1) }]
+    });
+    const srv = await iniciarServidor(dir);
+    const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
+    const geracoes = () => lerSqlLog(dir).split("\n").filter(l => l === "GERACAO").length;
+    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); gravarEstado(dir, st); };
+    const regerando = () => (log().match(/FastPoll: .*→ regerando\./g) || []).length;
+    try {
+        for (let t = 0; t < 100 && !/consulta rápida \(NFCE, com índice\)/.test(log()); t++) await esperar(100);
+        await esperar(1500);
+        const g0 = geracoes(), r0 = regerando();
+        alterar(st => { st.nfce.push({ numero: "102", hora: horaHaMin(0.1) }); });
+        await esperar(400);
+        alterar(st => { st.pag.push({ numero: "102", hora: horaHaMin(0.1) }); });
+        await esperar(4000);
+        const linhas = log().split("\n").filter(l => /FastPoll: .*→ regerando\./.test(l)).slice(r0);
+        assert.strictEqual(linhas.length, 1, "deveria haver UMA detecção (venda + pagamento juntos):\n" + linhas.join("\n"));
+        assert.match(linhas[0], /vendas 1 → 2 .*Pagamentos: 1 → 2/, "a linha deve trazer a venda e o pagamento");
+        assert.strictEqual(geracoes() - g0, 1, "deveria gerar o relatório UMA vez");
+
+        // Mudança que não traz pagamento (troca de vendedor): gera logo, uma vez.
+        const g1 = geracoes(), r1 = regerando();
+        alterar(st => { st.nfce[0].vendedor = "BIA"; });
+        for (let t = 0; t < 40 && regerando() === r1; t++) await esperar(50);
+        assert.strictEqual(regerando() - r1, 1, "troca de vendedor: uma detecção");
+        await esperar(1500);
+        assert.strictEqual(geracoes() - g1, 1, "troca de vendedor: uma geração");
+    } finally { srv.parar(); }
+});
+
 test("servidor: fast-poll põe na parte rápida a tabela que TEM índice (mesmo que não seja a NFCE)", { timeout: 60000 }, async () => {
     const dir = montarPasta({}, {
         indices: ["PAGAMENT.DATA"],
