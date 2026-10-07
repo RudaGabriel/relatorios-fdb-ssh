@@ -159,7 +159,8 @@ test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só
         const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
         assert.match(log, /Hora corrigida na tela \(banco não alterado\)/);
         assert.match(log, /Índices: NFCE\.DATA, PAGAMENT\.DATA — ok/, "deveria conferir os índices no catálogo");
-        assert.match(log, /FastPoll: consulta levando ~\d+ ms/, "deveria registrar o tempo medido da consulta");
+        assert.match(log, /FastPoll: modo completo em consulta única \(NFCE, PAGAMENT\) — todas as tabelas com índice/, "todas com índice: consulta única");
+        assert.match(log, /FastPoll: consulta única \(NFCE, PAGAMENT\) ~\d+ ms → a cada ~\d+ ms/, "deveria registrar o tempo medido da consulta");
         const sql = lerSqlLog(dir);
         assert.ok(!/UPDATE/.test(sql), "nenhum UPDATE pode chegar ao banco:\n" + sql);
         assert.ok(!/TX_ESCRITA/.test(sql), "toda transação deve ser SOMENTE LEITURA:\n" + sql.split("\n").filter(l => /TX_ESCRITA/.test(l)).slice(0, 5).join("\n"));
@@ -321,7 +322,10 @@ test("gerador: venda com desconto ganha o chip vermelho com o percentual", () =>
 
 // ---------------------------------------------------------------------------
 test("servidor: fast-poll completo detecta mudanças que não alteram quantidade nem total geral", { timeout: 90000 }, async () => {
+    // Como na loja real: índice só em NFCE.DATA → NFCE na parte rápida,
+    // PAGAMENT na complementar.
     const dir = montarPasta({}, {
+        indices: ["NFCE.DATA"],
         nfce: [{ numero: "101", hora: horaHaMin(0.1), vendedor: "ANA", modelo: 65 }],
         pag:  [{ numero: "101", hora: horaHaMin(0.1) }]
     });
@@ -341,6 +345,9 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
     try {
         await esperar(7000);
         assert.match(log(), /FastPoll: modo completo/, "deveria entrar no modo completo");
+        assert.match(log(), /AVISO índices: sem índice em PAGAMENT\.DATA —/, "deveria avisar só o que falta");
+        assert.match(log(), /duas partes pelos índices — rápida: NFCE \(com índice\) \| complementar: PAGAMENT \(sem índice/, "deveria dividir pelos índices");
+        assert.match(log(), /FastPoll: consulta rápida \(NFCE, com índice\) ~\d+ ms → a cada ~\d+ ms \| complementar \(PAGAMENT, sem índice\) ~\d+ ms/, "deveria medir as duas partes separadamente");
         await etapa(st => { st.nfce[0].vendedor = "BIA"; },
             /FastPoll: NFC-e: venda alterada/, "troca de vendedor (mesma quantidade e total)");
         await etapa(st => { st.nfce[0].modelo = 99; },
@@ -351,6 +358,29 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
             /Gerencial: total R\$ 10,00 → R\$ 15,00 \(↑ \+R\$ 5,00\)/, "aumento de valor");
         await etapa(st => { st.nfce[0].total = 12; },
             /Gerencial: total R\$ 15,00 → R\$ 12,00 \(↓ −R\$ 3,00\)/, "redução de valor");
+    } finally { srv.parar(); }
+});
+
+test("servidor: fast-poll põe na parte rápida a tabela que TEM índice (mesmo que não seja a NFCE)", { timeout: 60000 }, async () => {
+    const dir = montarPasta({}, {
+        indices: ["PAGAMENT.DATA"],
+        nfce: [{ numero: "101", hora: horaHaMin(0.1) }],
+        pag:  [{ numero: "101", hora: horaHaMin(0.1) }]
+    });
+    const srv = await iniciarServidor(dir);
+    const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
+    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st)); };
+    const aguardar = async re => { for (let t = 0; t < 100 && !re.test(log()); t++) await esperar(100); };
+    try {
+        await aguardar(/consulta rápida \(PAGAMENT, com índice\)/);
+        assert.match(log(), /AVISO índices: sem índice em NFCE\.DATA —/);
+        assert.match(log(), /duas partes pelos índices — rápida: PAGAMENT \(com índice\) \| complementar: NFCE \(sem índice/);
+        alterar(st => { st.pag[0].forma = "05 PIX"; });
+        await aguardar(/Pagamentos: forma ou valor alterado/);
+        assert.match(log(), /Pagamentos: forma ou valor alterado/, "mudança na parte rápida (PAGAMENT)");
+        alterar(st => { st.nfce.push({ numero: "102", hora: horaHaMin(0.1) }); });
+        await aguardar(/vendas 1 → 2/);
+        assert.match(log(), /vendas 1 → 2 \(↑ \+1\)/, "mudança na parte complementar (NFCE) também é detectada");
     } finally { srv.parar(); }
 });
 

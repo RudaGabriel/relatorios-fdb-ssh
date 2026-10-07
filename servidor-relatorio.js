@@ -2,11 +2,27 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.14.0
+ * @version 2.15.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
+ *   2.15.0 - 2026-10-07 18:00 - Fast-poll dividido pelos ÍNDICES do banco.
+ *     - A sondagem lê no catálogo (só leitura, mesma conexão, em sequência)
+ *       quais colunas de data têm índice: NFCE.DATA, PAGAMENT.DATA e
+ *       VENDAS.SAIDAD/EMISSAO. Tabelas COM índice vão para a consulta rápida
+ *       (no máximo 1/4 do tempo do banco); SEM índice, para a complementar
+ *       (1/12, entre 250 ms e 30 s) — juntas, o mesmo teto de 1/3. Se todas
+ *       têm índice (ou nenhuma tem) não há o que separar: consulta única,
+ *       como antes. Na loja (índice só em NFCE.DATA), reproduzido num
+ *       Firebird 3 com 300 mil vendas: venda nova detectada em ~327 ms em
+ *       vez de ~730 ms; troca de forma de pagamento em ~780 ms.
+ *     - Log mostra as tabelas e o ritmo de cada parte; o aviso de índices
+ *       sai da própria sondagem (sem a conexão extra de antes).
+ *     - pollStatus (reserva) a cada 10 s enquanto o fast-poll completo está
+ *       saudável — ele também percorre tabelas sem índice.
+ *     - Corrigido: consulta medida em 0 ms era tratada como "não medida" e o
+ *       tempo nunca aparecia no log.
  *   2.14.0 - 2026-10-07 16:30 - Somente leitura, detecção mais rápida e segura.
  *     - SOMENTE LEITURA: o sistema nunca mais escreve no banco. Removidos os
  *       UPDATE de correção de horário (nfce/pagament/gerencial); duas travas
@@ -39,7 +55,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.14.0";
+const SERVER_VERSION = "2.15.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2414,7 +2430,11 @@ var _fpTxt = function(col, tam) { return "COALESCE(TRIM(CAST(" + col + " AS VARC
 
 // esquema: { NFCE:{COL:true}, PAGAMENT:{...}, VENDAS:{...} } (nomes em maiúsculas)
 // Devolve { sql, pares } ou null se faltar o mínimo.
-var _montarFpSqlCompleto = function(esquema) {
+// v2.15.0: indices = mapa "TABELA.COLUNA" → true lido do catálogo (ou null se
+// não deu para ler). Tabela cuja coluna de data TEM índice vai para a parte
+// rápida; sem índice, para a complementar. Se todas têm (ou nenhuma tem, ou o
+// catálogo não respondeu) fica UMA consulta só, no ritmo normal.
+var _montarFpSqlCompleto = function(esquema, indices) {
     var nf = esquema.NFCE || {}, pg = esquema.PAGAMENT || {}, vd = esquema.VENDAS || {};
     if (!nf.DATA || !nf.TOTAL || !pg.DATA || !pg.VALOR) return null;
     var pares = 0;
@@ -2487,11 +2507,32 @@ var _montarFpSqlCompleto = function(esquema) {
         ];
     }
 
-    var sql = "SELECT * FROM" +
-        " (SELECT " + aggN.join(", ") + " FROM (" + nfce + ") n1) tn" +
-        " CROSS JOIN (SELECT " + aggP.join(", ") + " FROM (" + pag + ") p1) tp" +
-        (vendas ? " CROSS JOIN (SELECT " + aggV.join(", ") + " FROM (" + vendas + ") v1) tv" : "");
-    return { sql: sql, pares: pares, temVendas: !!vendas };
+    // Blocos por tabela: cada um é "SELECT agregados FROM (linhas do dia)".
+    var blocos = [
+        { tab: "NFCE",     col: "DATA",                    rot: "NFCE",     re: "G|NFC|NF|OUT|N",
+          sub: "SELECT " + aggN.join(", ") + " FROM (" + nfce + ") n1" },
+        { tab: "PAGAMENT", col: "DATA",                    rot: "PAGAMENT", re: "PAG",
+          sub: "SELECT " + aggP.join(", ") + " FROM (" + pag + ") p1" }
+    ];
+    if (vendas) blocos.push({ tab: "VENDAS", col: colDataV.toUpperCase(), rot: "VENDAS (NF-e)", re: "NFV",
+                              sub: "SELECT " + aggV.join(", ") + " FROM (" + vendas + ") v1" });
+    var juntar = function(lista) {
+        if (!lista.length) return null;
+        return "SELECT * FROM " + lista.map(function(b, i) { return "(" + b.sub + ") t" + i; }).join(" CROSS JOIN ");
+    };
+    var comIdx = indices ? blocos.filter(function(b) { return indices[b.tab + "." + b.col]; }) : [];
+    var semIdx = indices ? blocos.filter(function(b) { return !indices[b.tab + "." + b.col]; }) : blocos;
+    var dividir = comIdx.length > 0 && semIdx.length > 0;
+    var rapidas = dividir ? comIdx : blocos, lentas = dividir ? semIdx : [];
+    var nomes = function(l) { return l.map(function(b) { return b.rot; }).join(", "); };
+    return {
+        sql: juntar(blocos), pares: pares, temVendas: !!vendas,
+        alvosIndice: blocos.map(function(b) { return b.tab + "." + b.col; }),
+        semIndice: indices ? semIdx.map(function(b) { return b.tab + "." + b.col; }) : null,
+        sqlN: juntar(rapidas), paresN: rapidas.length, rotN: nomes(rapidas),
+        sqlC: juntar(lentas),  paresC: lentas.length,  rotC: nomes(lentas),
+        reC: lentas.length ? new RegExp("^(" + lentas.map(function(b) { return b.re; }).join("|") + ")_") : null
+    };
 };
 
 // Campos lidos da consulta completa. tipo: "tot" compara com tolerância de
@@ -2546,23 +2587,75 @@ var _descreverMudancaCompleta = function(a, b) {
 };
 var _fpModo           = null;  // null = a decidir; "completo" | "basico"
 var _fpEsquema        = null;  // colunas sondadas (uma vez por banco)
-var _FP_SQL_COMPLETO  = null;
-var _fpParesCompleto  = 0;
-var _fpUltimoCompleto = null;  // último vetor visto no modo completo (null = sem baseline)
-var _fpUltimoOkTs     = 0;     // instante do último ciclo completo bem-sucedido
+// ── Modo completo em DUAS partes, escolhidas pelos ÍNDICES (v2.15.0) ────
+// A sondagem lê no catálogo quais colunas de data têm índice (NFCE.DATA,
+// PAGAMENT.DATA, VENDAS.SAIDAD/EMISSAO). Rápida (N) = tabelas COM índice;
+// complementar (C) = tabelas SEM índice (cada leitura percorre a tabela
+// inteira). Antes tudo ia numa consulta só, e numa loja sem índice em
+// PAGAMENT.DATA ela levava 100–200 ms, atrasando também a detecção de venda
+// nova (ciclo de 300–600 ms). Divididas, cada parte tem o seu ritmo medido
+// sozinho: a rápida usa no máximo 1/4 do tempo do banco e a complementar 1/12
+// — juntas, o mesmo teto de 1/3. Se TODAS as tabelas têm índice (ou nenhuma
+// tem) não há o que separar: uma consulta única, folga 3 (1/3), como sempre.
+var _FP_SQL_N = null, _FP_PARES_N = 0, _FP_SQL_C = null, _FP_PARES_C = 0;
+var _FP_FOLGA_N = 4, _FP_FOLGA_C = 12;
+var _FP_RE_C = null;                       // campos que vêm da parte complementar (null = não há)
+var _fpRotN = "", _fpRotC = "";            // tabelas de cada parte (para o log)
+var _FP_MIN_C_MS = 250, _FP_MAX_C_MS = 30000;
+var _fpUltN = null, _fpUltC = null;        // últimos vetores vistos (null = sem baseline)
+var _fpMediaN = 0, _fpMediaC = 0;          // médias móveis do tempo de cada consulta
+var _fpMedidoN = false, _fpMedidoC = false;  // 0 ms é medição válida — não usar a média como "já medido"
+var _fpProxN = 0, _fpProxC = 0;            // quando cada parte pode rodar de novo
+var _fpLogPartesFaixa = "", _fpLogPartesTs = 0;
+var _fpAlvoN = function() { return Math.max(_FP_INTERVAL_MS, Math.min(_FP_INTERVALO_MAX_MS, Math.round(_fpMediaN * (_FP_SQL_C ? _FP_FOLGA_N : _FP_FATOR_FOLGA)))); };
+var _fpAlvoC = function() { return Math.max(_FP_MIN_C_MS, Math.min(_FP_MAX_C_MS, Math.round(_fpMediaC * _FP_FOLGA_C))); };
+var _fpEhCampoC = function(k) { return !!_FP_RE_C && _FP_RE_C.test(k); };
+// Vetor completo a partir das duas partes (para comparar e descrever).
+var _fpJuntar = function(n, c) {
+    var o = {};
+    _FP_CAMPOS.forEach(function(k) { o[k] = (_fpEhCampoC(k) ? (c || {})[k] : (n || {})[k]) || 0; });
+    return o;
+};
+var _fpFaixaDe = function(ms) { var f = _FP_FAIXAS[0]; for (var i = 0; i < _FP_FAIXAS.length; i++) if (ms >= _FP_FAIXAS[i]) f = _FP_FAIXAS[i]; return f; };
+var _fpRegistrarParte = function(parte, ms) {
+    if (parte === "N") { _fpMediaN = _fpMedidoN ? (_fpMediaN * 0.7 + ms * 0.3) : ms; _fpMedidoN = true; }
+    else               { _fpMediaC = _fpMedidoC ? (_fpMediaC * 0.7 + ms * 0.3) : ms; _fpMedidoC = true; }
+    if (!_FP_SQL_C) {
+        // Consulta única (todas com índice, ou nenhuma): um registro por faixa.
+        var f1 = _fpFaixaDe(_fpAlvoN());
+        if (f1 !== _fpLogPartesFaixa && (!_fpLogPartesFaixa || Date.now() - _fpLogPartesTs > 60000)) {
+            logTs("FastPoll: consulta única (" + _fpRotN + ") ~" + Math.round(_fpMediaN) + " ms → a cada ~" + _fpAlvoN() +
+                  " ms (no máximo 1/3 do tempo do banco)." +
+                  (_fpMediaN > 100 ? " Consulta lenta: veja o aviso de índices." : ""));
+            _fpLogPartesFaixa = f1; _fpLogPartesTs = Date.now();
+        }
+        return;
+    }
+    if (!_fpMedidoN || !_fpMedidoC) return; // registra quando as duas já foram medidas
+    var faixa = _fpFaixaDe(_fpAlvoN()) + "/" + _fpFaixaDe(Math.min(_fpAlvoC(), 3000));
+    if (faixa !== _fpLogPartesFaixa && (!_fpLogPartesFaixa || Date.now() - _fpLogPartesTs > 60000)) {
+        logTs("FastPoll: consulta rápida (" + _fpRotN + ", com índice) ~" + Math.round(_fpMediaN) + " ms → a cada ~" + _fpAlvoN() +
+              " ms | complementar (" + _fpRotC + ", sem índice) ~" + Math.round(_fpMediaC) + " ms → a cada ~" + _fpAlvoC() +
+              " ms (juntas, no máximo 1/3 do tempo do banco).");
+        _fpLogPartesFaixa = faixa; _fpLogPartesTs = Date.now();
+    }
+};
+var _fpUltimoOkTs     = 0;     // instante da última consulta rápida bem-sucedida
 // Fast-poll completo saudável = já cobre tudo que o pollStatus compara (e mais).
-// Nesse caso o pollStatus não regera por conta própria (v2.13.0): antes ele
-// percebia a MESMA mudança ~2 s depois e regerava de novo — processo e
-// recarga de tela em dobro a cada venda.
+// Nesse caso o pollStatus não regera por conta própria (v2.13.0) e roda bem
+// mais espaçado (v2.15.0) — ele também percorre a PAGAMENT inteira quando não
+// há índice.
 var _fpCompletoSaudavel = function() {
-    return _fpModo === "completo" && Date.now() - _fpUltimoOkTs < 1500;
+    return _fpModo === "completo" && Date.now() - _fpUltimoOkTs < Math.max(1500, _fpAlvoN() * 2 + 500);
 };
 
 // Sonda o esquema (NFCE, PAGAMENT, VENDAS) UMA vez por banco e decide o modo:
 // monta a consulta completa a partir das colunas que existem e a executa uma
 // vez de teste; se o banco recusar, fica no modo básico. Também define
 // _fpTemVendedor/_FP_SQL do modo básico (substitui a sondagem só de VENDEDOR).
-// Timeout de 3 s: sem ele, uma sondagem pendurada deixava _fpBusy preso e o
+// v2.15.0: também lê no catálogo quais colunas de data têm índice (mesma
+// conexão, uma consulta depois da outra) e divide a consulta completa por isso.
+// Timeout de 5 s: sem ele, uma sondagem pendurada deixava _fpBusy preso e o
 // fast-poll parado para sempre.
 var _fpSondar = function(db, gen, done) {
     var _fim = false;
@@ -2571,7 +2664,7 @@ var _fpSondar = function(db, gen, done) {
         try { _matarConexao(db); } catch(_) {}
         if (gen === _fpGen) _fpDb = null;
         done();
-    }, 3000);
+    }, 5000);
     var concluir = function() { if (_fim) return; _fim = true; clearTimeout(_t); done(); };
     db.query(
         "SELECT TRIM(RDB$RELATION_NAME) AS T, TRIM(RDB$FIELD_NAME) AS C FROM RDB$RELATION_FIELDS " +
@@ -2588,84 +2681,91 @@ var _fpSondar = function(db, gen, done) {
                 if (esq[t] && c) esq[t][c] = true;
             });
             _fpEsquema = esq;
-            _fpVerificarIndices(esq);
             var _vend = !!esq.NFCE.VENDEDOR;
             if (_fpTemVendedor !== _vend) {
                 _fpTemVendedor = _vend;
                 _FP_SQL = _montarFpSql(_fpTemVendedor);
                 logDebug("FastPoll: coluna nfce.VENDEDOR " + (_vend ? "detectada" : "ausente") + ".");
             }
-            var m = _montarFpSqlCompleto(esq);
-            if (!m) {
-                _fpModo = "basico";
-                logTs("FastPoll: modo básico (tabelas sem as colunas mínimas para a detecção completa).");
-                return concluir();
-            }
-            var dh = hoje(), prm = [];
-            for (var i = 0; i < m.pares; i++) prm.push(dh, dh);
-            db.query(m.sql, prm, function(e2, r2) {
+            db.query(_FP_SQL_INDICES, [], function(errI, rowsI) {
                 if (_fim || gen !== _fpGen) return concluir();
-                if (e2 || !r2 || !r2.length) {
+                // Catálogo ilegível: segue sem dividir (consulta única) — só diagnóstico.
+                var idx = null;
+                if (!errI && rowsI) {
+                    idx = {};
+                    rowsI.forEach(function(r) {
+                        idx[String(r.T || r.t || "").trim().toUpperCase() + "." + String(r.C || r.c || "").trim().toUpperCase()] = true;
+                    });
+                } else {
+                    logDebug("FastPoll: catálogo de índices não lido (" + _textoSeguroLog(errI ? (errI.message || errI) : "sem linhas") + ").");
+                }
+                var m = _montarFpSqlCompleto(esq, idx);
+                if (m && m.semIndice) _fpLogIndices(m.alvosIndice, m.semIndice);
+                if (!m) {
+                    _fpModo = "basico";
+                    logTs("FastPoll: modo básico (tabelas sem as colunas mínimas para a detecção completa).");
+                    return concluir();
+                }
+                var dh = hoje();
+                var prm = function(n) { var a = []; for (var i = 0; i < n; i++) a.push(dh, dh); return a; };
+                var falhou = function(e2) {
                     _fpModo = "basico";
                     logTs("FastPoll: consulta completa indisponível neste banco (" +
                           _textoSeguroLog(e2 ? (e2.message || e2) : "sem linhas") + ") — usando o modo básico.");
-                } else {
-                    _fpModo = "completo";
-                    _FP_SQL_COMPLETO = m.sql;
-                    _fpParesCompleto = m.pares;
-                    logTs("FastPoll: modo completo — quantidade, total e assinatura por tipo " +
-                          "(Gerencial, NFC-e, NF-e" + (m.temVendas ? ", NF-e da tabela VENDAS" : "") +
-                          "), canceladas e pagamentos (forma/valor).");
-                }
-                concluir();
+                    concluir();
+                };
+                // Testa as duas partes, uma depois da outra (nunca duas consultas ao
+                // mesmo tempo na mesma conexão).
+                db.query(m.sqlN, prm(m.paresN), function(e2, r2) {
+                    if (_fim || gen !== _fpGen) return concluir();
+                    if (e2 || !r2 || !r2.length) return falhou(e2);
+                    // Sem parte complementar (consulta única): nada mais a testar.
+                    var _testarC = m.sqlC ? function(cb) { db.query(m.sqlC, prm(m.paresC), cb); }
+                                          : function(cb) { cb(null, [{}]); };
+                    _testarC(function(e3, r3) {
+                        if (_fim || gen !== _fpGen) return concluir();
+                        if (e3 || !r3 || !r3.length) return falhou(e3);
+                        _fpModo = "completo";
+                        _FP_SQL_N = m.sqlN; _FP_PARES_N = m.paresN; _fpRotN = m.rotN;
+                        _FP_SQL_C = m.sqlC; _FP_PARES_C = m.paresC; _fpRotC = m.rotC;
+                        _FP_RE_C = m.reC;
+                        var _det = "vendas, totais, tipo, vendedor, canceladas, pagamentos (forma/valor)" +
+                                   (m.temVendas ? ", NF-e da tabela VENDAS" : "");
+                        if (m.sqlC) {
+                            logTs("FastPoll: modo completo em duas partes pelos índices — rápida: " + m.rotN +
+                                  " (com índice) | complementar: " + m.rotC + " (sem índice, ritmo mais espaçado). Detecta: " + _det + ".");
+                        } else {
+                            logTs("FastPoll: modo completo em consulta única (" + m.rotN + ") — " +
+                                  (m.semIndice && !m.semIndice.length ? "todas as tabelas com índice." :
+                                   m.semIndice ? "nenhuma tabela com índice (nada a separar)." :
+                                   "catálogo de índices não lido (nada a separar).") + " Detecta: " + _det + ".");
+                        }
+                        concluir();
+                    });
+                });
             });
         }
     );
 };
 
 // Confere no CATÁLOGO do banco (só leitura) se as colunas de data que o
-// fast-poll e o gerador filtram têm índice. Sem índice, cada consulta lê a
-// tabela inteira (medido: 300 mil vendas → ~285 ms a ~1 s em vez de ~11 ms).
-// O sistema é somente leitura e NÃO cria índices: o log diz o que falta para
-// quem administra o banco decidir.
-// Conexão PRÓPRIA e curta: duas consultas ao mesmo tempo na conexão do
-// fast-poll podem ter as respostas trocadas pelo driver.
-var _fpVerificarIndices = function(esq) {
-    var alvos = [["NFCE", "DATA"], ["PAGAMENT", "DATA"]];
-    if (esq.VENDAS && esq.VENDAS.NUMERONF) alvos.push(["VENDAS", esq.VENDAS.SAIDAD ? "SAIDAD" : "EMISSAO"]);
-    var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
-                role:null, charset:FB_CHARSET, lowercase_keys:false};
-    var db = null, fim = false;
-    var encerrar = function() { if (fim) return; fim = true; clearTimeout(t); if (db) { try { db.detach(); } catch (_) {} } };
-    var t = setTimeout(function() { if (fim) return; fim = true; if (db) { try { _matarConexao(db); } catch (_) {} } }, 5000);
-    try {
-      Firebird.attach(opts, function(errA, dbA) {
-        if (fim) { if (dbA) { try { _matarConexao(dbA); } catch (_) {} } return; }
-        if (errA || !dbA) { encerrar(); return; }
-        db = dbA;
-        db.query(
-            "SELECT TRIM(i.RDB$RELATION_NAME) AS T, TRIM(s.RDB$FIELD_NAME) AS C " +
-            "FROM RDB$INDICES i JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = i.RDB$INDEX_NAME " +
-            "WHERE s.RDB$FIELD_POSITION = 0 AND (i.RDB$INDEX_INACTIVE IS NULL OR i.RDB$INDEX_INACTIVE = 0) " +
-            "AND TRIM(i.RDB$RELATION_NAME) IN ('NFCE','PAGAMENT','VENDAS')",
-            [],
-            function(err, rows) {
-                encerrar();
-                if (err || !rows) return; // diagnóstico apenas — nunca atrapalha a detecção
-                var tem = {};
-                rows.forEach(function(r) { tem[String(r.T || r.t || "").trim().toUpperCase() + "." + String(r.C || r.c || "").trim().toUpperCase()] = true; });
-                var faltam = alvos.filter(function(a) { return !tem[a[0] + "." + a[1]]; }).map(function(a) { return a[0] + "." + a[1]; });
-                if (!faltam.length) {
-                    logTs("Índices: " + alvos.map(function(a) { return a[0] + "." + a[1]; }).join(", ") + " — ok (consultas rápidas).");
-                } else {
-                    logTs("AVISO índices: sem índice em " + faltam.join(", ") + " — cada leitura percorre a tabela inteira " +
-                          "(mais lenta e mais pesada para o banco do caixa). O sistema é somente leitura e não cria índices; " +
-                          "peça ao suporte do Small Commerce (ou ao responsável pelo banco) para criar índice nessa(s) coluna(s).");
-                }
-            }
-        );
-      });
-    } catch (_) { encerrar(); }
+// fast-poll e o gerador filtram têm índice (índice ativo com a coluna em 1º
+// lugar). Sem índice, cada consulta lê a tabela inteira (medido: 300 mil
+// vendas → ~285 ms a ~1 s em vez de ~11 ms). O sistema é somente leitura e NÃO
+// cria índices: o log diz o que falta para quem administra o banco decidir.
+var _FP_SQL_INDICES =
+    "SELECT TRIM(i.RDB$RELATION_NAME) AS T, TRIM(s.RDB$FIELD_NAME) AS C " +
+    "FROM RDB$INDICES i JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = i.RDB$INDEX_NAME " +
+    "WHERE s.RDB$FIELD_POSITION = 0 AND (i.RDB$INDEX_INACTIVE IS NULL OR i.RDB$INDEX_INACTIVE = 0) " +
+    "AND TRIM(i.RDB$RELATION_NAME) IN ('NFCE','PAGAMENT','VENDAS')";
+var _fpLogIndices = function(alvos, faltam) {
+    if (!faltam.length) {
+        logTs("Índices: " + alvos.join(", ") + " — ok (consultas rápidas).");
+    } else {
+        logTs("AVISO índices: sem índice em " + faltam.join(", ") + " — cada leitura percorre a tabela inteira " +
+              "(mais lenta e mais pesada para o banco do caixa). O sistema é somente leitura e não cria índices; " +
+              "peça ao suporte do Small Commerce (ou ao responsável pelo banco) para criar índice nessa(s) coluna(s).");
+    }
 };
 
 // Dispara a regeneração do dia (v2.14.0: SEM cancelar a geração em curso).
@@ -2733,7 +2833,15 @@ var _fpConectar = function(cb) {
 var _fpPoll = function() {
     if (!Firebird || !dbStatus.ok || _fpBusy || _fpConectando) return;
     var _agoraFp = Date.now();
-    if (_agoraFp - _fpInicioCiclo < _fpIntervaloAlvo()) return; // folga para o banco (ver _FP_FATOR_FOLGA)
+    // Modo completo: cada parte no seu ritmo (ver "Modo completo em DUAS partes").
+    // A complementar tem prioridade quando as duas estão em dia, para nunca
+    // ficar para trás; mesmo assim a rápida roda no máximo 1 ciclo depois.
+    var _parteFp = null;
+    if (_fpModo === "completo" && _FP_SQL_N) {
+        if (_FP_SQL_C && _agoraFp >= _fpProxC) _parteFp = "C";
+        else if (_agoraFp >= _fpProxN) _parteFp = "N";
+        else return;
+    } else if (_agoraFp - _fpInicioCiclo < _fpIntervaloAlvo()) return; // folga para o banco (ver _FP_FATOR_FOLGA)
     _fpInicioCiclo = _agoraFp;
     _fpBusy = true;
     var dh = hoje();
@@ -2745,7 +2853,7 @@ var _fpPoll = function() {
         _fpUltimoPend  = -1;
         _fpUltimoSvend  = -1;
         _fpUltimoSforma = -1;
-        _fpUltimoCompleto = null;
+        _fpUltN = null; _fpUltC = null;
         logTs("FastPoll: virada de dia (" + _fpDhAtual + " → " + dh + ") — baseline resetado.");
     }
     _fpDhAtual = dh;
@@ -2765,23 +2873,29 @@ var _fpPoll = function() {
             _fpBusy = false;
         }, 2000);
 
-        // ── Modo completo: por tipo + assinatura por registro ────────────
-        if (_fpModo === "completo" && _FP_SQL_COMPLETO) {
-            var _pc = [];
-            for (var _bc = 0; _bc < _fpParesCompleto; _bc++) { _pc.push(dh, dh); }
+        // ── Modo completo: parte rápida (N) ou complementar (C) ───────────
+        if (_fpModo === "completo" && _FP_SQL_N) {
+            var _parte = _parteFp || "N";
+            var _sqlP = _parte === "N" ? _FP_SQL_N : _FP_SQL_C;
+            var _pc = [], _nPares = _parte === "N" ? _FP_PARES_N : _FP_PARES_C;
+            for (var _bc = 0; _bc < _nPares; _bc++) { _pc.push(dh, dh); }
             var _dbC = _fpDb, _tqC = Date.now();
-            _dbC.query(_FP_SQL_COMPLETO, _pc, function(errC, rowsC) {
+            var _agendar = function() {
+                if (_parte === "N") _fpProxN = _tqC + _fpAlvoN(); else _fpProxC = _tqC + _fpAlvoC();
+            };
+            _dbC.query(_sqlP, _pc, function(errC, rowsC) {
                 if (_wdFired) return;
                 if (errC && /deadlock|conflict|lock/i.test(String(errC.message || errC))) {
                     // Conflito passageiro com gravação do caixa: só pula este ciclo
                     // (não troca de modo nem derruba a conexão).
                     clearTimeout(_wdFp);
+                    _agendar();
                     _fpBusy = false;
                     return;
                 }
                 if (errC || !rowsC || !rowsC.length) {
-                    // A consulta completa falhou: foi ela (ex.: valor maior que o
-                    // CAST, função ausente) ou a conexão? Tenta a básica na MESMA
+                    // A consulta falhou: foi ela (ex.: valor maior que o CAST,
+                    // função ausente) ou a conexão? Tenta a básica na MESMA
                     // conexão. Se a básica funciona, o problema é da completa →
                     // passa ao modo básico de vez (com log) em vez de derrubar a
                     // detecção num laço de reconexões. Se falha também, é a conexão.
@@ -2790,7 +2904,7 @@ var _fpPoll = function() {
                         if (_wdFired) return;
                         if (!errB && rowsB && rowsB.length) {
                             _fpModo = "basico";
-                            _fpUltimoCompleto = null;
+                            _fpUltN = null; _fpUltC = null;
                             logTs("FastPoll: consulta completa passou a falhar (" +
                                   _textoSeguroLog(errC ? (errC.message || errC) : "sem linhas") + ") — seguindo no modo básico.");
                             _fpBusy = false;
@@ -2803,14 +2917,17 @@ var _fpPoll = function() {
                     return;
                 }
                 clearTimeout(_wdFp);
-                _fpRegistrarDuracao(Date.now() - _tqC);
+                _fpRegistrarParte(_parte, Date.now() - _tqC);
+                _agendar();
                 var atual = _fpLerCompleto(rowsC[0]);
-                _fpUltimoOkTs = Date.now();
-                if (_fpUltimoCompleto && _fpDiferente(_fpUltimoCompleto, atual)) {
-                    logTs("FastPoll: " + _descreverMudancaCompleta(_fpUltimoCompleto, atual) + " → regerando.");
+                var anterior = _parte === "N" ? _fpUltN : _fpUltC;
+                if (_parte === "N") { _fpUltimoOkTs = Date.now(); _fpUltN = atual; } else { _fpUltC = atual; }
+                if (anterior && _fpDiferente(anterior, atual)) {
+                    var _a = _parte === "N" ? _fpJuntar(anterior, _fpUltC) : _fpJuntar(_fpUltN, anterior);
+                    var _b = _fpJuntar(_fpUltN, _fpUltC);
+                    logTs("FastPoll: " + _descreverMudancaCompleta(_a, _b) + " → regerando.");
                     _fpRegerar(dh);
                 }
-                _fpUltimoCompleto = atual;
                 _fpBusy = false;
             });
             return;
@@ -2884,10 +3001,12 @@ var _iniciarFastPoll = function() {
     _fpGen++;               // invalida qualquer attach em voo da geração anterior
     _fpUltimoQt = _fpUltimoTot = _fpUltimoPend = _fpUltimoSvend = _fpUltimoSforma = -1;
     // Banco novo (ou reconfigurado): esquema e modo voltam a ser sondados.
-    _fpUltimoCompleto = null;
+    _fpUltN = null; _fpUltC = null;
     _fpModo = null; _fpEsquema = null; _fpTemVendedor = null;
     _fpMediaMs = 0; _fpInicioCiclo = 0; // banco novo: tempo de consulta medido de novo
-    _FP_SQL = _montarFpSql(false); _FP_SQL_COMPLETO = null; _fpParesCompleto = 0;
+    _fpMediaN = 0; _fpMediaC = 0; _fpMedidoN = false; _fpMedidoC = false; _fpProxN = 0; _fpProxC = 0; _fpLogPartesFaixa = "";
+    _FP_SQL = _montarFpSql(false); _FP_SQL_N = null; _FP_PARES_N = 0; _FP_SQL_C = null; _FP_PARES_C = 0;
+    _FP_RE_C = null; _fpRotN = ""; _fpRotC = "";
     _fpDhAtual  = null;
     _fpBusy     = false;
     _fpConectando = false;  // libera o flag caso um attach anterior tenha ficado preso
@@ -3028,6 +3147,8 @@ var _pollInicioCiclo = 0, _pollMediaMs = 0;
 var pollStatus = function() {
     if (!Firebird || _pollBusy || !dbStatus.ok) return;
     if (_pollMediaMs && Date.now() - _pollInicioCiclo < _pollMediaMs * _FP_FATOR_FOLGA) return;
+    // Fast-poll completo saudável já cobre tudo: aqui só uma conferência a cada 10 s.
+    if (_fpCompletoSaudavel() && Date.now() - _pollInicioCiclo < 10000) return;
     _pollInicioCiclo = Date.now();
     _pollBusy = true;
     var dh   = hoje();
