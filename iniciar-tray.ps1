@@ -6,20 +6,13 @@
 # @version 1.4.1
 # @author Ruda Gabriel
 # @changelog
+#   (Historico completo das versoes: CHANGELOG.md no repositorio.)
 #   1.4.1 - 2026-10-07 22:30 - Correcoes da varredura de bugs.
 #     - Mutex abandonado (tray anterior morto sem liberar) era tratado como
 #       "outra instancia rodando" e o icone nao subia mais; agora e' adquirido.
 #     - "Reiniciar servidor" so' anuncia sucesso se o processo novo continua
 #       vivo apos 2 s (antes bastava o Start retornar, mesmo com a porta ocupada).
 #     - Data e hora do log tiradas do MESMO instante (virada da meia-noite).
-#   1.4.0 - 2026-10-05 22:30 - Encerramento com mensagem clara. "Sair" e
-#     "Reiniciar servidor" matavam o processo direto (taskkill /F): o servidor
-#     nao tinha chance de registrar nada no log nem avisar as telas abertas, e
-#     o icone simplesmente sumia. Agora o tray pede o encerramento ordenado
-#     (/api/encerrar - servidor registra no relatorio.log e mostra o aviso
-#     "Servidor encerrado" nos relatorios abertos), espera ate 5 s e so' entao
-#     usa taskkill como ultimo recurso. Ao sair, mostra uma janela confirmando
-#     que o servidor foi encerrado e como inicia-lo de novo.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing

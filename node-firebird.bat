@@ -11,6 +11,7 @@ chcp 65001 >nul 2>&1
 ::  - Pula instalacao se modulo ja estiver presente
 ::  - Tratamento robusto de erros e atualizacao de PATH
 ::
+::  (Historico completo das versoes: CHANGELOG.md no repositorio.)
 ::  CHANGELOG 1.1.1 - 2026-08-08 05:10 - Quebras de linha convertidas para
 ::   CRLF, a convencao correta do Windows. Estes arquivos estavam com LF
 ::   puro; funcionavam porque so' usam "goto", mas "call :label" quebra

@@ -15,6 +15,7 @@ chcp 65001 >nul 2>&1
 ::  - Inicia servidor se necessario
 ::  - Abre relatorio de hoje no navegador
 ::
+::  (Historico completo das versoes: CHANGELOG.md no repositorio.)
 ::  CHANGELOG 1.4.2 - 2026-10-05 16:24 - "echo" sem ponto apos instalar o
 ::   node-firebird imprimia "ECHO is off." / "ECHO desativado." na tela;
 ::   trocado por "echo." (linha em branco, como no resto do arquivo).

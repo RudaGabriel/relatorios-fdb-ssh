@@ -421,11 +421,14 @@ Eles cobrem a garantia de **somente leitura** (nenhum comando de escrita e nenhu
 ├── _instalar-node.ps1             Instalador do Node.js
 ├── node-firebird.bat              Instalador do módulo node-firebird
 ├── package.json                   Script de testes (npm test)
+├── CHANGELOG.md                   Histórico completo de versões de cada arquivo
 └── test/
     ├── executar-testes.bat        Roda os testes no Windows (duplo clique)
     ├── relatorio.test.js          Testes automáticos
     └── mock-firebird/             Firebird simulado usado pelos testes
 ```
+
+O cabeçalho de cada arquivo traz só o changelog da **versão atual**; o histórico completo de todas as versões fica no [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

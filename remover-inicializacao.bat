@@ -17,6 +17,7 @@ setlocal enabledelayedexpansion
 ::  pasta): so' pede Administrador (UAC) se algum item exigir.
 ::  Codigo de saida: 0 = tudo removido, 1 = sobrou pendencia.
 ::
+::  (Historico completo das versoes: CHANGELOG.md no repositorio.)
 ::  CHANGELOG 1.0.0 - 2026-10-06 10:00 - Primeira versao.
 ::   Mantem CRLF e somente ASCII - edite com editor que
 ::   preserve CRLF.

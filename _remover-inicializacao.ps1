@@ -33,8 +33,8 @@
 #
 # Codigo de saida: 0 = tudo removido/encerrado, 1 = sobrou algo (listado).
 #
+# (Historico completo das versoes: CHANGELOG.md no repositorio.)
 # CHANGELOG 1.0.1 - 2026-10-07 22:30 - Data e hora do log do MESMO instante.
-# CHANGELOG 1.0.0 - 2026-10-06 10:00 - Primeira versao.
 # =============================================================================
 
 param(

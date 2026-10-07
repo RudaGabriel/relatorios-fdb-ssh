@@ -11,6 +11,7 @@ chcp 65001 >nul 2>&1
 ::  - Inicia servidor se necessario
 ::  - Abre relatorio no navegador
 ::
+::  (Historico completo das versoes: CHANGELOG.md no repositorio.)
 ::  CHANGELOG 1.5.0 - 2026-10-05 16:24 - Ano padrao obtido via PowerShell:
 ::   "wmic" foi removido do Windows 11 24H2+, e sem ele o ano ficava com
 ::   lixo (nao vazio), passando pelo "if not defined". Ano com 2 digitos

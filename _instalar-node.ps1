@@ -6,6 +6,7 @@
 # @version 1.3.0
 # @author Ruda Gabriel
 # @changelog
+#   (Historico completo das versoes: CHANGELOG.md no repositorio.)
 #   1.3.0 - 2026-10-05 16:24 - Revisao completa.
 #     - Integridade: o MSI baixado era executado como Administrador sem
 #       nenhuma verificacao. Agora o SHA-256 e' conferido contra o

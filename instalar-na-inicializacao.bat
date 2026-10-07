@@ -146,6 +146,7 @@ timeout /t 5 >nul
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
+:: (Historico completo das versoes: CHANGELOG.md no repositorio.)
 :: CHANGELOG 1.13.1 - 2026-10-07 22:30 - Acentos (nome e caminhos).
 ::   - O nome do sistema ia para o config.json por um .ps1 temporario gravado
 ::     em UTF-8 (chcp 65001) que o PowerShell 5.1 le como ANSI: "Farmacia"
@@ -157,53 +158,6 @@ timeout /t 5 >nul
 ::     com %%LOCALAPPDATA%%. O bootstrap.vbs v1.1.0 le o launcher.path em UTF-8.
 ::   - Removido o rotulo :bootstrap_ok duplicado ("Bootstrap criado" saia 2x).
 ::
-:: CHANGELOG 1.13.0 - 2026-10-07 10:00 - Tarefa agendada com a configuracao
-::   completa (via _criar-tarefa.ps1, ao lado deste .bat): dispara "Ao fazer
-::   logon" de qualquer usuario E "Ao inicializar"; nenhuma condicao (ocioso,
-::   energia AC, reativar, rede); executa por demanda, executa assim que
-::   possivel se a inicializacao foi perdida, reinicia a cada 1 min ate 99x
-::   em caso de falha, sem limite de tempo, forca a interrupcao e nunca inicia
-::   uma segunda instancia. Sem o auxiliar (ou se ele falhar), cria a tarefa
-::   basica pelo schtasks como antes.
-::   NOVO ARQUIVO NECESSARIO: _criar-tarefa.ps1 na pasta do sistema.
-::
-:: CHANGELOG (anterior) 1.12.0 - 2026-10-06 16:30 - Tarefa agendada roda IMEDIATAMENTE
-::   no logon (inclusive no logon automatico logo apos ligar o computador):
-::   removido o atraso de 2 min (/delay 0002:00). A espera pela pasta de
-::   rede continua garantida pelo bootstrap.vbs (ate 30 min). Alem disso a
-::   tarefa deixa de ter os padroes do schtasks que podiam segura-la: "so
-::   iniciar na energia AC" (notebook na bateria nunca iniciava), "parar se
-::   passar para bateria" e limite de execucao de 72 h.
-::
-:: CHANGELOG (anterior) 1.11.2 - 2026-10-06 10:00 - A mensagem final indica o
-::   remover-inicializacao.bat (remove tarefa, atalho, registro e bootstrap)
-::   em vez do comando schtasks, que so' apagava a tarefa.
-::
-:: CHANGELOG (anterior) 1.11.1 - 2026-10-05 17:30 - O nome do sistema perdia TODOS os
-::   espacos ("Loja Silva" virava "LojaSilva") no titulo, no nome da tarefa
-::   agendada, do atalho e da regra de firewall: o "!APP_NAME: =!" que so'
-::   deveria TESTAR se o nome estava vazio sobrescrevia a propria variavel.
-::   Agora o teste usa uma variavel separada, e a tarefa/atalho/regra com o
-::   nome antigo (sem espacos) sao removidos para nao ficarem duplicados.
-::
-:: CHANGELOG (anterior) 1.11.0 - 2026-08-12 22:30 - bootstrap.vbs deixou de ser GERADO
-::                                         e passou a ser COPIADO.
-::  - Gerar o arquivo linha a linha com "echo" exigia escapar ( ) & < > e
-::    conviver com as regras de expansao do cmd. Falhou de tres formas
-::    diferentes em producao: bloco fechando cedo (arquivo pela metade e
-::    codigo aparecendo na tela), BOM que o wscript recusa (800A0408) e
-::    escapes vazando ("Erro de sintaxe" na linha 6, 800A03EA -- o erro
-::    apontava o caractere 54 de uma linha que so' deveria ter 52).
-::  - Agora bootstrap.vbs e' arquivo do projeto, versionado como qualquer
-::    outro, e o instalador so' faz "copy". Copiar nao tem escape, nem
-::    expansao, nem encoding a definir -- elimina a classe inteira de falhas.
-::  - O caminho do launcher (unico dado dinamico) vai em "launcher.path",
-::    arquivo texto de uma linha gravado com um echo simples ao lado do
-::    bootstrap, que o le em tempo de execucao.
-::  - Removido o bloco de fallback do CMD (21 linhas): era codigo morto que
-::    reproduzia a mesma geracao fragil.
-::  - launcher.path tambem e' apagado junto com o bootstrap antigo.
-::  - NOVO ARQUIVO NECESSARIO: bootstrap.vbs deve estar na pasta do sistema.
 :: =========================================================
 
 echo.
