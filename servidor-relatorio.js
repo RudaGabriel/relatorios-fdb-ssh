@@ -2,11 +2,16 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.15.0
+ * @version 2.15.1
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
+ *   2.15.1 - 2026-10-07 19:00 - /api/status com a contagem por tipo desde o início.
+ *     - g/nfc/nf (Gerencial, NFC-e, NF-e) ficavam -1 até a 1ª conferência do
+ *       pollStatus — com o fast-poll completo saudável, até 10 s depois de
+ *       ligar. Agora o fast-poll também preenche (mesma regra: sem
+ *       canceladas, total > 0), a cada leitura da NFCE.
  *   2.15.0 - 2026-10-07 18:00 - Fast-poll dividido pelos ÍNDICES do banco.
  *     - A sondagem lê no catálogo (só leitura, mesma conexão, em sequência)
  *       quais colunas de data têm índice: NFCE.DATA, PAGAMENT.DATA e
@@ -55,7 +60,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.15.0";
+const SERVER_VERSION = "2.15.1";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2922,6 +2927,19 @@ var _fpPoll = function() {
                 var atual = _fpLerCompleto(rowsC[0]);
                 var anterior = _parte === "N" ? _fpUltN : _fpUltC;
                 if (_parte === "N") { _fpUltimoOkTs = Date.now(); _fpUltN = atual; } else { _fpUltC = atual; }
+                // Contagem por tipo do /api/status (g/nfc/nf): antes só o pollStatus
+                // a preenchia e ela ficava -1 ("ainda não lido") até a 1ª conferência
+                // — com o fast-poll completo saudável, até 10 s depois de ligar. A
+                // regra é a mesma do pollStatus (sem canceladas, total > 0), então
+                // os dois escrevem os mesmos números. qt/total/ts não são tocados.
+                if (_parte === "N" ? !_fpEhCampoC("G_QT") : _fpEhCampoC("G_QT")) {
+                    var _r2 = function(v) { return Math.round(v * 100) / 100; };
+                    statusAtual = Object.assign({}, statusAtual, {
+                        g:   {qt: atual.G_QT,   tot: _r2(atual.G_TOT)},
+                        nfc: {qt: atual.NFC_QT, tot: _r2(atual.NFC_TOT)},
+                        nf:  {qt: atual.NF_QT,  tot: _r2(atual.NF_TOT)}
+                    });
+                }
                 if (anterior && _fpDiferente(anterior, atual)) {
                     var _a = _parte === "N" ? _fpJuntar(anterior, _fpUltC) : _fpJuntar(_fpUltN, anterior);
                     var _b = _fpJuntar(_fpUltN, _fpUltC);
