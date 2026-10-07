@@ -40,6 +40,14 @@ function montarPasta(config, estado) {
     fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(Object.assign({ nfce: [], pag: [], ger: [] }, estado || {})));
     return dir;
 }
+// Grava o estado do "banco" de forma atômica (arquivo temporário + rename): o
+// fast-poll lê o estado a cada ~15 ms e, com writeFileSync direto, podia pegar
+// o arquivo no meio da escrita (vazio) e ver uma venda "sumir" e voltar.
+const gravarEstado = (dir, st) => {
+    const tmp = path.join(dir, "estado.json.tmp");
+    fs.writeFileSync(tmp, JSON.stringify(st));
+    fs.renameSync(tmp, path.join(dir, "estado.json"));
+};
 const ambiente = dir => Object.assign({}, process.env, { MOCK_SENHA: SENHA, RELATORIO_FB_PASS: SENHA, MOCK_FB_DIR: dir });
 const lerSqlLog = dir => { try { return fs.readFileSync(path.join(dir, "sql.log"), "utf8"); } catch (_) { return ""; } };
 
@@ -145,7 +153,7 @@ test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só
         st.nfce.push({ numero: "103", hora: horaHaMin(0.1) });                 // nova e recente → aceitar
         st.nfce.push({ numero: "700", hora: horaHaMin(150), modelo: 99 });     // gerencial 2h30 → corrigir (janela 3 h)
         st.nfce.push({ numero: "701", hora: horaHaMin(200), modelo: 99 });     // gerencial 3h20 → fora da janela
-        fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+        gravarEstado(dir, st);
         for (let t = 0; t < 100 && !cacheHoras()[k("102")]; t++) await esperar(100);
         await esperar(500);
 
@@ -332,7 +340,7 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
     const srv = await iniciarServidor(dir);
     const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
     const geracoes = () => lerSqlLog(dir).split("\n").filter(l => l === "GERACAO").length;
-    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st)); };
+    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); gravarEstado(dir, st); };
     // Espera pela condição (até 10 s) em vez de um tempo fixo: com a máquina
     // ocupada a geração pode demorar mais, e o teste não deve depender disso.
     const etapa = async (fn, padrao, msg) => {
@@ -369,7 +377,7 @@ test("servidor: fast-poll põe na parte rápida a tabela que TEM índice (mesmo 
     });
     const srv = await iniciarServidor(dir);
     const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
-    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st)); };
+    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); gravarEstado(dir, st); };
     const aguardar = async re => { for (let t = 0; t < 100 && !re.test(log()); t++) await esperar(100); };
     try {
         await aguardar(/consulta rápida \(PAGAMENT, com índice\)/);
@@ -394,7 +402,7 @@ test("servidor: sem suporte à consulta completa, o fast-poll segue no modo bás
         assert.match(log(), /AVISO índices: sem índice em NFCE\.DATA, PAGAMENT\.DATA/, "deveria avisar a falta de índice");
         const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
         st.nfce.push({ numero: "102", hora: horaHaMin(0.1) });
-        fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+        gravarEstado(dir, st);
         await esperar(3000);
         assert.match(log(), /FastPoll: vendas 2 > 1/, "o modo básico ainda deve detectar venda nova");
     } finally { srv.parar(); }
@@ -411,7 +419,7 @@ test("servidor: gerador pré-aquecido fica pronto e não sobra processo ao encer
         // Uma venda nova usa a reserva e uma nova é preparada em seguida.
         const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
         st.nfce.push({ numero: "102", hora: horaHaMin(0.1) });
-        fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+        gravarEstado(dir, st);
         await esperar(3000);
         assert.strictEqual(reservas().length, 1, "deveria repor exatamente uma reserva");
         const r = await fetch(srv.base + "/api/encerrar?origem=teste");
@@ -437,7 +445,7 @@ test("servidor: rajada de vendas sem pausa — a tela continua atualizando (gera
         let v = 10;
         while (Date.now() < fimRajada) {               // uma alteração a cada 60 ms, sem parar
             st.nfce[0].total = ++v;
-            fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+            gravarEstado(dir, st);
             await esperar(60);
         }
         const durante = recargas;
