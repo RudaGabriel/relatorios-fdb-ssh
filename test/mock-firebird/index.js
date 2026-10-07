@@ -32,6 +32,10 @@ function query(sql, params, cb) {
             if (/AS HORA_VAL/.test(s)) return cb(null, (st.ger || [])
                 .filter(r => r.hora > params[2] || (r.hora >= params[3] && r.hora < params[4]))
                 .map(r => ({ NUMERO: r.numero, HORA_VAL: r.hora, CANC: "N", TOT: 10 })));
+            // (antes do esquema: esta consulta também cita RDB$RELATION_NAME IN (...))
+            // Índices (catálogo): estado.semIndice=true simula banco sem índice em DATA.
+            if (/RDB\$INDEX_SEGMENTS/.test(s))
+                return cb(null, st.semIndice ? [] : [{ T: "NFCE", C: "DATA" }, { T: "PAGAMENT", C: "DATA" }, { T: "VENDAS", C: "SAIDAD" }]);
             // Fast-poll completo (servidor v2.12.0): esquema das tabelas e a consulta
             // por tipo com assinatura. estado.semHash=true simula um Firebird que
             // recusa a consulta completa (o servidor deve cair no modo básico).
@@ -87,22 +91,37 @@ function query(sql, params, cb) {
                 })));
             if (/from nfce n where n.data between/i.test(s)) {
                 registrar("GERACAO");
-                return cb(null, (st.nfce || []).map(r => ({
+                // estado.atrasoGeracaoMs: simula banco lento na consulta da geração.
+                const _resp = (st.nfce || []).map(r => ({
                     DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: 10, CAIXA: "1", VENDEDOR_NFCE: "ANA",
                     CANC: "N", SIT: "", EMI: "", HORA: r.hora, CLI_NOME: "", NAT_OP: "",
                     VAL_NUMERONF: r.numero, VAL_GERENCIAL: r.gerencial || null
-                })));
+                }));
+                return st.atrasoGeracaoMs ? setTimeout(() => cb(null, _resp), st.atrasoGeracaoMs) : cb(null, _resp);
             }
             return cb(null, []);
         } catch (e) { cb(e); }
     });
 }
 
-const novaConexao = () => ({
-    query,
-    detach(cb) { if (cb) cb(); },
-    transaction(_iso, cb) { cb(null, { query, rollback(c) { if (c) c(); } }); }
-});
+// Imita o node-firebird 1.x: db.connection.startTransaction(opções, cb). Toda
+// transação que NÃO for somente leitura (readOnly) é registrada em sql.log como
+// "TX_ESCRITA" — os testes exigem que isso nunca aconteça.
+const novaTransacao = opcoes => {
+    const ro = !!(opcoes && typeof opcoes === "object" && !Array.isArray(opcoes) && opcoes.readOnly);
+    if (!ro) registrar("TX_ESCRITA " + JSON.stringify(opcoes));
+    return { query, execute: query, commit(c) { if (c) c(); }, rollback(c) { if (c) c(); } };
+};
+const novaConexao = () => {
+    const connection = { startTransaction(opcoes, cb) { if (typeof opcoes === "function") { cb = opcoes; opcoes = null; } setImmediate(() => cb(null, novaTransacao(opcoes))); } };
+    return {
+        connection,
+        // db.query direto (sem transação explícita) = transação padrão de ESCRITA no driver real.
+        query(sql, params, cb) { registrar("TX_ESCRITA db.query"); return query(sql, params, cb); },
+        detach(cb) { if (cb) cb(); },
+        transaction(opcoes, cb) { connection.startTransaction(opcoes, cb); }
+    };
+};
 
 module.exports = {
     attach(opts, cb) {
@@ -112,6 +131,7 @@ module.exports = {
             return setImmediate(() => cb(new Error("offline")));
         setImmediate(() => cb(null, novaConexao()));
     },
-    ISOLATION_READ_UNCOMMITTED: 1,
-    ISOLATION_READ_COMMITTED: 2
+    ISOLATION_READ_UNCOMMITTED: [15, 17],
+    ISOLATION_READ_COMMITTED: [15, 18],
+    ISOLATION_READ_COMMITTED_READ_ONLY: [15, 18]
 };

@@ -32,6 +32,7 @@ function montarPasta(config, estado) {
     const mock = path.join(dir, "node_modules", "node-firebird");
     fs.mkdirSync(mock, { recursive: true });
     fs.copyFileSync(path.join(__dirname, "mock-firebird", "index.js"), path.join(mock, "index.js"));
+    fs.copyFileSync(path.join(__dirname, "mock-firebird", "package.json"), path.join(mock, "package.json"));
     fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(Object.assign({
         appName: "Teste", porta: 7734, pollInterval: 200, fbHost: "127.0.0.1", fdbPath: "/tmp/teste.fdb",
         proibidos: [], maxLogLines: 5000, logDebug: false, toastDuration: 5000, spawnTimeoutMs: 120000, teclasPersonalizadas: []
@@ -123,33 +124,84 @@ test("gerador: duplicata gerencial→NFC-e vai para o painel e sai da tabela", (
 });
 
 // ---------------------------------------------------------------------------
-test("servidor: correção de horário só em documentos que APARECEM com hora velha", { timeout: 60000 }, async () => {
+test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só na tela, com linha de base", { timeout: 60000 }, async () => {
     const dir = montarPasta({}, {
-        nfce: [{ numero: "100", hora: horaHaMin(30) }, { numero: "101", hora: horaHaMin(0.2) }],
-        pag:  [{ numero: "500", hora: horaHaMin(30) }]
+        nfce: [{ numero: "100", hora: horaHaMin(30) }, { numero: "101", hora: horaHaMin(0.2) }]
     });
     const srv = await iniciarServidor(dir);
+    const cacheHoras = () => { try { return JSON.parse(fs.readFileSync(path.join(dir, "hora-fixada-cache.json"), "utf8")); } catch (_) { return {}; } };
+    const k = n => hojeISO() + "|" + n;
+    const hhmm = v => !!v && /^\d{2}:\d{2}$/.test(v.hora);
     try {
-        await esperar(8000); // 5 s de espera inicial + 1ª varredura (linha de base)
-        assert.ok(!/UPDATE/.test(lerSqlLog(dir)), "a linha de base (boot) não pode alterar nada:\n" + lerSqlLog(dir));
+        // Linha de base (1ª geração após ligar): o que já existe só é registrado.
+        for (let t = 0; t < 100 && !cacheHoras()[k("101")]; t++) await esperar(100);
+        let c = cacheHoras();
+        assert.strictEqual(c[k("100")] && c[k("100")].hora, "OK", "venda de 30 min atrás que já existia ao ligar NÃO pode ser corrigida");
+        assert.strictEqual(c[k("101")] && c[k("101")].hora, "OK");
 
         const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
-        st.ger = [
-            { numero: "700", hora: horaHaMin(150) },                   // gerencial 2h30 atrás → corrigir (janela padrão 3 h)
-            { numero: "701", hora: horaHaMin(200) }                    // gerencial 3h20 atrás → fora da janela, ignorar
-        ];
-        st.nfce.find(r => r.numero === "101").hora = horaHaMin(20); // já visto → nunca corrigir
-        st.nfce.push({ numero: "102", hora: horaHaMin(10) });         // novo e velho → corrigir
-        st.nfce.push({ numero: "103", hora: horaHaMin(0.1) });        // novo e recente → não corrigir
-        st.pag.push({ numero: "501", hora: horaHaMin(5) });           // novo e velho → corrigir
+        st.nfce.find(r => r.numero === "101").hora = horaHaMin(20);          // já vista → nunca corrigir
+        st.nfce.push({ numero: "102", hora: horaHaMin(10) });                  // nova e velha → corrigir na tela
+        st.nfce.push({ numero: "103", hora: horaHaMin(0.1) });                 // nova e recente → aceitar
+        st.nfce.push({ numero: "700", hora: horaHaMin(150), modelo: 99 });     // gerencial 2h30 → corrigir (janela 3 h)
+        st.nfce.push({ numero: "701", hora: horaHaMin(200), modelo: 99 });     // gerencial 3h20 → fora da janela
         fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
-        await esperar(5000);
+        for (let t = 0; t < 100 && !cacheHoras()[k("102")]; t++) await esperar(100);
+        await esperar(500);
 
-        const updates = lerSqlLog(dir).split("\n").filter(l => l.startsWith("UPDATE"));
-        const alvos = updates.map(l => JSON.parse(l.slice(7, l.indexOf(" :: ")))[1]).sort();
-        assert.deepStrictEqual(alvos, ["102", "501", "700"], "UPDATEs inesperados:\n" + updates.join("\n"));
+        c = cacheHoras();
+        assert.ok(hhmm(c[k("102")]), "102 (nova, 10 min atrás) deveria ter a hora fixada na tela");
+        assert.ok(hhmm(c[k("700")]), "gerencial 700 (2h30 atrás) deveria ter a hora fixada na tela");
+        assert.strictEqual(c[k("101")].hora, "OK", "101 já tinha sido vista — não muda");
+        assert.strictEqual(c[k("103")] && c[k("103")].hora, "OK", "103 é recente — aceita como está");
+        assert.strictEqual(c[k("701")], undefined, "701 está fora da janela — ignorada");
+
+        const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
+        assert.match(log, /Hora corrigida na tela \(banco não alterado\)/);
+        assert.match(log, /Índices: NFCE\.DATA, PAGAMENT\.DATA — ok/, "deveria conferir os índices no catálogo");
+        assert.match(log, /FastPoll: consulta levando ~\d+ ms/, "deveria registrar o tempo medido da consulta");
+        const sql = lerSqlLog(dir);
+        assert.ok(!/UPDATE/.test(sql), "nenhum UPDATE pode chegar ao banco:\n" + sql);
+        assert.ok(!/TX_ESCRITA/.test(sql), "toda transação deve ser SOMENTE LEITURA:\n" + sql.split("\n").filter(l => /TX_ESCRITA/.test(l)).slice(0, 5).join("\n"));
     } finally { srv.parar(); }
 });
+
+test("somente leitura: servidor e gerador bloqueiam qualquer comando de escrita e usam transação read-only", async () => {
+    const extrair = (arq, recuo) => {
+        const src = fs.readFileSync(path.join(RAIZ_PROJETO, arq), "utf8");
+        const i = src.indexOf("var _somenteLeitura = function"), j = src.indexOf("// =====", i + 50);
+        assert.ok(i > 0 && j > i, "_somenteLeitura ausente em " + arq);
+        return { txt: recuo ? src.slice(i, j).replace(/^ {4}/gm, "") : src.slice(i, j), fn: new Function("require", src.slice(i, j) + "; return _somenteLeitura;") };
+    };
+    const srv = extrair("servidor-relatorio.js", false), ger = extrair("gerar-relatorio-html.js", true);
+    assert.strictEqual(srv.txt.trim(), ger.txt.trim(), "o bloco _somenteLeitura deve ser idêntico nos dois arquivos");
+    for (const { fn } of [srv, ger]) {
+        const txs = [], enviados = [];
+        const tx = { query(sql, p, cb) { enviados.push(sql); cb(null, []); }, execute(sql, p, cb) { enviados.push(sql); cb(null, []); }, rollback(c) { if (c) c(); }, commit(c) { if (c) c(); } };
+        const FB = { ISOLATION_READ_COMMITTED: [15, 18], attach(o, cb) { cb(null, { connection: { startTransaction(op, cb2) { txs.push(op); cb2(null, Object.assign({}, tx)); } }, query() { throw new Error("db.query original não pode ser usado"); } }); } };
+        const req = m => m === "node-firebird/package.json" ? { version: "1.1.10" } : require(m);
+        const RO = fn(req)(FB);
+        const db = await new Promise(r => RO.attach({}, (e, d) => r(d)));
+        const roda = sql => new Promise(r => db.query(sql, [], e => r(e)));
+        for (const sql of ["UPDATE nfce SET hora='x'", "insert into t values (1)", "  DELETE FROM nfce", "/* x */ EXECUTE BLOCK AS BEGIN END",
+                           "ALTER TABLE nfce ADD x INT", "MERGE INTO t USING s ON 1=1", "", "-- comentario\nUPDATE t SET a=1"]) {
+            const e = await roda(sql);
+            assert.ok(e && /somente leitura/.test(e.message), "deveria bloquear: " + JSON.stringify(sql));
+        }
+        for (const sql of ["SELECT 1 FROM RDB$DATABASE", "  select * from nfce", "WITH x AS (SELECT 1 FROM RDB$DATABASE) SELECT * FROM x", "/* c */ SELECT 1 FROM RDB$DATABASE"]) {
+            assert.strictEqual(await roda(sql), null, "deveria permitir: " + sql);
+        }
+        assert.ok(!enviados.some(s => /update|insert|delete|alter|merge|execute/i.test(s)), "comando de escrita chegou ao driver: " + enviados.join(" | "));
+        assert.ok(txs.length > 0 && txs.every(o => o && o.readOnly === true && o.wait === false), "toda transação deve ser readOnly e sem espera: " + JSON.stringify(txs));
+        // rec_version (17), nunca no_rec_version (18): com 18 a leitura dá conflito ou trava
+        // esperando o caixa terminar uma gravação.
+        assert.ok(txs.every(o => JSON.stringify(o.isolation) === "[15,17]"), "isolamento deve ser read_committed + rec_version: " + JSON.stringify(txs[0]));
+        // Transação explícita (como o gerador usa) também é forçada a somente leitura.
+        await new Promise(r => db.transaction({ readOnly: false }, (e, t) => t.query("UPDATE x SET y=1", [], e2 => { assert.ok(e2); r(); })));
+        assert.ok(txs.every(o => o.readOnly === true));
+    }
+});
+
 
 test("servidor: validações das rotas HTTP", { timeout: 60000 }, async () => {
     const dir = montarPasta();
@@ -303,12 +355,13 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
 });
 
 test("servidor: sem suporte à consulta completa, o fast-poll segue no modo básico", { timeout: 60000 }, async () => {
-    const dir = montarPasta({}, { semHash: true, nfce: [{ numero: "101", hora: horaHaMin(0.1) }] });
+    const dir = montarPasta({}, { semHash: true, semIndice: true, nfce: [{ numero: "101", hora: horaHaMin(0.1) }] });
     const srv = await iniciarServidor(dir);
     const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
     try {
         await esperar(7000);
         assert.match(log(), /consulta completa indisponível neste banco .*modo básico/);
+        assert.match(log(), /AVISO índices: sem índice em NFCE\.DATA, PAGAMENT\.DATA/, "deveria avisar a falta de índice");
         const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
         st.nfce.push({ numero: "102", hora: horaHaMin(0.1) });
         fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
@@ -336,4 +389,32 @@ test("servidor: gerador pré-aquecido fica pronto e não sobra processo ao encer
         await esperar(2500);
         assert.strictEqual(reservas().length, 0, "nenhum gerador pode sobrar depois de encerrar:\n" + reservas().join("\n"));
     } finally { srv.parar(); }
+});
+
+test("servidor: rajada de vendas sem pausa — a tela continua atualizando (geração não é cancelada)", { timeout: 60000 }, async () => {
+    // Geração de 300 ms (banco lento) e uma alteração a cada 60 ms: antes, cada
+    // alteração cancelava a geração em curso e nenhuma terminava até a rajada parar.
+    const dir = montarPasta({}, { atrasoGeracaoMs: 300, nfce: [{ numero: "101", hora: horaHaMin(0.1), total: 10 }] });
+    const srv = await iniciarServidor(dir);
+    const http = require("node:http");
+    let recargas = 0;
+    const req = http.get(srv.base + "/api/events", res => { res.setEncoding("utf8"); res.on("data", d => { recargas += (d.match(/"type":"reload"/g) || []).length; }); });
+    try {
+        await esperar(6000);
+        recargas = 0;
+        const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
+        const fimRajada = Date.now() + 3000;
+        let v = 10;
+        while (Date.now() < fimRajada) {               // uma alteração a cada 60 ms, sem parar
+            st.nfce[0].total = ++v;
+            fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+            await esperar(60);
+        }
+        const durante = recargas;
+        await esperar(2500);
+        assert.ok(durante >= 3, "a tela deveria atualizar várias vezes DURANTE a rajada (atualizou " + durante + "x)");
+        assert.ok(recargas > durante || durante > 0, "deveria haver atualização final após a rajada");
+        const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
+        assert.ok(!/superada por/.test(log), "nenhuma geração deveria ser cancelada/superada pelo fast-poll");
+    } finally { req.destroy(); srv.parar(); }
 });
