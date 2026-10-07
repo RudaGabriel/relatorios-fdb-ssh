@@ -266,3 +266,51 @@ test("gerador: venda com desconto ganha o chip vermelho com o percentual", () =>
     assert.strictEqual(descontoVenda({ itensDetalhe: [{ desc: "X", total: 200 }, { desc: "DESCONTO", total: -1 }] }).rotulo, "Desconto de 0,5% (\u2212R$ 1,00)");
     assert.ok(html.includes('class="tdItemChip tdItemDesc"'), "chip com a classe tdItemDesc ausente no HTML");
 });
+
+// ---------------------------------------------------------------------------
+test("servidor: fast-poll completo detecta mudanças que não alteram quantidade nem total geral", { timeout: 90000 }, async () => {
+    const dir = montarPasta({}, {
+        nfce: [{ numero: "101", hora: horaHaMin(0.1), vendedor: "ANA", modelo: 65 }],
+        pag:  [{ numero: "101", hora: horaHaMin(0.1) }]
+    });
+    const srv = await iniciarServidor(dir);
+    const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
+    const geracoes = () => lerSqlLog(dir).split("\n").filter(l => l === "GERACAO").length;
+    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st)); };
+    const etapa = async (fn, padrao, msg) => {
+        const g0 = geracoes();
+        alterar(fn);
+        await esperar(3000);
+        assert.match(log(), padrao, msg + "\n" + log().split("\n").filter(l => /FastPoll/.test(l)).join("\n"));
+        assert.ok(geracoes() > g0, msg + ": deveria regerar o relatório");
+    };
+    try {
+        await esperar(7000);
+        assert.match(log(), /FastPoll: modo completo/, "deveria entrar no modo completo");
+        await etapa(st => { st.nfce[0].vendedor = "BIA"; },
+            /FastPoll: NFC-e: venda alterada/, "troca de vendedor (mesma quantidade e total)");
+        await etapa(st => { st.nfce[0].modelo = 99; },
+            /Gerencial: vendas 0 → 1 \(↑ \+1\).*NFC-e: vendas 1 → 0 \(↓ -1\)/, "venda mudou de NFC-e para gerencial (mesmo valor)");
+        await etapa(st => { st.pag[0].forma = "05 PIX"; },
+            /Pagamentos: forma ou valor alterado/, "troca de forma de pagamento");
+        await etapa(st => { st.nfce[0].total = 15; },
+            /Gerencial: total R\$ 10,00 → R\$ 15,00 \(↑ \+R\$ 5,00\)/, "aumento de valor");
+        await etapa(st => { st.nfce[0].total = 12; },
+            /Gerencial: total R\$ 15,00 → R\$ 12,00 \(↓ −R\$ 3,00\)/, "redução de valor");
+    } finally { srv.parar(); }
+});
+
+test("servidor: sem suporte à consulta completa, o fast-poll segue no modo básico", { timeout: 60000 }, async () => {
+    const dir = montarPasta({}, { semHash: true, nfce: [{ numero: "101", hora: horaHaMin(0.1) }] });
+    const srv = await iniciarServidor(dir);
+    const log = () => { try { return fs.readFileSync(path.join(dir, "relatorio.log"), "utf8"); } catch (_) { return ""; } };
+    try {
+        await esperar(7000);
+        assert.match(log(), /consulta completa indisponível neste banco .*modo básico/);
+        const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
+        st.nfce.push({ numero: "102", hora: horaHaMin(0.1) });
+        fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st));
+        await esperar(3000);
+        assert.match(log(), /FastPoll: vendas 2 > 1/, "o modo básico ainda deve detectar venda nova");
+    } finally { srv.parar(); }
+});
