@@ -50,7 +50,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Vendas aguardando autorização da SEFAZ** aparecem na hora, com rótulo próprio. Vendedor e hora são herdados da gerencial de origem.
 
 ### Tempo real
-- **Fast-poll:** consulta leve a cada 15 ms numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
+- **Fast-poll:** consulta leve a partir de 15 ms (adaptativo: nunca ocupa mais de 1/3 do tempo do banco do caixa) numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
   - venda nova e cancelamento;
   - total que **sobe ou desce** em cada tipo (o log mostra o sentido e a diferença, ex.: `NFC-e: total R$ 80,00 → R$ 90,00 (↑ +R$ 10,00)`);
   - venda que **muda de tipo** com o mesmo valor (gerencial → NFC-e);
@@ -59,10 +59,10 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
   - NFC-e autorizada; vendedor ou forma de pagamento preenchidos depois da venda.
 
 - **Tempo até a tela atualizar:** ~140 ms do registro da venda no banco até o navegador ser avisado (medido num Firebird 3 local; era ~315 ms). Para isso:
-  - fast-poll a cada 15 ms;
+  - fast-poll a partir de 15 ms, que se ajusta sozinho ao tempo da consulta (no máximo 1/3 do tempo do Firebird; com 300 mil vendas e índice em `DATA`, ~45 ms). Se a consulta passar de 100 ms, o log avisa para conferir o índice no campo `DATA` das tabelas NFCE/PAGAMENT;
   - um **gerador pré-aquecido** fica sempre pronto (Node e driver do Firebird já carregados) e só lê configuração, data e hora quando recebe a ordem;
   - o gerador avisa "HTML pronto" assim que grava o arquivo, sem esperar fechar as conexões com o banco;
-  - a verificação completa (correções de horário) roda na hora da detecção e não regera em dobro o que o fast-poll já regerou.
+  - a verificação completa (correções de horário) roda a cada 1 s e não regera em dobro o que o fast-poll já regerou.
 
   Cada venda e cada pagamento entram numa assinatura (hash) somada por tipo, numa única leitura por tabela. Se o Firebird não aceitar essa consulta, o fast-poll segue automaticamente no modo básico (quantidade e total), sem parar a detecção.
 - **Atualização automática do navegador por SSE** (Server-Sent Events), com polling HTTP como reserva.
@@ -100,7 +100,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
  Windows (logon)
    └─ Tarefa agendada ─▶ bootstrap.vbs ─▶ launcher.vbs ─▶ iniciar-tray.ps1  (ícone na bandeja + watchdog)
                                                             └─▶ node servidor-relatorio.js
-                                                                  ├─ fast-poll (15 ms) ─┐
+                                                                  ├─ fast-poll (≥15 ms)─┐
                                                                   ├─ pollStatus (≥1 s)  ├─▶ Firebird (SMALL.FDB)
                                                                   ├─ correções de hora ─┘
                                                                   └─ gera o HTML em subprocesso:

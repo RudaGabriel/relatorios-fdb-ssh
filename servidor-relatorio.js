@@ -17,11 +17,13 @@
  *       node-firebird carregados (~45 ms) e recebe a ordem pela entrada padrão;
  *       só então carrega o gerador, que lê config/data/hora na hora. Reposto a
  *       cada uso, descartado ao encerrar; qualquer problema → spawn normal.
- *     - Fast-poll: 50 → 15 ms (a trava de ciclo pula ciclos se o banco estiver
- *       lento; nunca empilha consultas).
- *     - pollStatus: 2 s → 1 s; roda na hora quando o fast-poll detecta algo
- *       (correções de horário sem esperar o próximo ciclo) e não regera de novo
- *       o que o fast-poll completo já regerou (antes: geração e recarga de tela
+ *     - Fast-poll ADAPTATIVO: a partir de 15 ms, mas o próximo ciclo só começa
+ *       após 3× o tempo médio da consulta — nunca ocupa mais de ~1/3 do tempo
+ *       do Firebird (o mesmo banco do caixa). Medido com 300 mil vendas: ~45 ms
+ *       com índice em DATA; sem índice a consulta leva ~1 s e o ciclo vai a
+ *       3 s, com aviso no log (antes, a 50 ms fixos, consultava sem parar).
+ *     - pollStatus: 2 s → 1 s, com a mesma folga de 1/3; não regera de novo o
+ *       que o fast-poll completo já regerou (antes: geração e recarga de tela
  *       em dobro a cada venda).
  *     - Polling de reserva do navegador: padrão 200 → 100 ms (mínimo 100).
  */
@@ -2147,10 +2149,38 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
 //
 // Resultado: detecção em 200-400ms; POLL_INTERVAL vira fallback de segurança.
 // ---------------------------------------------------------------------------
-// v2.13.0: 50 → 15 ms. A consulta completa leva ~6 ms num Firebird local; a
-// trava _fpBusy pula ciclos se o banco estiver mais lento (nunca empilha
-// consultas). 15 ms também é a resolução do relógio do Windows (~15,6 ms).
-var _FP_INTERVAL_MS  = 15;
+// v2.13.0: intervalo ADAPTATIVO, mínimo 15 ms (resolução do relógio do
+// Windows, ~15,6 ms). O próximo ciclo só começa depois de 3× o tempo médio da
+// consulta: o fast-poll nunca ocupa mais de ~1/3 do tempo do Firebird, que é o
+// mesmo banco do caixa (PDV). Medido com 300 mil vendas: consulta de ~11 ms
+// com índice em DATA (→ ciclo de ~35 ms) e ~285 ms sem índice (→ ~850 ms);
+// antes, a 50 ms fixos, uma consulta lenta fazia o fast-poll consultar sem
+// parar, deixando o banco ocupado 100% do tempo.
+var _FP_INTERVAL_MS       = 15;
+var _FP_FATOR_FOLGA       = 3;
+var _FP_INTERVALO_MAX_MS  = 3000;
+var _fpMediaMs            = 0;   // média móvel do tempo de consulta
+var _fpInicioCiclo        = 0;
+var _fpFaixaLog           = 0;
+var _fpFaixaLogTs         = 0;
+var _fpIntervaloAlvo = function() {
+    return Math.max(_FP_INTERVAL_MS, Math.min(_FP_INTERVALO_MAX_MS, Math.round(_fpMediaMs * _FP_FATOR_FOLGA)));
+};
+var _FP_FAIXAS = [15, 30, 60, 120, 250, 500, 1000, 2000, 3000];
+var _fpRegistrarDuracao = function(ms) {
+    _fpMediaMs = _fpMediaMs ? (_fpMediaMs * 0.7 + ms * 0.3) : ms;
+    var alvo = _fpIntervaloAlvo(), faixa = _FP_FAIXAS[0];
+    for (var i = 0; i < _FP_FAIXAS.length; i++) if (alvo >= _FP_FAIXAS[i]) faixa = _FP_FAIXAS[i];
+    // Log só quando a faixa muda, no máximo 1 por minuto (exceto ao voltar ao normal).
+    if (faixa !== _fpFaixaLog && (faixa === _FP_FAIXAS[0] || Date.now() - _fpFaixaLogTs > 60000)) {
+        if (_fpFaixaLog || faixa !== _FP_FAIXAS[0]) {
+            logTs("FastPoll: consulta levando ~" + Math.round(_fpMediaMs) + " ms — intervalo ajustado para ~" + alvo +
+                  " ms (o fast-poll usa no máximo 1/3 do tempo do banco)." +
+                  (_fpMediaMs > 100 ? " Consulta lenta: verifique se as tabelas NFCE/PAGAMENT têm índice no campo DATA." : ""));
+        }
+        _fpFaixaLog = faixa; _fpFaixaLogTs = Date.now();
+    }
+};
 var _fpDb            = null;  // conexão Firebird persistente (reutilizada entre ciclos)
 var _fpConectando    = false; // evita tentativas de attach paralelas
 var _fpBusy          = false; // evita ciclos sobrepostos
@@ -2418,11 +2448,6 @@ var _fpUltimoOkTs     = 0;     // instante do último ciclo completo bem-sucedid
 var _fpCompletoSaudavel = function() {
     return _fpModo === "completo" && Date.now() - _fpUltimoOkTs < 1500;
 };
-// Na detecção, roda o pollStatus na hora (correções de horário) em vez de
-// esperar o próximo ciclo dele. Ele tem trava própria (_pollBusy).
-var _fpAcionarPollStatus = function() {
-    setImmediate(function() { try { pollStatus(); } catch (_) {} });
-};
 
 // Sonda o esquema (NFCE, PAGAMENT, VENDAS) UMA vez por banco e decide o modo:
 // monta a consulta completa a partir das colunas que existem e a executa uma
@@ -2554,6 +2579,9 @@ var _fpConectar = function(cb) {
 // Reutiliza _fpDb se disponível; reconecta silenciosamente se necessário.
 var _fpPoll = function() {
     if (!Firebird || !dbStatus.ok || _fpBusy || _fpConectando) return;
+    var _agoraFp = Date.now();
+    if (_agoraFp - _fpInicioCiclo < _fpIntervaloAlvo()) return; // folga para o banco (ver _FP_FATOR_FOLGA)
+    _fpInicioCiclo = _agoraFp;
     _fpBusy = true;
     var dh = hoje();
 
@@ -2588,7 +2616,7 @@ var _fpPoll = function() {
         if (_fpModo === "completo" && _FP_SQL_COMPLETO) {
             var _pc = [];
             for (var _bc = 0; _bc < _fpParesCompleto; _bc++) { _pc.push(dh, dh); }
-            var _dbC = _fpDb;
+            var _dbC = _fpDb, _tqC = Date.now();
             _dbC.query(_FP_SQL_COMPLETO, _pc, function(errC, rowsC) {
                 if (_wdFired) return;
                 if (errC || !rowsC || !rowsC.length) {
@@ -2615,12 +2643,12 @@ var _fpPoll = function() {
                     return;
                 }
                 clearTimeout(_wdFp);
+                _fpRegistrarDuracao(Date.now() - _tqC);
                 var atual = _fpLerCompleto(rowsC[0]);
                 _fpUltimoOkTs = Date.now();
                 if (_fpUltimoCompleto && _fpDiferente(_fpUltimoCompleto, atual)) {
                     logTs("FastPoll: " + _descreverMudancaCompleta(_fpUltimoCompleto, atual) + " → regerando.");
                     _fpRegerar(dh);
-                    _fpAcionarPollStatus();
                 }
                 _fpUltimoCompleto = atual;
                 _fpBusy = false;
@@ -2628,8 +2656,10 @@ var _fpPoll = function() {
             return;
         }
 
+        var _tqB = Date.now();
         _fpDb.query(_FP_SQL, _paramsBasico(), function(err, rows) {
             clearTimeout(_wdFp);
+            if (!err && rows && rows.length && !_wdFired) _fpRegistrarDuracao(Date.now() - _tqB);
             // Se watchdog já disparou, descarta callback para evitar duplo processamento
             if (_wdFired) return;
 
@@ -2666,7 +2696,6 @@ var _fpPoll = function() {
                 // garantindo que o browser recarregue direto para a página final sem paginaLoading.
 
                 _fpRegerar(dh);
-                _fpAcionarPollStatus();
             }
 
             _fpUltimoQt    = qt;
@@ -2697,6 +2726,7 @@ var _iniciarFastPoll = function() {
     // Banco novo (ou reconfigurado): esquema e modo voltam a ser sondados.
     _fpUltimoCompleto = null;
     _fpModo = null; _fpEsquema = null; _fpTemVendedor = null;
+    _fpMediaMs = 0; _fpInicioCiclo = 0; // banco novo: tempo de consulta medido de novo
     _FP_SQL = _montarFpSql(false); _FP_SQL_COMPLETO = null; _fpParesCompleto = 0;
     _fpDhAtual  = null;
     _fpBusy     = false;
@@ -3251,8 +3281,13 @@ var _corrigirHorariosGerencial = function(_dbIgnorado, dh) {
     }); // fecha Firebird.attach
 };
 
+// pollStatus também respeita a folga para o banco: o próximo ciclo só começa
+// depois de 3× a duração do anterior (cada ciclo abre conexão e varre o dia).
+var _pollInicioCiclo = 0, _pollMediaMs = 0;
 var pollStatus = function() {
     if (!Firebird || _pollBusy || !dbStatus.ok) return;
+    if (_pollMediaMs && Date.now() - _pollInicioCiclo < _pollMediaMs * _FP_FATOR_FOLGA) return;
+    _pollInicioCiclo = Date.now();
     _pollBusy = true;
     var dh   = hoje();
     var opts = {host:FDB_HOST, port:FIREBIRD_PORT, database:FDB_PATH, user:USER, password:PASS,
@@ -3273,6 +3308,8 @@ var pollStatus = function() {
         clearTimeout(_watchdog);
         clearTimeout(_attachTimer);
         if (db) { try { _matarConexao(db); } catch(_) {} }
+        var _durPoll = Date.now() - _pollInicioCiclo;
+        _pollMediaMs = _pollMediaMs ? (_pollMediaMs * 0.7 + _durPoll * 0.3) : _durPoll;
         _pollBusy = false;
         if (reagendar) setTimeout(pollStatus, 500);
     };
@@ -5075,7 +5112,7 @@ server.listen(PORT, BIND_ADDR, function(){
         // Intervalo REAL do pollStatus (mesma fórmula de _iniciarPolling) — o
         // log anterior mostrava POLL_INTERVAL, 10× menor que o valor efetivo.
         setImmediate(_prepararReserva); // gerador pré-aquecido já para a 1ª venda
-        logTs("Fast-poll: " + _FP_INTERVAL_MS + " ms (detecção instantânea) | gerador pré-aquecido | pollStatus fallback: " + (_intervaloPollStatus()/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
+        logTs("Fast-poll: a partir de " + _FP_INTERVAL_MS + " ms (adaptativo: no máximo 1/3 do tempo do banco) | gerador pré-aquecido | pollStatus fallback: " + (_intervaloPollStatus()/1000) + "s | browser poll: " + POLL_INTERVAL + "ms | spawnTimeout: " + (_SPAWN_TIMEOUT_MS/1000) + "s. Servidor pronto.");
     });
 });
 
