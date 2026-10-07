@@ -12,6 +12,7 @@ PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
 @version 1.5.1
 @author Ruda Gabriel
 @changelog
+  (Historico completo das versoes: CHANGELOG.md no repositorio.)
   1.5.1 - 2026-10-07 22:30 - Correcoes da varredura de bugs.
     - Menu: "continue" dentro de um switch age sobre o SWITCH, nao sobre o
       laco - cancelar a opcao 21 ou deixar a 7 em branco seguia para o
@@ -19,33 +20,6 @@ PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
     - "encerrar": confirmacao SIM igual no menu e no modo direto (maiusculas);
       textos dizem que, com o icone da bandeja ativo, o servidor e' religado
       em ate ~10 s.
-  1.5.0 - 2026-10-07 19:00 - IP desta maquina e rotas que faltavam.
-    - Cabecalho do menu mostra o nome e o IP DESTA maquina (a que abriu o
-      api.ps1): o IP e' o da placa de rede usada para chegar ao servidor
-      (nao um IP qualquer de VPN/VirtualBox); avisa quando esta maquina e' a
-      propria maquina do servidor. Opcao 20 lista todos os IPs.
-    - Novas opcoes para rotas do servidor que existiam e nao estavam no menu:
-      encerrar (desligar o servidor, com confirmacao), foco (trazer a aba do
-      relatorio para frente), modal-config / modal-periodo (abrir essas
-      janelas na aba aberta), atualizar (forcar nova geracao do relatorio de
-      hoje), itens-venda (itens de uma venda: data + numero), abrir-navegador
-      e abrir-periodo (abrir o relatorio NESTA maquina).
-    - status: quando algum valor vem -1 ("ainda nao lido"), a resposta traz
-      um campo "obs" explicando (servidor 2.15.1+ preenche a contagem por
-      tipo logo na primeira leitura do fast-poll).
-    - Erros HTTP mostram tambem o motivo enviado pelo servidor (antes so'
-      "500 (Internal Server Error)", sem dizer o que falhou).
-  1.4.0 - 2026-10-05 16:24 - Revisao completa.
-    - Invoke-ApiCall repetia (com espera exponencial) ate' respostas 4xx do
-      servidor - erros definitivos como 400/403/404, que nunca mudam numa nova
-      tentativa. Agora 4xx falha na hora com "HTTP <codigo>"; so' falhas de
-      rede e 5xx sao repetidas.
-    - PowerShell 7: falha de conexao chega como HttpRequestException (nao
-      WebException) e era rotulada "Erro:" - o fallback do "restart" (iniciar
-      via launcher.vbs quando o servidor esta fora do ar) nunca disparava.
-      Agora as duas formas sao reconhecidas como "Falha de rede".
-    - sse-test consultava /api/sse-clients (JSON comum), nao o fluxo SSE.
-      Agora conecta de fato em /api/events e le a primeira linha do fluxo.
 #>
 [CmdletBinding()]
 param(

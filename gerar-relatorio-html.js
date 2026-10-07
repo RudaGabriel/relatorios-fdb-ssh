@@ -4,6 +4,7 @@
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
+ *   (Histórico completo das versões: CHANGELOG.md no repositório.)
  *   3.8.1 - 2026-10-07 23:00 - Correções da varredura de bugs.
  *     - Situação no hora-fixada-cache.json: venda que vai para a tela é sempre "ativa",
  *       mesmo que outra linha com a mesma chave esteja cancelada (número repetido, NFC-e

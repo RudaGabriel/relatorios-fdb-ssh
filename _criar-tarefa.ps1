@@ -25,6 +25,7 @@
 #
 # Codigo de saida: 0 = criada e conferida, 1 = falhou (o .bat cai no schtasks).
 #
+# (Historico completo das versoes: CHANGELOG.md no repositorio.)
 # CHANGELOG 1.0.0 - 2026-10-07 10:00 - Primeira versao.
 # =============================================================================
 

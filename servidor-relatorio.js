@@ -7,6 +7,7 @@
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
+ *   (Histórico completo das versões: CHANGELOG.md no repositório.)
  *   2.15.5 - 2026-10-07 23:00 - Correções da varredura de bugs.
  *     - pollStatus (reserva) comparava vendas+pagamentos (400) com o total da
  *       geração, que conta só vendas (201): ao ligar dava sempre "Dados
@@ -31,80 +32,6 @@
  *       /api/config devolve os valores efetivos.
  *     - /periodo: no máximo 3 períodos gerando ao mesmo tempo.
  *     - Cache de hora só é regravado na saída se havia gravação pendente.
- *   2.15.4 - 2026-10-07 22:00 - Log categorizado e cache de hora sem sobrescrever.
- *     - Toda linha do relatorio.log leva a categoria logo após o horário:
- *       [VENDAS], [FASTPOLL], [BANCO], [GERADOR], [SERVIDOR], [API],
- *       [NAVEGADOR], [CONFIG], [REDE], [DEBUG], [SISTEMA] — além de [TRAY],
- *       [INSTALL] e [REMOVER], que já existiam. Etiquetas antigas no meio da
- *       mensagem ([BROWSER-ERROR], [FDB Manual]...) viraram categoria.
- *       console.error/warn e exceções não tratadas também ganham horário e
- *       categoria. A leitura das mensagens únicas do dia aceita os dois formatos.
- *     - hora-fixada-cache.json: o disco prevalece sobre a cópia em memória do
- *       servidor (lida no boot) — senão um reinício apagaria a "situacao"
- *       (cancelada/convertida) que o gerador v3.8.0 grava.
- *   2.15.3 - 2026-10-07 21:00 - Um refresh também na exclusão e na conversão em NFC-e.
- *     - Log da loja: venda excluída ainda dava 2 refresh (a venda sai, depois
- *       o pagamento) e gerencial convertido em NFC-e dava 3 (some do
- *       gerencial e fica "aguardando autorização", vira NFC-e, muda o
- *       pagamento). A espera passou a valer para QUALQUER mudança de
- *       quantidade (entrou ou saiu: espera o pagamento, até 1,5 s) e para
- *       NFC-e aguardando autorização (espera a autorização, até 8 s); a outra
- *       parte é sempre lida uma vez antes de gerar. Uma geração por movimento.
- *   2.15.2 - 2026-10-07 20:00 - Um refresh por venda (não dois).
- *     - O caixa grava a venda (NFCE) e o pagamento (PAGAMENT) em transações
- *       separadas. A parte rápida via a venda e gerava; a complementar via o
- *       pagamento ~1 s depois e gerava de novo: DOIS refresh por venda (log
- *       da loja: "Gerencial: vendas 36 → 37" e, 1 s depois, "Pagamentos:
- *       38 → 39", cada um com "→ regerando"). Agora a mudança da parte rápida
- *       fica pendente: a complementar roda na hora e, se é venda nova, é
- *       relida até o pagamento aparecer (no máximo 1,5 s); então UMA geração
- *       com tudo, e uma linha só no log. Outras mudanças esperam uma leitura.
- *   2.15.1 - 2026-10-07 19:00 - /api/status com a contagem por tipo desde o início.
- *     - g/nfc/nf (Gerencial, NFC-e, NF-e) ficavam -1 até a 1ª conferência do
- *       pollStatus — com o fast-poll completo saudável, até 10 s depois de
- *       ligar. Agora o fast-poll também preenche (mesma regra: sem
- *       canceladas, total > 0), a cada leitura da NFCE.
- *   2.15.0 - 2026-10-07 18:00 - Fast-poll dividido pelos ÍNDICES do banco.
- *     - A sondagem lê no catálogo (só leitura, mesma conexão, em sequência)
- *       quais colunas de data têm índice: NFCE.DATA, PAGAMENT.DATA e
- *       VENDAS.SAIDAD/EMISSAO. Tabelas COM índice vão para a consulta rápida
- *       (no máximo 1/4 do tempo do banco); SEM índice, para a complementar
- *       (1/12, entre 250 ms e 30 s) — juntas, o mesmo teto de 1/3. Se todas
- *       têm índice (ou nenhuma tem) não há o que separar: consulta única,
- *       como antes. Na loja (índice só em NFCE.DATA), reproduzido num
- *       Firebird 3 com 300 mil vendas: venda nova detectada em ~327 ms em
- *       vez de ~730 ms; troca de forma de pagamento em ~780 ms.
- *     - Log mostra as tabelas e o ritmo de cada parte; o aviso de índices
- *       sai da própria sondagem (sem a conexão extra de antes).
- *     - pollStatus (reserva) a cada 10 s enquanto o fast-poll completo está
- *       saudável — ele também percorre tabelas sem índice.
- *     - Corrigido: consulta medida em 0 ms era tratada como "não medida" e o
- *       tempo nunca aparecia no log.
- *   2.14.0 - 2026-10-07 16:30 - Somente leitura, detecção mais rápida e segura.
- *     - SOMENTE LEITURA: o sistema nunca mais escreve no banco. Removidos os
- *       UPDATE de correção de horário (nfce/pagament/gerencial); duas travas
- *       em toda conexão (_somenteLeitura): só SELECT/WITH sai para o banco e
- *       toda transação é read-only (isc_tpb_read, sem espera) — o Firebird
- *       recusa escrita. O node-firebird abria transação de ESCRITA por padrão.
- *       Verificado no MON$TRANSACTIONS de um Firebird 3: 100% read-only.
- *     - Correção de horário só na TELA, decidida pelo gerador e guardada no
- *       hora-fixada-cache.json; linha de base (--linha-de-base) ao ligar,
- *       reconectar e trocar de banco; correções avisadas no log e na tela.
- *       Sem as correções próprias, o pollStatus abre 2 a 3 conexões a menos
- *       por segundo.
- *     - Detecção (COMMIT → aviso no navegador ~314 → ~140 ms): conclusão
- *       antecipada pelo aviso "@@RELATORIO_PRONTO@@"; gerador pré-aquecido;
- *       fast-poll ADAPTATIVO (a partir de 15 ms, no máximo 1/3 do tempo do
- *       banco; medido com 300 mil vendas: ~45 ms com índice, ~3 s sem);
- *       pollStatus 2 → 1 s com a mesma folga e sem regerar em dobro;
- *       polling de reserva do navegador 200 → 100 ms.
- *     - Rajada de vendas: a geração em curso não é mais cancelada — termina,
- *       atualiza a tela, e uma nova começa em seguida (antes, com vendas a
- *       cada < ~150 ms, a tela só atualizava quando o movimento parava).
- *     - Índices: confere no catálogo (só leitura, conexão própria) se
- *       NFCE.DATA, PAGAMENT.DATA e VENDAS.SAIDAD têm índice e registra no
- *       log "Índices: ... ok" ou "AVISO índices: sem índice em ...". Tempo da
- *       consulta do fast-poll sempre registrado na 1ª medição.
  */
 
 

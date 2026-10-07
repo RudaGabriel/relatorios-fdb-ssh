@@ -21,6 +21,7 @@
 ' isso, e' por isso que o proprio bootstrap.vbs (gerado dinamicamente) usa
 ' exatamente esse mesmo truque para se auto-invocar.
 '
+' (Historico completo das versoes: CHANGELOG.md no repositorio.)
 ' CHANGELOG 1.0.1 - 2026-08-07 20:35 - Etapa 4/6 (eixo precisao):
 '   Removidos todos os caracteres nao-ASCII (travessao e seta, que estavam
 '   apenas em comentarios). Mesma classe de risco ja corrigida nos .ps1 e
