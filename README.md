@@ -50,10 +50,15 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Vendas aguardando autorização da SEFAZ** aparecem na hora, com rótulo próprio. Vendedor e hora são herdados da gerencial de origem.
 
 ### Tempo real
-- **Fast-poll:** consulta leve a cada 50 ms numa conexão persistente com o Firebird. Detecta:
-  - venda nova, cancelamento e mudança de total;
-  - NFC-e autorizada;
-  - vendedor ou forma de pagamento preenchidos depois da venda.
+- **Fast-poll:** consulta leve a cada 50 ms numa conexão persistente com o Firebird, separada por tipo (**Gerencial, NFC-e e NF-e**, inclusive a NF-e gravada só na tabela VENDAS). Detecta:
+  - venda nova e cancelamento;
+  - total que **sobe ou desce** em cada tipo (o log mostra o sentido e a diferença, ex.: `NFC-e: total R$ 80,00 → R$ 90,00 (↑ +R$ 10,00)`);
+  - venda que **muda de tipo** com o mesmo valor (gerencial → NFC-e);
+  - venda alterada sem mudar quantidade nem total geral: **troca de vendedor**, de número ou valores que se compensam entre vendas;
+  - **troca de forma de pagamento** (ex.: Dinheiro → PIX) ou de valor entre pagamentos;
+  - NFC-e autorizada; vendedor ou forma de pagamento preenchidos depois da venda.
+
+  Cada venda e cada pagamento entram numa assinatura (hash) somada por tipo, numa única leitura por tabela. Se o Firebird não aceitar essa consulta, o fast-poll segue automaticamente no modo básico (quantidade e total), sem parar a detecção.
 - **Atualização automática do navegador por SSE** (Server-Sent Events), com polling HTTP como reserva.
 - Avisos na tela (toasts) para correções de horário.
 - **Aviso claro de servidor encerrado:** quando o servidor é encerrado ou a conexão cai por mais de 4 s, o relatório aberto mostra uma faixa no topo ("Servidor de relatórios encerrado", "Servidor reiniciando..." ou "Sem conexão com o servidor") e recarrega sozinho quando o servidor volta.

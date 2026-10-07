@@ -2,24 +2,34 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.11.0
+ * @version 2.12.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso.
  * @changelog
- *   2.11.0 - 2026-10-05 22:30 - Encerramento com mensagem clara. Antes, ao
- *                        encerrar (tray, Ctrl+C, /api/restart, queda), nada
- *                        avisava: o log não registrava e o relatório aberto
- *                        ficava parado na tela como se estivesse funcionando.
- *     - Encerramento único (_encerrarServidor): registra "=== Servidor
- *       encerrado: motivo ===" no relatorio.log, avisa as abas abertas por SSE,
- *       mata os subprocessos e sai. Usado por Ctrl+C/SIGTERM/SIGBREAK/SIGHUP,
- *       /api/restart e pela nova rota /api/encerrar (chamada pelo tray).
- *     - Saídas fora desse caminho registram "Servidor finalizado (código N)".
- *     - Relatório aberto: faixa fixa no topo "Servidor de relatórios
- *       encerrado" / "Servidor reiniciando..." / "Sem conexão com o servidor"
- *       (conexão perdida por mais de 4 s); a página recarrega sozinha quando o
- *       servidor volta.
+ *   2.12.0 - 2026-10-07 11:00 - Fast-poll com detecção completa por tipo.
+ *     A consulta antiga somava tudo (gerencial + NFC-e + NF-e + pagamentos) em
+ *     uma quantidade e um total, e era cega para mudanças que se compensam.
+ *     - Quantidade, total e ASSINATURA (soma de MOD(HASH(...))) por tipo:
+ *       Gerencial (99), NFC-e (65), NF-e (55) e outros; canceladas; NFC-e
+ *       aguardando autorização; vendas sem vendedor.
+ *     - Pagamentos: quantidade, total, assinatura de pedido|caixa|forma|valor
+ *       de todas as linhas do dia (troca Dinheiro → PIX agora é detectada).
+ *     - NF-e da tabela VENDAS (antes fora do fast-poll): quantidade, total,
+ *       assinatura e canceladas.
+ *     - Detecta: venda que muda de tipo com o mesmo valor, troca de vendedor,
+ *       valores que sobem numa venda e descem em outra, troca de forma de
+ *       pagamento. Log por tipo com sentido e diferença (↑/↓).
+ *     - Uma varredura por tabela (antes 3 a 4 na NFCE e 2 na PAGAMENT); 6 ms
+ *       num Firebird 3 de teste.
+ *     - HORA fora da assinatura: a correção de horário do próprio servidor
+ *       não dispara regeneração extra.
+ *     - Montada a partir das colunas reais (sondadas uma vez por banco, com
+ *       timeout) e testada ao conectar. Banco que não aceita a consulta
+ *       (sem HASH, coluna diferente) fica no modo básico; se ela passar a
+ *       falhar depois, o servidor testa a básica na mesma conexão e, se esta
+ *       funciona, muda para o modo básico em vez de entrar em laço de
+ *       reconexão.
  */
 
 
@@ -27,7 +37,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.11.0";
+const SERVER_VERSION = "2.12.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2173,6 +2183,251 @@ var _fpNumBlocos = function(temVendedor) { return temVendedor ? 5 : 4; };
 var _fpTemVendedor = null;  // null = ainda nao sondado; true/false = resultado do esquema
 var _FP_SQL = _montarFpSql(false); // substituido apos a sondagem em _fpConectar
 
+// ---------------------------------------------------------------------------
+// FAST-POLL COMPLETO (v2.12.0) — detecção por TIPO e por REGISTRO.
+// A consulta básica acima soma tudo (gerencial + NFC-e + NF-e + pagamentos) em
+// uma quantidade e um total. Ela é cega para mudanças que se compensam:
+//   - venda que muda de tipo com o mesmo valor (gerencial → NFC-e);
+//   - valor que sobe numa venda e cai em outra na mesma proporção;
+//   - troca de vendedor (A → B) ou de forma de pagamento (Dinheiro → PIX);
+//   - NF-e gravada só na tabela VENDAS (a básica olha só a NFCE).
+// A completa separa quantidade e total por tipo (Gerencial 99, NFC-e 65, NF-e
+// 55, outros), conta canceladas, e soma uma ASSINATURA por registro —
+// MOD(HASH(número|caixa|total|vendedor|modelo), 1000003) — que muda quando
+// qualquer um desses campos muda em qualquer venda, mesmo que quantidade e
+// total continuem iguais. Pagamentos: assinatura de pedido|caixa|forma|valor
+// de TODAS as linhas do dia. VENDAS (NF-e): quantidade, total e assinatura.
+// Uma varredura por tabela (antes: 3 a 4 na NFCE, 2 na PAGAMENT).
+// HORA fica de fora da assinatura de propósito: o próprio servidor corrige
+// horários (primeira visão) e isso não pode disparar outra regeneração.
+// Montada a partir do esquema real (colunas sondadas uma vez) e testada ao
+// conectar; se o banco não aceitar (Firebird sem HASH, coluna ausente), o
+// fast-poll segue no modo básico, sem perder a detecção.
+// ---------------------------------------------------------------------------
+var _FP_SIG_MOD = 1000003;
+var _fpHash = function(campos) {
+    return "MOD(HASH(" + campos.join(" || '|' || ") + "), " + _FP_SIG_MOD + ")";
+};
+var _fpTxt = function(col, tam) { return "COALESCE(TRIM(CAST(" + col + " AS VARCHAR(" + tam + "))),'')"; };
+
+// esquema: { NFCE:{COL:true}, PAGAMENT:{...}, VENDAS:{...} } (nomes em maiúsculas)
+// Devolve { sql, pares } ou null se faltar o mínimo.
+var _montarFpSqlCompleto = function(esquema) {
+    var nf = esquema.NFCE || {}, pg = esquema.PAGAMENT || {}, vd = esquema.VENDAS || {};
+    if (!nf.DATA || !nf.TOTAL || !pg.DATA || !pg.VALOR) return null;
+    var pares = 0;
+
+    // ── NFCE: uma varredura, agregada por tipo ────────────────────────────
+    var sigN = [];
+    if (nf.NUMERONF)  sigN.push(_fpTxt("numeronf", 60));
+    if (nf.GERENCIAL) sigN.push(_fpTxt("gerencial", 60));
+    if (nf.CAIXA)     sigN.push(_fpTxt("caixa", 30));
+    sigN.push("CAST(COALESCE(total,0) AS VARCHAR(30))");
+    if (nf.VENDEDOR)  sigN.push(_fpTxt("vendedor", 200));
+    var exprM  = nf.MODELO    ? "COALESCE(modelo,65)" : "65";
+    if (nf.MODELO)    sigN.push("CAST(" + exprM + " AS VARCHAR(5))");
+    var exprC  = nf.CANCELADO ? "IIF(COALESCE(cancelado,'N') IN ('S','T'),1,0)" : "0";
+    var exprSv = nf.VENDEDOR  ? "IIF(vendedor IS NULL OR TRIM(vendedor) = '',1,0)" : "0";
+    var nfce = "SELECT " + exprM + " AS m, " + exprC + " AS c, COALESCE(total,0) AS v, " +
+               _fpHash(sigN) + " AS s, " + exprSv + " AS sv" +
+               " FROM nfce WHERE data >= ? AND data < ? + 1";
+    pares++;
+    var tipos = [["G", "m = 99"], ["NFC", "m = 65"], ["NF", "m = 55"], ["OUT", "m NOT IN (99,65,55)"]];
+    var aggN = [];
+    tipos.forEach(function(t) {
+        var ok = "c = 0 AND v > 0 AND " + t[1];
+        aggN.push("COALESCE(SUM(IIF(" + ok + ",1,0)),0) AS " + t[0] + "_QT");
+        aggN.push("COALESCE(SUM(IIF(" + ok + ",v,0)),0) AS " + t[0] + "_TOT");
+        aggN.push("COALESCE(SUM(IIF(" + ok + ",s,0)),0) AS " + t[0] + "_SIG");
+    });
+    aggN.push("COALESCE(SUM(c),0) AS N_CANC");
+    aggN.push("COALESCE(SUM(IIF(c = 0 AND v <= 0 AND m IN (65,55),1,0)),0) AS N_PEND");
+    aggN.push("COALESCE(SUM(IIF(c = 0 AND v > 0 AND sv = 1,1,0)),0) AS N_SVEND");
+
+    // ── PAGAMENT ──────────────────────────────────────────────────────────
+    var sigP = [];
+    if (pg.PEDIDO) sigP.push(_fpTxt("pedido", 60));
+    if (pg.CAIXA)  sigP.push(_fpTxt("caixa", 30));
+    if (pg.FORMA)  sigP.push(_fpTxt("forma", 200));
+    sigP.push("CAST(COALESCE(valor,0) AS VARCHAR(30))");
+    var exprF2 = pg.FORMA ? "SUBSTRING(forma FROM 1 FOR 2)" : "CAST(NULL AS VARCHAR(2))";
+    var exprSf = pg.FORMA ? "IIF(forma IS NULL OR TRIM(forma) = '',1,0)" : "0";
+    var pag = "SELECT COALESCE(valor,0) AS v, " + exprF2 + " AS f2, " + exprSf + " AS sf, " +
+              _fpHash(sigP) + " AS s FROM pagament WHERE data >= ? AND data < ? + 1";
+    pares++;
+    var okP = "v > 0 AND f2 NOT IN ('00','13')";
+    var aggP = [
+        "COALESCE(SUM(IIF(" + okP + ",1,0)),0) AS PAG_QT",
+        "COALESCE(SUM(IIF(" + okP + ",v,0)),0) AS PAG_TOT",
+        "COUNT(*) AS PAG_N",
+        "COALESCE(SUM(s),0) AS PAG_SIG",
+        "COALESCE(SUM(sf),0) AS PAG_SFORMA"
+    ];
+
+    // ── VENDAS (NF-e) — só se a tabela tiver o mínimo ──────────────────────
+    var colDataV = vd.SAIDAD ? "saidad" : (vd.EMISSAO ? "emissao" : null);
+    var vendas = null, aggV = null;
+    if (colDataV && vd.NUMERONF && vd.TOTAL) {
+        var sigV = [_fpTxt("numeronf", 60), "CAST(COALESCE(total,0) AS VARCHAR(30))"];
+        if (vd.VENDEDOR)    sigV.push(_fpTxt("vendedor", 200));
+        if (vd.STATUS)      sigV.push(_fpTxt("status", 1000));
+        if (vd.DATA_CANCEL) sigV.push("COALESCE(CAST(data_cancel AS VARCHAR(30)),'')");
+        var exprCv = vd.DATA_CANCEL ? "IIF(data_cancel IS NULL,0,1)" : "0";
+        vendas = "SELECT COALESCE(total,0) AS v, " + exprCv + " AS c, " + _fpHash(sigV) + " AS s" +
+                 " FROM vendas WHERE " + colDataV + " >= ? AND " + colDataV + " < ? + 1" +
+                 (vd.MODELO ? " AND CAST(modelo AS VARCHAR(5)) = '55'" : "");
+        pares++;
+        aggV = [
+            "COALESCE(SUM(IIF(c = 0 AND v > 0,1,0)),0) AS NFV_QT",
+            "COALESCE(SUM(IIF(c = 0 AND v > 0,v,0)),0) AS NFV_TOT",
+            "COALESCE(SUM(s),0) AS NFV_SIG",
+            "COALESCE(SUM(c),0) AS NFV_CANC"
+        ];
+    }
+
+    var sql = "SELECT * FROM" +
+        " (SELECT " + aggN.join(", ") + " FROM (" + nfce + ") n1) tn" +
+        " CROSS JOIN (SELECT " + aggP.join(", ") + " FROM (" + pag + ") p1) tp" +
+        (vendas ? " CROSS JOIN (SELECT " + aggV.join(", ") + " FROM (" + vendas + ") v1) tv" : "");
+    return { sql: sql, pares: pares, temVendas: !!vendas };
+};
+
+// Campos lidos da consulta completa. tipo: "tot" compara com tolerância de
+// centavo; os demais comparam exatos.
+var _FP_CAMPOS = [
+    "G_QT", "G_TOT", "G_SIG", "NFC_QT", "NFC_TOT", "NFC_SIG", "NF_QT", "NF_TOT", "NF_SIG",
+    "OUT_QT", "OUT_TOT", "OUT_SIG", "N_CANC", "N_PEND", "N_SVEND",
+    "PAG_QT", "PAG_TOT", "PAG_N", "PAG_SIG", "PAG_SFORMA",
+    "NFV_QT", "NFV_TOT", "NFV_SIG", "NFV_CANC"
+];
+var _fpLerCompleto = function(r) {
+    var o = {};
+    _FP_CAMPOS.forEach(function(k) {
+        var v = r[k] !== undefined ? r[k] : r[k.toLowerCase()];
+        o[k] = Number(v || 0);
+        if (!isFinite(o[k])) o[k] = 0;
+    });
+    return o;
+};
+var _fpDiferente = function(a, b) {
+    for (var i = 0; i < _FP_CAMPOS.length; i++) {
+        var k = _FP_CAMPOS[i];
+        if (/_TOT$/.test(k) ? Math.abs(a[k] - b[k]) > 0.005 : a[k] !== b[k]) return true;
+    }
+    return false;
+};
+var _fpBRL = function(v) { return "R$ " + Number(v || 0).toFixed(2).replace(".", ","); };
+var _fpSinal = function(depois, antes) { return depois > antes ? "↑" : "↓"; };
+// Descreve, por tipo, o que mudou: quantidade e total com sentido (↑ subiu /
+// ↓ caiu) e diferença; "venda alterada" quando só a assinatura mudou.
+var _descreverMudancaCompleta = function(a, b) {
+    var partes = [];
+    [["G", "Gerencial"], ["NFC", "NFC-e"], ["NF", "NF-e"], ["NFV", "NF-e (VENDAS)"], ["OUT", "Outros"]].forEach(function(t) {
+        var p = t[0], sub = [];
+        var dq = b[p + "_QT"] - a[p + "_QT"], dt = b[p + "_TOT"] - a[p + "_TOT"];
+        if (dq !== 0) sub.push("vendas " + a[p + "_QT"] + " → " + b[p + "_QT"] + " (" + _fpSinal(b[p + "_QT"], a[p + "_QT"]) + " " + (dq > 0 ? "+" : "") + dq + ")");
+        if (Math.abs(dt) > 0.005) sub.push("total " + _fpBRL(a[p + "_TOT"]) + " → " + _fpBRL(b[p + "_TOT"]) + " (" + _fpSinal(b[p + "_TOT"], a[p + "_TOT"]) + " " + (dt > 0 ? "+" : "−") + _fpBRL(Math.abs(dt)) + ")");
+        if (!sub.length && b[p + "_SIG"] !== a[p + "_SIG"]) sub.push("venda alterada (número, vendedor, valor ou tipo)");
+        if (sub.length) partes.push(t[1] + ": " + sub.join(", "));
+    });
+    var dpt = b.PAG_TOT - a.PAG_TOT;
+    if (b.PAG_QT !== a.PAG_QT || Math.abs(dpt) > 0.005)
+        partes.push("Pagamentos: " + a.PAG_QT + " → " + b.PAG_QT + ", " + _fpBRL(a.PAG_TOT) + " → " + _fpBRL(b.PAG_TOT) + " (" + _fpSinal(b.PAG_TOT, a.PAG_TOT) + ")");
+    else if (b.PAG_SIG !== a.PAG_SIG || b.PAG_N !== a.PAG_N)
+        partes.push("Pagamentos: forma ou valor alterado");
+    if (b.N_CANC !== a.N_CANC)       partes.push("canceladas " + a.N_CANC + " → " + b.N_CANC);
+    if (b.NFV_CANC !== a.NFV_CANC)   partes.push("NF-e canceladas " + a.NFV_CANC + " → " + b.NFV_CANC);
+    if (b.N_PEND !== a.N_PEND)       partes.push("NFC-e aguardando autorização " + a.N_PEND + " → " + b.N_PEND);
+    if (b.N_SVEND !== a.N_SVEND)     partes.push("vendas sem vendedor " + a.N_SVEND + " → " + b.N_SVEND);
+    if (b.PAG_SFORMA !== a.PAG_SFORMA) partes.push("pagamentos sem forma " + a.PAG_SFORMA + " → " + b.PAG_SFORMA);
+    return partes.length ? partes.join(" | ") : "alteração detectada";
+};
+var _fpModo           = null;  // null = a decidir; "completo" | "basico"
+var _fpEsquema        = null;  // colunas sondadas (uma vez por banco)
+var _FP_SQL_COMPLETO  = null;
+var _fpParesCompleto  = 0;
+var _fpUltimoCompleto = null;  // último vetor visto no modo completo (null = sem baseline)
+
+// Sonda o esquema (NFCE, PAGAMENT, VENDAS) UMA vez por banco e decide o modo:
+// monta a consulta completa a partir das colunas que existem e a executa uma
+// vez de teste; se o banco recusar, fica no modo básico. Também define
+// _fpTemVendedor/_FP_SQL do modo básico (substitui a sondagem só de VENDEDOR).
+// Timeout de 3 s: sem ele, uma sondagem pendurada deixava _fpBusy preso e o
+// fast-poll parado para sempre.
+var _fpSondar = function(db, gen, done) {
+    var _fim = false;
+    var _t = setTimeout(function() {
+        if (_fim) return; _fim = true;
+        try { _matarConexao(db); } catch(_) {}
+        if (gen === _fpGen) _fpDb = null;
+        done();
+    }, 3000);
+    var concluir = function() { if (_fim) return; _fim = true; clearTimeout(_t); done(); };
+    db.query(
+        "SELECT TRIM(RDB$RELATION_NAME) AS T, TRIM(RDB$FIELD_NAME) AS C FROM RDB$RELATION_FIELDS " +
+        "WHERE TRIM(RDB$RELATION_NAME) IN ('NFCE','PAGAMENT','VENDAS')",
+        [],
+        function(err, rows) {
+            if (_fim || gen !== _fpGen) return concluir();
+            // Falha na sondagem: estado continua "a decidir" e tenta de novo na
+            // próxima conexão; enquanto isso roda o básico, que serve em qualquer esquema.
+            if (err || !rows) return concluir();
+            var esq = { NFCE: {}, PAGAMENT: {}, VENDAS: {} };
+            rows.forEach(function(r) {
+                var t = String(r.T || r.t || "").trim().toUpperCase(), c = String(r.C || r.c || "").trim().toUpperCase();
+                if (esq[t] && c) esq[t][c] = true;
+            });
+            _fpEsquema = esq;
+            var _vend = !!esq.NFCE.VENDEDOR;
+            if (_fpTemVendedor !== _vend) {
+                _fpTemVendedor = _vend;
+                _FP_SQL = _montarFpSql(_fpTemVendedor);
+                logDebug("FastPoll: coluna nfce.VENDEDOR " + (_vend ? "detectada" : "ausente") + ".");
+            }
+            var m = _montarFpSqlCompleto(esq);
+            if (!m) {
+                _fpModo = "basico";
+                logTs("FastPoll: modo básico (tabelas sem as colunas mínimas para a detecção completa).");
+                return concluir();
+            }
+            var dh = hoje(), prm = [];
+            for (var i = 0; i < m.pares; i++) prm.push(dh, dh);
+            db.query(m.sql, prm, function(e2, r2) {
+                if (_fim || gen !== _fpGen) return concluir();
+                if (e2 || !r2 || !r2.length) {
+                    _fpModo = "basico";
+                    logTs("FastPoll: consulta completa indisponível neste banco (" +
+                          _textoSeguroLog(e2 ? (e2.message || e2) : "sem linhas") + ") — usando o modo básico.");
+                } else {
+                    _fpModo = "completo";
+                    _FP_SQL_COMPLETO = m.sql;
+                    _fpParesCompleto = m.pares;
+                    logTs("FastPoll: modo completo — quantidade, total e assinatura por tipo " +
+                          "(Gerencial, NFC-e, NF-e" + (m.temVendas ? ", NF-e da tabela VENDAS" : "") +
+                          "), canceladas e pagamentos (forma/valor).");
+                }
+                concluir();
+            });
+        }
+    );
+};
+
+// Dispara a regeneração do dia (mata a geração em curso, que já está velha).
+var _fpRegerar = function(dh) {
+    var _ent = cache[dh];
+    if (_ent && _ent.gerando) {
+        var _killFn = _gerandoKill[dh];
+        _gerarIdCounter[dh] = (_gerarIdCounter[dh] || 0) + 1;
+        delete _gerandoKill[dh];
+        delete cache[dh];
+        gerarEmBackground(dh, dh, dh, true);
+        if (_killFn) { try { _killFn(); } catch(_) {} }
+    } else {
+        delete cache[dh];
+        gerarEmBackground(dh, dh, dh, true);
+    }
+};
+
 // Conecta (ou reconecta) a conexão persistente do fast-poll.
 // _done flag previne double-callback (timeout + attach concorrentes).
 var _fpConectar = function(cb) {
@@ -2203,55 +2458,11 @@ var _fpConectar = function(cb) {
             }
             if (err || !db) { _fpDb = null; cb(false); return; }
             _fpDb = db;
-            // Sonda se a tabela nfce tem a coluna VENDEDOR. Necessario porque
-            // _FP_SQL e' montado a partir desta checagem: referenciar coluna
-            // inexistente faria TODA consulta do fast-poll falhar, e a deteccao
-            // de vendas pararia por completo.
-            //
-            // BUG FIX (v2.7.9): a sondagem rodava — e LOGAVA — a cada reconexao.
-            // Num ambiente com Firebird remoto instavel, o fast-poll reconecta
-            // varias vezes por segundo; no log real do usuario isso gerou 6987
-            // de 7000 linhas (99,8%), ~17 por segundo, apagando todo o resto
-            // pela rotacao do arquivo. Alem do ruido, era uma query extra por
-            // reconexao contra um banco ja sobrecarregado, o que so' piorava a
-            // instabilidade que causava as reconexoes.
-            // O resultado e' propriedade do ESQUEMA do banco: nao muda entre
-            // reconexoes. Agora e' sondado UMA vez (estado nulo = ainda
-            // desconhecido) e reaproveitado; o log sai so' quando o valor e'
-            // determinado ou de fato muda (ex: troca do arquivo .fdb).
-            if (_fpTemVendedor !== null) { cb(true); return; }
-            db.query(
-                "SELECT COUNT(*) AS TEM FROM RDB$RELATION_FIELDS " +
-                "WHERE TRIM(RDB$RELATION_NAME) = 'NFCE' AND TRIM(RDB$FIELD_NAME) = 'VENDEDOR'",
-                [],
-                function(errV, rowsV) {
-                    if (errV) {
-                        // Falha na sondagem: NAO fixa o estado (segue null) para
-                        // tentar de novo na proxima conexao, e mantem a variante
-                        // sem VENDEDOR, que funciona em qualquer esquema.
-                        cb(true);
-                        return;
-                    }
-                    var _tem = 0;
-                    try {
-                        if (rowsV && rowsV[0]) {
-                            var r0 = rowsV[0];
-                            _tem = Number(r0.TEM || r0.tem || 0);
-                        }
-                    } catch(_) {}
-                    var _novo = _tem > 0;
-                    if (_fpTemVendedor !== _novo) {
-                        _fpTemVendedor = _novo;
-                        _FP_SQL = _montarFpSql(_fpTemVendedor);
-                        // logDebug: é informação de ESQUEMA do banco, não evento
-                        // operacional. Numa base sem a coluna a mensagem se repetia a
-                        // cada reinício do servidor sem nunca mudar de conteúdo.
-                        logDebug("FastPoll: coluna nfce.VENDEDOR " + (_fpTemVendedor ? "detectada" : "ausente") +
-                              " — monitoramento de vendedor " + (_fpTemVendedor ? "ativo" : "desativado") + ".");
-                    }
-                    cb(true);
-                }
-            );
+            // Esquema e modo (completo/básico) são sondados UMA vez por banco
+            // (v2.7.9: sondar a cada reconexão gerou 99,8% do log num Firebird
+            // instável). Ver _fpSondar.
+            if (_fpModo !== null) { cb(true); return; }
+            _fpSondar(db, _minhaGen, function() { cb(_minhaGen === _fpGen && _fpDb === db); });
         });
     } catch(syncErr) {
         // Firebird.attach nunca deveria lançar sincronamente, mas por segurança:
@@ -2277,10 +2488,16 @@ var _fpPoll = function() {
         _fpUltimoPend  = -1;
         _fpUltimoSvend  = -1;
         _fpUltimoSforma = -1;
+        _fpUltimoCompleto = null;
         logTs("FastPoll: virada de dia (" + _fpDhAtual + " → " + dh + ") — baseline resetado.");
     }
     _fpDhAtual = dh;
 
+    var _paramsBasico = function() {
+        var p = [];
+        for (var _b = 0; _b < _fpNumBlocos(_fpTemVendedor); _b++) { p.push(dh, dh); }
+        return p;
+    };
     var _executar = function() {
         // Watchdog: se query não responder em 2s → conexão morta
         var _wdFired = false;
@@ -2291,9 +2508,49 @@ var _fpPoll = function() {
             _fpBusy = false;
         }, 2000);
 
-        var _fpParams = [];
-        for (var _b = 0; _b < _fpNumBlocos(_fpTemVendedor); _b++) { _fpParams.push(dh, dh); }
-        _fpDb.query(_FP_SQL, _fpParams, function(err, rows) {
+        // ── Modo completo: por tipo + assinatura por registro ────────────
+        if (_fpModo === "completo" && _FP_SQL_COMPLETO) {
+            var _pc = [];
+            for (var _bc = 0; _bc < _fpParesCompleto; _bc++) { _pc.push(dh, dh); }
+            var _dbC = _fpDb;
+            _dbC.query(_FP_SQL_COMPLETO, _pc, function(errC, rowsC) {
+                if (_wdFired) return;
+                if (errC || !rowsC || !rowsC.length) {
+                    // A consulta completa falhou: foi ela (ex.: valor maior que o
+                    // CAST, função ausente) ou a conexão? Tenta a básica na MESMA
+                    // conexão. Se a básica funciona, o problema é da completa →
+                    // passa ao modo básico de vez (com log) em vez de derrubar a
+                    // detecção num laço de reconexões. Se falha também, é a conexão.
+                    _dbC.query(_FP_SQL, _paramsBasico(), function(errB, rowsB) {
+                        clearTimeout(_wdFp);
+                        if (_wdFired) return;
+                        if (!errB && rowsB && rowsB.length) {
+                            _fpModo = "basico";
+                            _fpUltimoCompleto = null;
+                            logTs("FastPoll: consulta completa passou a falhar (" +
+                                  _textoSeguroLog(errC ? (errC.message || errC) : "sem linhas") + ") — seguindo no modo básico.");
+                            _fpBusy = false;
+                            return;
+                        }
+                        try { if (_fpDb) _matarConexao(_fpDb); } catch(_) {}
+                        _fpDb   = null;
+                        _fpBusy = false;
+                    });
+                    return;
+                }
+                clearTimeout(_wdFp);
+                var atual = _fpLerCompleto(rowsC[0]);
+                if (_fpUltimoCompleto && _fpDiferente(_fpUltimoCompleto, atual)) {
+                    logTs("FastPoll: " + _descreverMudancaCompleta(_fpUltimoCompleto, atual) + " → regerando.");
+                    _fpRegerar(dh);
+                }
+                _fpUltimoCompleto = atual;
+                _fpBusy = false;
+            });
+            return;
+        }
+
+        _fpDb.query(_FP_SQL, _paramsBasico(), function(err, rows) {
             clearTimeout(_wdFp);
             // Se watchdog já disparou, descarta callback para evitar duplo processamento
             if (_wdFired) return;
@@ -2330,18 +2587,7 @@ var _fpPoll = function() {
                 // Ambos ocorrem em gerarEmBackground proc.on("close") quando HTML está pronto,
                 // garantindo que o browser recarregue direto para a página final sem paginaLoading.
 
-                var _ent = cache[dh];
-                if (_ent && _ent.gerando) {
-                    var _killFn = _gerandoKill[dh];
-                    _gerarIdCounter[dh] = (_gerarIdCounter[dh] || 0) + 1;
-                    delete _gerandoKill[dh];
-                    delete cache[dh];
-                    gerarEmBackground(dh, dh, dh, true);
-                    if (_killFn) { try { _killFn(); } catch(_) {} }
-                } else {
-                    delete cache[dh];
-                    gerarEmBackground(dh, dh, dh, true);
-                }
+                _fpRegerar(dh);
             }
 
             _fpUltimoQt    = qt;
@@ -2369,6 +2615,10 @@ var _iniciarFastPoll = function() {
     if (_fpIntervalId) clearInterval(_fpIntervalId);
     _fpGen++;               // invalida qualquer attach em voo da geração anterior
     _fpUltimoQt = _fpUltimoTot = _fpUltimoPend = _fpUltimoSvend = _fpUltimoSforma = -1;
+    // Banco novo (ou reconfigurado): esquema e modo voltam a ser sondados.
+    _fpUltimoCompleto = null;
+    _fpModo = null; _fpEsquema = null; _fpTemVendedor = null;
+    _FP_SQL = _montarFpSql(false); _FP_SQL_COMPLETO = null; _fpParesCompleto = 0;
     _fpDhAtual  = null;
     _fpBusy     = false;
     _fpConectando = false;  // libera o flag caso um attach anterior tenha ficado preso
