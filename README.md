@@ -64,7 +64,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
   - fast-poll **dividido pelos índices** (v2.15.0): ao conectar, o sistema lê no catálogo quais tabelas têm índice na coluna de data (`NFCE.DATA`, `PAGAMENT.DATA`, `VENDAS.SAIDAD`/`EMISSAO`). As que têm vão para a **consulta rápida** (até 1/4 do tempo do banco); as que não têm, para a **complementar** (1/12, entre 250 ms e 30 s). Se todas têm índice — ou nenhuma tem — fica uma **consulta única**, como antes. O log mostra a divisão e o tempo de cada parte, por exemplo: `FastPoll: consulta rápida (NFCE, com índice) ~13 ms → a cada ~52 ms | complementar (PAGAMENT, VENDAS (NF-e), sem índice) ~269 ms → a cada ~3228 ms`. Numa base como a da loja (índice só em `NFCE.DATA`, 300 mil vendas), a venda nova passou a ser detectada em ~327 ms em vez de ~730 ms;
   - um **gerador pré-aquecido** fica sempre pronto (Node e driver do Firebird já carregados) e só lê configuração, data e hora quando recebe a ordem;
   - o gerador avisa "HTML pronto" assim que grava o arquivo, sem esperar fechar as conexões com o banco;
-  - **um refresh por venda** (v2.15.2): o caixa grava a venda e o pagamento em transações separadas; quando a consulta rápida vê uma venda nova, o sistema relê os pagamentos até o dessa venda aparecer (no máximo 1,5 s) e gera o relatório **uma vez**, com tudo — antes, eram dois refresh (venda e, ~1 s depois, pagamento);
+  - **um refresh por movimento** (v2.15.3): o caixa grava venda e pagamento em transações separadas. A geração espera o movimento terminar: venda nova ou excluída espera o pagamento correspondente (até 1,5 s); gerencial convertido em NFC-e espera a autorização (até 8 s). Gera **uma vez**, com tudo — antes, eram 2 refresh por venda/exclusão e 3 por conversão;
   - a verificação completa (reserva do fast-poll) roda a cada 1 s — a cada 10 s enquanto o fast-poll completo está saudável — e não regera em dobro o que o fast-poll já regerou;
   - numa rajada de vendas, a geração em andamento **termina** e a próxima começa logo em seguida (antes, cada venda nova cancelava a geração e a tela só atualizava quando o movimento parava).
 
@@ -319,6 +319,16 @@ A **janela de correção** fica em *Configurações → Janela de correção de 
 
 Cada correção é registrada no log (`Hora corrigida na tela (banco não alterado)`) e avisada na tela.
 
+Se uma venda com hora fixada for **cancelada** ou **convertida** (gerencial → NFC-e/NF-e), a entrada dela no `hora-fixada-cache.json` passa a mostrar isso — a hora fixada não muda:
+
+```json
+"2026-10-07|63467": { "tipo": "gerencial", "hora": "12:55", "situacao": "cancelada" },
+"2026-10-07|63449": { "tipo": "gerencial", "hora": "11:48", "situacao": "convertida",
+                      "convertidaEm": { "tipo": "nfce", "numero": "125269" } }
+```
+
+Se a venda voltar a ficar ativa, os campos `situacao`/`convertidaEm` saem.
+
 ---
 
 ## Somente leitura
@@ -350,11 +360,28 @@ Arquivos que o sistema grava ficam **só na pasta dele** (`config.json`, `relato
 
 ## Logs e diagnóstico
 
-Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, instalador e removedor, no formato `[DD-MM-AAAA] [HH:MM:SS] mensagem`. A primeira linha de cada dia mostra as versões em uso:
+Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, instalador e removedor, no formato `[DD-MM-AAAA] [HH:MM:SS] [CATEGORIA] mensagem`. A categoria logo após o horário facilita achar e filtrar (por exemplo, procure `[VENDAS]`):
 
 ```
-[05-10-2026] [08:00:01] === Servidor iniciado 05/10/2026 === Servidor v2.10.0 | Gerador v3.3.0
+[07-10-2026] [08:00:01] [SERVIDOR] === Servidor iniciado 07/10/2026 === Servidor v2.15.4 | Gerador v3.8.0
+[07-10-2026] [08:00:06] [BANCO] Índices: NFCE.DATA, PAGAMENT.DATA — ok (consultas rápidas).
+[07-10-2026] [12:43:31] [VENDAS] FastPoll: Gerencial: vendas 30 → 31 (↑ +1), ... | Pagamentos: 40 → 41 ... → regerando.
 ```
+
+| Categoria | O que registra |
+|---|---|
+| `[VENDAS]` | Venda nova, alterada, excluída ou convertida detectada; hora corrigida; reconciliação gerencial → NF-e |
+| `[FASTPOLL]` | Detecção rápida: modo, ritmo das consultas, virada de dia |
+| `[BANCO]` | Conexão com o Firebird, caminho do FDB, índices, credenciais |
+| `[GERADOR]` | Geração do relatório (processo filho, HTML) |
+| `[SERVIDOR]` | Início, parada e reinício do servidor |
+| `[API]` | Chamadas de outros computadores (`api.ps1` etc.) |
+| `[NAVEGADOR]` | Erros enviados pela tela do relatório |
+| `[CONFIG]` | Configurações, proibidos, ícone |
+| `[REDE]` | IP da máquina |
+| `[TRAY]` / `[INSTALL]` / `[REMOVER]` | Ícone da bandeja, instalador e removedor |
+| `[DEBUG]` | Detalhes (só com `"logDebug": true`) |
+| `[SISTEMA]` | Demais mensagens e erros não tratados |
 
 - Chamadas à API vindas de **outros computadores** são registradas com IP e nome da máquina.
 - Para investigar desempenho, ative `"logDebug": true` no `config.json`.

@@ -2,11 +2,30 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.15.2
+ * @version 2.15.4
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
+ *   2.15.4 - 2026-10-07 22:00 - Log categorizado e cache de hora sem sobrescrever.
+ *     - Toda linha do relatorio.log leva a categoria logo após o horário:
+ *       [VENDAS], [FASTPOLL], [BANCO], [GERADOR], [SERVIDOR], [API],
+ *       [NAVEGADOR], [CONFIG], [REDE], [DEBUG], [SISTEMA] — além de [TRAY],
+ *       [INSTALL] e [REMOVER], que já existiam. Etiquetas antigas no meio da
+ *       mensagem ([BROWSER-ERROR], [FDB Manual]...) viraram categoria.
+ *       console.error/warn e exceções não tratadas também ganham horário e
+ *       categoria. A leitura das mensagens únicas do dia aceita os dois formatos.
+ *     - hora-fixada-cache.json: o disco prevalece sobre a cópia em memória do
+ *       servidor (lida no boot) — senão um reinício apagaria a "situacao"
+ *       (cancelada/convertida) que o gerador v3.8.0 grava.
+ *   2.15.3 - 2026-10-07 21:00 - Um refresh também na exclusão e na conversão em NFC-e.
+ *     - Log da loja: venda excluída ainda dava 2 refresh (a venda sai, depois
+ *       o pagamento) e gerencial convertido em NFC-e dava 3 (some do
+ *       gerencial e fica "aguardando autorização", vira NFC-e, muda o
+ *       pagamento). A espera passou a valer para QUALQUER mudança de
+ *       quantidade (entrou ou saiu: espera o pagamento, até 1,5 s) e para
+ *       NFC-e aguardando autorização (espera a autorização, até 8 s); a outra
+ *       parte é sempre lida uma vez antes de gerar. Uma geração por movimento.
  *   2.15.2 - 2026-10-07 20:00 - Um refresh por venda (não dois).
  *     - O caixa grava a venda (NFCE) e o pagamento (PAGAMENT) em transações
  *       separadas. A parte rápida via a venda e gerava; a complementar via o
@@ -69,7 +88,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.15.2";
+const SERVER_VERSION = "2.15.4";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -163,7 +182,15 @@ function logToFile(...args) {
         const msg = args.map(a => typeof a === "string" ? a : _util.inspect(a)).join(" ");
         const d = new Date();
         const ts = "[" + padDois(d.getDate()) + "-" + padDois(d.getMonth()+1) + "-" + d.getFullYear() + "]";
-        const linha = ts + " " + msg;
+        // Linha que não veio de logTs (console.error/warn, exceção não tratada):
+        // ganha horário e categoria aqui, no mesmo formato das demais (v2.15.4).
+        let corpo = msg;
+        if (!/^\[\d\d:\d\d:\d\d\] \[[A-Z]+\] /.test(corpo)) {
+            corpo = corpo.replace(/^ERROR:\s*/, "ERRO: ").replace(/^WARN:\s*/, "AVISO: ")
+                         .replace(/^\[(UNCAUGHT EXCEPTION|UNHANDLED REJECTION)\]\s*/, "ERRO não tratado: ");
+            corpo = "[" + padDois(d.getHours()) + ":" + padDois(d.getMinutes()) + ":" + padDois(d.getSeconds()) + "] [SISTEMA] " + corpo;
+        }
+        const linha = ts + " " + corpo;
         _logBuffer.push(linha);
         // PERF FIX: slice() criava novo array a cada push que ultrapassava o limite.
         // splice(0,1) remove o primeiro elemento in-place — O(1) vs O(n).
@@ -299,9 +326,69 @@ try { Firebird = _somenteLeitura(require("node-firebird")); } catch(e) {}
 // ---------------------------------------------------------------------------
 // Utilitarios
 // ---------------------------------------------------------------------------
-var logTs = function(msg) {
+// ---------------------------------------------------------------------------
+// CATEGORIAS DO LOG (v2.15.4)
+// ---------------------------------------------------------------------------
+// Toda linha do relatorio.log leva, logo depois do horário, a categoria entre
+// colchetes — para achar e filtrar rápido (ex.: procurar "[VENDAS]"):
+//   [DD-MM-AAAA] [HH:MM:SS] [VENDAS] FastPoll: Gerencial: vendas 30 → 31 ...
+// Categorias (as mesmas em todos os arquivos que gravam no log):
+//   VENDAS     venda nova/alterada/cancelada detectada, hora corrigida, reconciliação
+//   FASTPOLL   detecção rápida: modo, ritmo das consultas, virada de dia
+//   BANCO      conexão com o Firebird, FDB, índices, verificação de reserva
+//   GERADOR    geração do relatório (processo filho, HTML)
+//   SERVIDOR   início/parada/reinício do servidor, processos
+//   API        chamadas de outros computadores (api.ps1 etc.)
+//   NAVEGADOR  erros enviados pela tela do relatório
+//   CONFIG     configurações, proibidos, favicon
+//   REDE       IP da máquina
+//   DEBUG      detalhes (só com "logDebug": true no config.json)
+//   SISTEMA    o que não se encaixa acima
+//   TRAY / INSTALL / REMOVER  gravadas pelo ícone da bandeja e pelos .bat
+// A categoria vem do 2º argumento de logTs ou, sem ele, do início da
+// mensagem (tabela abaixo). Etiquetas antigas no começo da mensagem
+// ("[BROWSER-ERROR]", "[FDB Manual]", "[DEBUG]"...) viram a categoria.
+var _LOG_TAGS = [
+    // [etiqueta antiga no início da msg, categoria, texto que a substitui]
+    [/^\[DEBUG\]\s*/,                          "DEBUG",     ""],
+    [/^\[BROWSER-ERROR\]\s*\[API-CLIENTE\]\s*/, "API",       ""],
+    [/^\[BROWSER-ERROR\]\s*/,                  "NAVEGADOR", "Erro na tela: "],
+    [/^\[filho stderr\]\s*/,                   "GERADOR",   "Erro do gerador: "],
+    [/^\[FDB Manual\]\s*/,                     "BANCO",     "FDB manual: "]
+];
+// Ordem importa: a 1ª regra que casar decide.
+var _LOG_REGRAS = [
+    [/→ regerando|^Dados alterados|^Hora corrigida|^(AVISO )?RECONCILIACAO|^Dados atualizados durante/, "VENDAS"],
+    [/^===|Servidor pronto\.$| \| https?:\/\//,                                     "SERVIDOR"],
+    [/^Fast-?[Pp]oll|^FastPoll|^pollStatus/,                                        "FASTPOLL"],
+    [/^API: /,                                                                      "API"],
+    [/^(FDB|Banco|Arquivo (local|FDB))|credenciais/,                                "BANCO"],
+    [/[Cc]onfigura|^Janela de correção|[Ff]avicon|proibidos|config\.json/,           "CONFIG"],
+    [/maquinaIP/,                                                                   "REDE"],
+    [/servidor HTTP|^Servidor |taskkill|^Matando|_matarProcessoFilho/,              "SERVIDOR"],
+    [/[Bb]anco|FDB|Firebird|[Íí]ndices|^Poll: |^Verificando|^Escaneando|^Hosts com porta|credenciais|^Máximo de tentativas|^Timeout|itens-detalhe/, "BANCO"],
+    [/spawn|[Gg]era|HTML|<\/head>|<\/body>|proc\.close|agendarRegen|[Pp]eriodo|^Script /, "GERADOR"]
+];
+var _categoriaLog = function(msg, cat) {
+    var m = String(msg == null ? "" : msg);
+    for (var i = 0; i < _LOG_TAGS.length; i++) {
+        if (_LOG_TAGS[i][0].test(m)) {
+            m = _LOG_TAGS[i][2] + m.replace(_LOG_TAGS[i][0], "");
+            if (!cat) cat = _LOG_TAGS[i][1];
+            break;
+        }
+    }
+    if (!cat) {
+        for (var j = 0; j < _LOG_REGRAS.length; j++) {
+            if (_LOG_REGRAS[j][0].test(m)) { cat = _LOG_REGRAS[j][1]; break; }
+        }
+    }
+    return { cat: cat || "SISTEMA", msg: m };
+};
+var logTs = function(msg, categoria) {
     var d=new Date();
-    console.log("["+padDois(d.getHours())+":"+padDois(d.getMinutes())+":"+padDois(d.getSeconds())+"] "+msg);
+    var c = _categoriaLog(msg, categoria);
+    console.log("["+padDois(d.getHours())+":"+padDois(d.getMinutes())+":"+padDois(d.getSeconds())+"] ["+c.cat+"] "+c.msg);
 };
 
 // ---------------------------------------------------------------------------
@@ -710,14 +797,16 @@ try {
     var _logFullRaw = _fs.readFileSync(LOG_PATH, "utf8").split("\n");
     _logFullRaw.forEach(function(linha) {
         if (linha.indexOf("[" + _logProtDia) === 0) {
-            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(.+)$/);
+            // [data] [hora] [CATEGORIA] mensagem — a categoria (v2.15.4) é opcional
+            // para continuar lendo as linhas gravadas por versões anteriores.
+            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(?:\[[A-Z]+\]\s*)?(.+)$/);
             if (m) _logProtSet.add(m[1].trim());
         }
     });
 } catch(e) {
     _logBuffer.forEach(function(linha) {
         if (linha.indexOf("[" + _logProtDia) === 0) {
-            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(.+)$/);
+            var m = linha.match(/^\[[^\]]+\]\s*\[[^\]]+\]\s*(?:\[[A-Z]+\]\s*)?(.+)$/);
             if (m) _logProtSet.add(m[1].trim());
         }
     });
@@ -1167,9 +1256,15 @@ var _salvarHoraFixadaCache = (function() {
                 if (String(k).split("|")[0] < _dhHoje) return; // dias anteriores: descartados
                 _mesclado[k] = _disco[k];
             });
+            // v2.15.4: o DISCO prevalece. Desde a v2.14.0 este processo não cria
+            // nem altera entradas (quem grava é o gerador, inclusive a
+            // "situacao" de vendas canceladas/convertidas); a cópia em memória
+            // é a do boot e, se prevalecesse, apagaria essas atualizações a
+            // cada reinício. Da memória entra só o que faltar no disco.
             Object.keys(_horaFixadaCache).forEach(function(k) {
                 if (String(k).split("|")[0] < _dhHoje) return; // idem para a memória
-                _mesclado[k] = _horaFixadaCache[k];
+                if (_horaCacheRemovidas.has(k)) return;
+                if (!Object.prototype.hasOwnProperty.call(_mesclado, k)) _mesclado[k] = _horaFixadaCache[k];
             });
             _horaCacheRemovidas.clear();
             // ORDENAÇÃO FIX: reordena por (tipo, hora) antes de cada gravação —
@@ -1964,7 +2059,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
         _procEncerrado = true;
         clearTimeout(_spawnTimer);
         // Flush de qualquer conteúdo restante no buffer (linha sem \n final)
-        if (_stdoutBuf.trim()) { logTs(_stdoutBuf.trim()); }
+        if (_stdoutBuf.trim()) { logTs(_stdoutBuf.trim(), "GERADOR"); }
         _stdoutBuf = "";
         if (proc.pid) _spawnedPids = _spawnedPids.filter(function(p){ return p !== proc.pid; });
 
@@ -2654,20 +2749,36 @@ var _fpRegistrarParte = function(parte, ms) {
         _fpLogPartesFaixa = faixa; _fpLogPartesTs = Date.now();
     }
 };
-// ── Mudança pendente (v2.15.2): UM refresh por venda ────────────────────
-// O caixa grava a venda (NFCE) e o pagamento (PAGAMENT) em transações
-// separadas, com alguns centésimos de segundo entre elas. Com as duas partes,
-// a rápida via a venda e gerava, e a complementar via o pagamento ~1 s depois
-// e gerava DE NOVO — dois refresh por venda (já acontecia às vezes na consulta
-// única). Agora a mudança da parte rápida abre uma pendência: a complementar
-// roda NA HORA; se é venda nova, ela é relida (pausa de meia consulta) até o pagamento
-// aparecer (no máximo _FP_ESPERA_PAG_MS); então gera UMA vez, com tudo.
-// Outras mudanças (vendedor, cancelamento, valor) esperam só uma leitura.
-// Garantia: um temporizador gera de qualquer jeito se a complementar falhar.
+// ── Mudança pendente (v2.15.2/v2.15.3): UM refresh por movimento ───────
+// O caixa grava venda (NFCE) e pagamento (PAGAMENT) em transações separadas,
+// com alguns centésimos de segundo entre elas — e, com as duas partes do
+// fast-poll, cada tabela é vista numa leitura diferente. Gerar a cada leitura
+// que muda dava 2 ou 3 refresh por movimento (log da loja):
+//   - venda nova: venda e, ~1 s depois, o pagamento;
+//   - venda excluída: a venda sai e, depois, o pagamento sai;
+//   - gerencial convertido em NFC-e: some do gerencial e fica "aguardando
+//     autorização" (~2–3 s), vira NFC-e autorizada, e o pagamento muda.
+// Agora toda mudança abre uma PENDÊNCIA e a geração espera o movimento
+// terminar, com prazos curtos:
+//   - a outra parte é lida pelo menos uma vez depois da última mudança;
+//   - mudou a QUANTIDADE (venda entrou ou saiu): espera o pagamento mudar
+//     (relendo a cada meia consulta), no máximo _FP_ESPERA_PAG_MS;
+//   - NFC-e "aguardando autorização" subiu: espera a autorização (o
+//     pendente voltar), no máximo _FP_ESPERA_AUT_MS.
+// Então gera UMA vez, com tudo, e uma linha no log. Um temporizador gera de
+// qualquer jeito se as leituras falharem.
 var _FP_ESPERA_PAG_MS = 1500;
-var _fpPendente = null; // {a, dh, novaVenda, cMudou, ate, t}
-var _fpQtSubiu = function(antes, depois) {
-    return _FP_CAMPOS.some(function(k) { return /_QT$/.test(k) && depois[k] > antes[k]; });
+var _FP_ESPERA_AUT_MS = 8000;
+// Teto da pendência desde a 1ª mudança: com vendas chegando sem pausa, cada
+// mudança reabriria a espera e a tela nunca atualizaria.
+var _FP_PEND_MAX_MS = 2000, _FP_PEND_MAX_AUT_MS = 10000;
+var _fpTetoPendente = function(p) { return p.inicio + (p.esperaAut ? _FP_PEND_MAX_AUT_MS : _FP_PEND_MAX_MS); };
+var _fpPendente = null;
+var _FP_RE_QT = /^(G|NFC|NF|OUT|NFV)_QT$/;
+var _fpArmarPendente = function(p) {
+    clearTimeout(p.t);
+    var limite = Math.min(Math.max(p.atePag || 0, p.ateAut || 0, Date.now()) + 1500, _fpTetoPendente(p)) - Date.now();
+    p.t = setTimeout(function() { if (_fpPendente === p) _fpFecharPendente(); }, limite);
 };
 var _fpFecharPendente = function() {
     var p = _fpPendente;
@@ -2675,21 +2786,45 @@ var _fpFecharPendente = function() {
     _fpPendente = null;
     clearTimeout(p.t);
     var b = _fpJuntar(_fpUltN, _fpUltC);
+    if (!_fpDiferente(p.a, b)) return; // o movimento se desfez sozinho: nada a gerar
     logTs("FastPoll: " + _descreverMudancaCompleta(p.a, b) + " → regerando.");
     _fpRegerar(p.dh);
 };
-var _fpAbrirPendente = function(a, novaVenda, dh) {
-    _fpProxC = 0; // complementar na próxima volta do fast-poll
-    if (_fpPendente) { // outra mudança antes de fechar: junta na mesma
-        _fpPendente.novaVenda = _fpPendente.novaVenda || novaVenda;
-        return;
-    }
-    var p = { a: a, dh: dh, novaVenda: novaVenda, cMudou: false, ate: Date.now() + (novaVenda ? _FP_ESPERA_PAG_MS : 0) };
-    p.t = setTimeout(function() { if (_fpPendente === p) _fpFecharPendente(); }, _FP_ESPERA_PAG_MS + 1500);
-    _fpPendente = p;
-};
 var _fpDescartarPendente = function() {
     if (_fpPendente) { clearTimeout(_fpPendente.t); _fpPendente = null; }
+};
+// Chamada após CADA leitura bem-sucedida do modo completo em duas partes.
+// antes/depois = vetores completos (as duas partes) antes e depois da leitura.
+var _fpLeituraParte = function(parte, mudou, antes, depois, dh) {
+    var agora = Date.now();
+    var p = _fpPendente;
+    if (mudou) {
+        if (!p) {
+            p = _fpPendente = { a: antes, dh: dh, inicio: agora, esperaPag: false, pagOk: false, atePag: 0,
+                                esperaAut: false, autOk: false, ateAut: 0, t: null };
+        }
+        p.parteMud = parte; p.outroLido = false;
+        if (parte === "N") _fpProxC = 0; else _fpProxN = 0; // a outra parte, já
+        var qtMudou  = _FP_CAMPOS.some(function(k) { return _FP_RE_QT.test(k) && depois[k] !== antes[k]; });
+        var pagMudou = _FP_CAMPOS.some(function(k) { return /^PAG_/.test(k) && depois[k] !== antes[k]; });
+        if (qtMudou && !pagMudou) { p.esperaPag = true; p.pagOk = false; p.atePag = agora + _FP_ESPERA_PAG_MS; }
+        if (pagMudou) p.pagOk = true;
+        if (depois.N_PEND > antes.N_PEND) { p.esperaAut = true; p.autOk = false; p.ateAut = agora + _FP_ESPERA_AUT_MS; }
+        _fpArmarPendente(p);
+    } else if (!p) {
+        return;
+    } else if (parte !== p.parteMud) {
+        p.outroLido = true;
+    }
+    if (p.esperaAut && !p.autOk && depois.N_PEND <= p.a.N_PEND) p.autOk = true;
+    var pagPronto = !p.esperaPag || p.pagOk || agora >= p.atePag;
+    var autPronto = !p.esperaAut || p.autOk || agora >= p.ateAut;
+    if ((p.outroLido && pagPronto && autPronto) || agora >= _fpTetoPendente(p)) { _fpFecharPendente(); return; }
+    // Esperando o pagamento: relê a parte que tem a PAGAMENT logo (meia consulta).
+    if (!pagPronto) {
+        if (_fpEhCampoC("PAG_QT")) _fpProxC = Math.min(_fpProxC, agora + Math.max(50, Math.round(_fpMediaC * 0.5)));
+        else _fpProxN = Math.min(_fpProxN, agora + Math.max(50, Math.round(_fpMediaN * 0.5)));
+    }
 };
 var _fpUltimoOkTs     = 0;     // instante da última consulta rápida bem-sucedida
 // Fast-poll completo saudável = já cobre tudo que o pollStatus compara (e mais).
@@ -2988,21 +3123,11 @@ var _fpPoll = function() {
                     });
                 }
                 var _mudou = !!anterior && _fpDiferente(anterior, atual);
-                if (_parte === "N" && _mudou && _FP_SQL_C) {
-                    // Mudança na parte rápida: NÃO gera ainda — a mesma venda costuma
-                    // trazer, numa transação separada do caixa, o pagamento (na parte
-                    // complementar). Gerar já e de novo quando o pagamento aparecer
-                    // dava DOIS refresh por venda. Ver _fpPendente.
-                    _fpAbrirPendente(_fpJuntar(anterior, _fpUltC), _fpQtSubiu(anterior, atual), dh);
-                } else if (_parte === "C" && _fpPendente) {
-                    _fpPendente.cMudou = _fpPendente.cMudou || _mudou;
-                    if (!_fpPendente.novaVenda || _fpPendente.cMudou || Date.now() >= _fpPendente.ate) {
-                        _fpFecharPendente();
-                    } else {
-                        // Venda nova sem o pagamento ainda: relê logo (até o prazo). Folga
-                        // de meia consulta: só durante esta espera curta (≤ 1,5 s por venda).
-                        _fpProxC = Date.now() + Math.max(50, Math.round(_fpMediaC * 0.5));
-                    }
+                if (_FP_SQL_C && _fpUltN && _fpUltC) {
+                    // Duas partes: a geração espera o movimento terminar (ver
+                    // "Mudança pendente") — um refresh por venda/exclusão/conversão.
+                    var _antesJ = _parte === "N" ? _fpJuntar(anterior || atual, _fpUltC) : _fpJuntar(_fpUltN, anterior || atual);
+                    _fpLeituraParte(_parte, _mudou, _antesJ, _fpJuntar(_fpUltN, _fpUltC), dh);
                 } else if (_mudou) {
                     var _a = _parte === "N" ? _fpJuntar(anterior, _fpUltC) : _fpJuntar(_fpUltN, anterior);
                     var _b = _fpJuntar(_fpUltN, _fpUltC);
@@ -5092,6 +5217,11 @@ function _encerrarServidor(motivo, codigoSaida, reiniciando) {
     if (_encerrando) return;
     _encerrando = true;
     logTs("=== Servidor " + (reiniciando ? "reiniciando" : "encerrado") + ": " + motivo + " ===");
+    // Para a detecção já: sem isto, nos ~0,7 s até sair, o fast-poll (ou uma
+    // venda pendente esperando o pagamento) ainda registrava "→ regerando"
+    // DEPOIS da linha de encerramento.
+    try { if (_fpIntervalId) { clearInterval(_fpIntervalId); _fpIntervalId = null; } } catch(_) {}
+    try { _fpDescartarPendente(); } catch(_) {}
     try { broadcastSSE({ type: "encerrando", reiniciando: !!reiniciando }); } catch(_) {}
     try { clearTimeout(_logFlushTimer); _flushLog(); } catch(_) {}
     try { server.close(); } catch(_) {}

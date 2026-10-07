@@ -89,6 +89,39 @@ test("gerador: hora-fixada-cache.json preserva entradas gravadas por outro proce
     assert.match(cache[hojeISO() + "|200"].hora, /^\d{2}:\d{2}$/, "venda fora da tolerância deveria ter hora fixada");
 });
 
+test("gerador: hora-fixada-cache.json registra venda cancelada e gerencial convertida", () => {
+    const dir = montarPasta({}, { nfce: [
+        { numero: "300", hora: horaHaMin(10), modelo: 99 },
+        { numero: "301", hora: horaHaMin(10), modelo: 99 }
+    ] });
+    const lerCache = () => JSON.parse(fs.readFileSync(path.join(dir, "hora-fixada-cache.json"), "utf8"));
+    const alterar = fn => { const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8")); fn(st); fs.writeFileSync(path.join(dir, "estado.json"), JSON.stringify(st)); };
+    const k300 = hojeISO() + "|300", k301 = hojeISO() + "|301";
+    gerar(dir);
+    const hora300 = lerCache()[k300].hora;
+    assert.match(hora300, /^\d{2}:\d{2}$/, "gerencial ativa ganha hora fixada");
+    assert.strictEqual(lerCache()[k300].situacao, undefined, "ativa: sem situação");
+
+    // 300 cancelada; 301 convertida na NFC-e 125000 (linha nova aponta para ela).
+    alterar(st => {
+        st.nfce[0].canc = "S";
+        st.nfce[1].canc = "T";
+        st.nfce.push({ numero: "125000", hora: horaHaMin(1), modelo: 65, gerencial: "301" });
+    });
+    gerar(dir);
+    let c = lerCache();
+    assert.deepStrictEqual(c[k300], { tipo: "gerencial", hora: hora300, situacao: "cancelada" }, "cancelada, mesma hora");
+    assert.strictEqual(c[k301].situacao, "convertida");
+    assert.deepStrictEqual(c[k301].convertidaEm, { tipo: "nfce", numero: "125000" });
+
+    // 300 volta a ficar ativa: a situação sai, a hora continua a mesma.
+    alterar(st => { st.nfce[0].canc = "N"; });
+    gerar(dir);
+    c = lerCache();
+    assert.deepStrictEqual(c[k300], { tipo: "gerencial", hora: hora300 });
+    assert.strictEqual(c[k301].situacao, "convertida", "a outra não muda");
+});
+
 test("gerador: janela de correção de horário — padrão 3 h e valor configurado", () => {
     // Venda com hora 2 h atrás: dentro da janela padrão (180 min) → hora fixada;
     // com janela configurada em 60 min → fora da janela, nenhuma entrada no cache.
@@ -167,6 +200,13 @@ test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só
         const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
         assert.match(log, /Hora corrigida na tela \(banco não alterado\)/);
         assert.match(log, /Índices: NFCE\.DATA, PAGAMENT\.DATA — ok/, "deveria conferir os índices no catálogo");
+        // Log categorizado (v2.15.4): toda linha leva [CATEGORIA] após o horário.
+        const semCategoria = log.split("\n").filter(l => l.trim() && !/^\[\d\d-\d\d-\d{4}\] \[\d\d:\d\d:\d\d\] \[[A-Z]+\] /.test(l));
+        assert.deepStrictEqual(semCategoria, [], "linhas sem categoria no relatorio.log");
+        assert.match(log, /\] \[SERVIDOR\] === Servidor iniciado/);
+        assert.match(log, /\] \[BANCO\] Índices: /);
+        assert.match(log, /\] \[FASTPOLL\] FastPoll: modo completo/);
+        assert.match(log, /\] \[VENDAS\] Hora corrigida na tela/);
         assert.match(log, /FastPoll: modo completo em consulta única \(NFCE, PAGAMENT\) — todas as tabelas com índice/, "todas com índice: consulta única");
         assert.match(log, /FastPoll: consulta única \(NFCE, PAGAMENT\) ~\d+ ms → a cada ~\d+ ms/, "deveria registrar o tempo medido da consulta");
         const sql = lerSqlLog(dir);
@@ -398,7 +438,36 @@ test("servidor: venda e pagamento gravados em momentos diferentes geram UM refre
         const linhas = log().split("\n").filter(l => /FastPoll: .*→ regerando\./.test(l)).slice(r0);
         assert.strictEqual(linhas.length, 1, "deveria haver UMA detecção (venda + pagamento juntos):\n" + linhas.join("\n"));
         assert.match(linhas[0], /vendas 1 → 2 .*Pagamentos: 1 → 2/, "a linha deve trazer a venda e o pagamento");
+        assert.match(linhas[0], /\] \[VENDAS\] FastPoll: /, "detecção de venda na categoria [VENDAS]");
         assert.strictEqual(geracoes() - g0, 1, "deveria gerar o relatório UMA vez");
+
+        // Venda EXCLUÍDA: a venda sai e o pagamento sai 400 ms depois → um refresh.
+        const g2 = geracoes(), r2 = regerando();
+        alterar(st => { st.nfce = st.nfce.filter(r => r.numero !== "102"); });
+        await esperar(400);
+        alterar(st => { st.pag = st.pag.filter(r => r.numero !== "102"); });
+        await esperar(4000);
+        const lx = log().split("\n").filter(l => /FastPoll: .*→ regerando\./.test(l)).slice(r2);
+        assert.strictEqual(lx.length, 1, "exclusão: uma detecção (venda + pagamento):\n" + lx.join("\n"));
+        assert.match(lx[0], /vendas 2 → 1 .*Pagamentos: 2 → 1/);
+        assert.strictEqual(geracoes() - g2, 1, "exclusão: uma geração");
+
+        // Gerencial CONVERTIDO em NFC-e (como no caixa): some do gerencial e fica
+        // "aguardando autorização" (total 0) ~1,5 s, vira NFC-e autorizada e, logo
+        // depois, a forma do pagamento muda → antes 3 refresh, agora UM.
+        alterar(st => { st.nfce.push({ numero: "103", hora: horaHaMin(0.1), modelo: 99, total: 20 }); st.pag.push({ numero: "103", hora: horaHaMin(0.1), valor: 20 }); });
+        await esperar(4000);
+        const g3 = geracoes(), r3 = regerando();
+        alterar(st => { const v = st.nfce.find(r => r.numero === "103"); v.modelo = 65; v.total = 0; });
+        await esperar(1500);
+        alterar(st => { st.nfce.find(r => r.numero === "103").total = 20; });
+        await esperar(300);
+        alterar(st => { st.pag.find(r => r.numero === "103").forma = "05 PIX"; });
+        await esperar(4000);
+        const lc = log().split("\n").filter(l => /FastPoll: .*→ regerando\./.test(l)).slice(r3);
+        assert.strictEqual(lc.length, 1, "conversão em NFC-e: uma detecção:\n" + lc.join("\n"));
+        assert.match(lc[0], /Gerencial: vendas 1 → 0 .*NFC-e: vendas 1 → 2 .*Pagamentos: forma ou valor alterado/);
+        assert.strictEqual(geracoes() - g3, 1, "conversão em NFC-e: uma geração");
 
         // Mudança que não traz pagamento (troca de vendedor): gera logo, uma vez.
         const g1 = geracoes(), r1 = regerando();
