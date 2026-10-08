@@ -107,7 +107,7 @@ function query(sql, params, cb) {
                 const _resp = (st.nfce || []).map(r => ({
                     // r.canc: "S" = cancelada, "T" = gerencial convertida (vínculo na coluna
                     // GERENCIAL da NFC-e/NF-e nova, r.gerencial).
-                    DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: r.total === undefined ? 10 : r.total, CAIXA: "1", VENDEDOR_NFCE: "ANA",
+                    DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: r.total === undefined ? 10 : r.total, CAIXA: "1", VENDEDOR_NFCE: r.vendedor === undefined ? "ANA" : r.vendedor,
                     CANC: r.canc || "N", SIT: "", EMI: "", HORA: r.hora, CLI_NOME: "", NAT_OP: "",
                     VAL_NUMERONF: r.numero, VAL_GERENCIAL: r.gerencial || null
                 }));

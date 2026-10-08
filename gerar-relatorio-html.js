@@ -1,20 +1,19 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.1
+ * @version 3.8.2
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.1 - 2026-10-07 23:00 - Correções da varredura de bugs.
- *     - Situação no hora-fixada-cache.json: venda que vai para a tela é sempre "ativa",
- *       mesmo que outra linha com a mesma chave esteja cancelada (número repetido, NFC-e
- *       ainda sem número próprio); conversão reconhecida por QUALQUER número da gerencial
- *       (mesmo critério da tela) e antes do cancelamento (o PDV pode marcar a origem com
- *       'S' ao converter); NF-e da tabela VENDAS cancelada também ganha a situação;
- *       número de "convertidaEm" sempre sem zeros à esquerda.
- *     - Somente leitura: se a versão do node-firebird não puder ser lida (pacote que
- *       bloqueia o package.json), a transação continua readOnly — antes caía na forma
- *       de lista, que no driver 1.x/2.x vira transação de ESCRITA com espera.
+ *   3.8.2 - 2026-10-08 09:00 - Vendedores diferentes não são a mesma venda.
+ *     - O aviso POSSIVEL_DUPLICIDADE (gerencial × NFC-e/NF-e de mesmo valor, até 20 min
+ *       depois) comparava só valor e horário: gerencial 063538 (RICHARD) × NFC-e 125319
+ *       (GERENCIA) era apontada como possível duplicidade. Agora, se os DOIS vendedores
+ *       são conhecidos e diferentes, o par é descartado. Vendedor vazio, "?" ou
+ *       "(aguardando autorização)" — a NFC-e convertida só ganha vendedor depois da
+ *       SEFAZ — não descarta.
+ *     - A mesma regra vale na reconciliação gerencial → NF-e da tabela VENDAS, que
+ *       absorve a gerencial e muda o total do dia: com vendedores diferentes, não absorve.
  */
 
 (function() {
@@ -22,7 +21,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.1";
+    const SCRIPT_VERSION = "3.8.2";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -313,6 +312,16 @@
             const m = String(h || "").trim().match(/^(\d{1,2}):(\d{2})/);
             return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : null;
         };
+        // Vendedores diferentes = vendas diferentes (v3.8.2). Só vale quando os DOIS
+        // são conhecidos: vazio, "?" e rótulos como "(aguardando autorização)" — a
+        // NFC-e convertida chega sem vendedor até a SEFAZ autorizar — não descartam.
+        const vendedoresDiferentes = (a, b) => {
+            const norm = (v) => String(v == null ? "" : v).trim().toUpperCase()
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+            const x = norm(a), y = norm(b);
+            const conhecido = (v) => v !== "" && v !== "?" && !v.startsWith("(");
+            return conhecido(x) && conhecido(y) && x !== y;
+        };
 
         const linhas = Array.isArray(ctx.linhas) ? ctx.linhas : [];
         const totais = ctx.totais || {};
@@ -389,6 +398,7 @@
                     const dm = minutos(d.hora);
                     if (usados.has(i) || dm === null || d._dtKey !== g._dtKey) continue;
                     if (Math.abs(Number(d.total) - Number(g.total)) > 0.01 || dm - gm < 0 || dm - gm > toleranciaMin) continue;
+                    if (vendedoresDiferentes(g.vendedor, d.vendedor)) continue; // ex.: RICHARD × GERENCIA — vendas distintas
                     usados.add(i);
                     pares.push("gerencial " + g.numero + " × " + d.tipo + " " + d.numero + " (" + reais(g.total) + ")");
                     break;
@@ -1283,9 +1293,23 @@
 				}
 				_gerenciais99.sort((a, b) => a.gerHoraMin - b.gerHoraMin);
 
+				// Vendedores diferentes = vendas diferentes (v3.8.2). Só vale quando os DOIS
+				// são conhecidos: vazio, "?" e rótulos como "(aguardando autorização)" — a
+				// NFC-e convertida chega sem vendedor até a SEFAZ autorizar — não descartam.
+				const _vendedoresDiferentes = (a, b) => {
+				    const norm = (v) => String(v == null ? "" : v).trim().toUpperCase()
+				        .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+				    const x = norm(a), y = norm(b);
+				    const conhecido = (v) => v !== "" && v !== "?" && !v.startsWith("(");
+				    return conhecido(x) && conhecido(y) && x !== y;
+				};
 				for (const { gerKey, gerVenda, gerHoraMin } of _gerenciais99) {
 					const candidatas = _novasNfeParaReconciliar.filter(c => {
 						if (_nfeJaAbsorveu.has(c.key)) return false; // já usada por outra gerencial
+						// Mesma data/valor mas vendedores diferentes: são duas vendas — absorver
+						// a gerencial tiraria uma venda real do total do dia.
+						const _alvoC = mapVendas.get(c.key);
+						if (_alvoC && _vendedoresDiferentes(gerVenda.vendedor, _alvoC.vendedor)) return false;
 						if (c.dt !== gerVenda._dtKey) return false;
 						if (Math.abs(c.total - gerVenda.total_nfce) > TOLERANCIA_VALOR) return false;
 						if (c.horaMin === null) return false;

@@ -141,7 +141,10 @@ test("gerador: hora-fixada-cache.json registra venda cancelada e gerencial conve
     assert.strictEqual(c[k301].situacao, "convertida", "a outra não muda");
 });
 
-test("gerador: janela de correção de horário — padrão 3 h e valor configurado", () => {
+test("gerador: janela de correção de horário — padrão 3 h e valor configurado", (t) => {
+    // Venda de 2 h atrás com a data de hoje: antes das 02:05 ela cairia no dia anterior.
+    const agoraT = new Date();
+    if (agoraT.getHours() * 60 + agoraT.getMinutes() < 125) { t.skip("antes das 02:05 a venda de 2 h atrás não cabe no dia"); return; }
     // Venda com hora 2 h atrás: dentro da janela padrão (180 min) → hora fixada;
     // com janela configurada em 60 min → fora da janela, nenhuma entrada no cache.
     const estado = { nfce: [{ numero: "400", hora: horaHaMin(120) }] };
@@ -157,6 +160,23 @@ test("gerador: janela de correção de horário — padrão 3 h e valor configur
     let cache60 = {};
     try { cache60 = JSON.parse(fs.readFileSync(path.join(dir60, "hora-fixada-cache.json"), "utf8")); } catch (_) {}
     assert.strictEqual(cache60[chave], undefined, "com janela de 60 min a venda de 2 h atrás deveria ser ignorada");
+});
+
+test("gerador: aviso de possível duplicidade ignora gerencial e NFC-e de vendedores diferentes", () => {
+    // Caso real: gerencial 063538 (RICHARD) × NFC-e 125319 (GERENCIA), mesmo
+    // valor e 5 min depois — são duas vendas, não uma convertida.
+    const codigos = estado => {
+        const html = gerar(montarPasta({}, estado));
+        const dados = JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+        return ((dados.autoteste && dados.autoteste.achados) || []).map(a => a.codigo);
+    };
+    const venda = (vg, vn) => ({ nfce: [
+        { numero: "63538", hora: "10:00:00", modelo: 99, total: 19, vendedor: vg },
+        { numero: "125319", hora: "10:05:00", modelo: 65, total: 19, vendedor: vn }
+    ] });
+    assert.ok(!codigos(venda("RICHARD", "GERENCIA")).includes("POSSIVEL_DUPLICIDADE"), "vendedores diferentes: não é duplicidade");
+    assert.ok(codigos(venda("RICHARD", "RICHARD")).includes("POSSIVEL_DUPLICIDADE"), "mesmo vendedor: continua avisando");
+    assert.ok(codigos(venda("RICHARD", "")).includes("POSSIVEL_DUPLICIDADE"), "NFC-e sem vendedor (aguardando autorização): continua avisando");
 });
 
 test("padrão de fábrica: config.json do repositório sem dados de loja e sem proibidos embutidos", () => {
@@ -184,7 +204,13 @@ test("gerador: duplicata gerencial→NFC-e vai para o painel e sai da tabela", (
 });
 
 // ---------------------------------------------------------------------------
-test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só na tela, com linha de base", { timeout: 60000 }, async () => {
+test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só na tela, com linha de base", { timeout: 60000 }, async (t) => {
+    // As vendas do teste são "N minutos atrás" com a data de HOJE: perto da
+    // meia-noite elas cairiam no dia anterior (e virariam hora no futuro).
+    // Só usa os casos que cabem no dia de hoje.
+    const agoraT = new Date(), minHoje = agoraT.getHours() * 60 + agoraT.getMinutes();
+    if (minHoje < 35) { t.skip("logo após a meia-noite: os casos de 30 min atrás não cabem no dia"); return; }
+    const comGerenciais = minHoje >= 205; // 700 (2h30) e 701 (3h20) só cabem a partir das 03:25
     const dir = montarPasta({}, {
         nfce: [{ numero: "100", hora: horaHaMin(30) }, { numero: "101", hora: horaHaMin(0.2) }]
     });
@@ -203,18 +229,20 @@ test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só
         st.nfce.find(r => r.numero === "101").hora = horaHaMin(20);          // já vista → nunca corrigir
         st.nfce.push({ numero: "102", hora: horaHaMin(10) });                  // nova e velha → corrigir na tela
         st.nfce.push({ numero: "103", hora: horaHaMin(0.1) });                 // nova e recente → aceitar
-        st.nfce.push({ numero: "700", hora: horaHaMin(150), modelo: 99 });     // gerencial 2h30 → corrigir (janela 3 h)
-        st.nfce.push({ numero: "701", hora: horaHaMin(200), modelo: 99 });     // gerencial 3h20 → fora da janela
+        if (comGerenciais) {
+            st.nfce.push({ numero: "700", hora: horaHaMin(150), modelo: 99 }); // gerencial 2h30 → corrigir (janela 3 h)
+            st.nfce.push({ numero: "701", hora: horaHaMin(200), modelo: 99 }); // gerencial 3h20 → fora da janela
+        }
         gravarEstado(dir, st);
         for (let t = 0; t < 100 && !cacheHoras()[k("102")]; t++) await esperar(100);
         await esperar(500);
 
         c = cacheHoras();
         assert.ok(hhmm(c[k("102")]), "102 (nova, 10 min atrás) deveria ter a hora fixada na tela");
-        assert.ok(hhmm(c[k("700")]), "gerencial 700 (2h30 atrás) deveria ter a hora fixada na tela");
+        if (comGerenciais) assert.ok(hhmm(c[k("700")]), "gerencial 700 (2h30 atrás) deveria ter a hora fixada na tela");
         assert.strictEqual(c[k("101")].hora, "OK", "101 já tinha sido vista — não muda");
         assert.strictEqual(c[k("103")] && c[k("103")].hora, "OK", "103 é recente — aceita como está");
-        assert.strictEqual(c[k("701")], undefined, "701 está fora da janela — ignorada");
+        if (comGerenciais) assert.strictEqual(c[k("701")], undefined, "701 está fora da janela — ignorada");
 
         const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
         assert.match(log, /Hora corrigida na tela \(banco não alterado\)/);

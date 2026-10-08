@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.5 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.2 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -165,6 +165,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.8.2 — 2026-10-08 09:00
+
+**Vendedores diferentes não são a mesma venda.**
+
+- O aviso POSSIVEL_DUPLICIDADE (gerencial × NFC-e/NF-e de mesmo valor, até 20 min depois) comparava só valor e horário: gerencial 063538 (RICHARD) × NFC-e 125319 (GERENCIA) era apontada como possível duplicidade. Agora, se os DOIS vendedores são conhecidos e diferentes, o par é descartado. Vendedor vazio, "?" ou "(aguardando autorização)" — a NFC-e convertida só ganha vendedor depois da SEFAZ — não descarta.
+- A mesma regra vale na reconciliação gerencial → NF-e da tabela VENDAS, que absorve a gerencial e muda o total do dia: com vendedores diferentes, não absorve.
 
 ### 3.8.1 — 2026-10-07 23:00
 
