@@ -119,13 +119,13 @@ test("gerador: hora-fixada-cache.json registra venda cancelada e gerencial conve
     // cancelada e outra ativa = ativa (é a que está na tela).
     alterar(st => {
         st.nfce.push({ numero: "302", hora: horaHaMin(10), modelo: 99 });
-        st.nfce.push({ numero: "303", hora: horaHaMin(10), modelo: 65 });
+        st.nfce.push({ numero: "303", hora: horaHaMin(10), modelo: 65, total: 20 });
     });
     gerar(dir);
     alterar(st => {
         st.nfce.find(r => r.numero === "302").canc = "S";
         st.nfce.push({ numero: "125001", hora: horaHaMin(1), modelo: 65, gerencial: "302" });
-        st.nfce.push({ numero: "303", hora: horaHaMin(10), modelo: 65, canc: "S" });
+        st.nfce.push({ numero: "303", hora: horaHaMin(10), modelo: 65, total: 20, canc: "S" });
     });
     gerar(dir);
     c = lerCache();
@@ -175,8 +175,17 @@ test("gerador: aviso de possível duplicidade ignora gerencial e NFC-e de vended
         { numero: "125319", hora: "10:05:00", modelo: 65, total: 19, vendedor: vn }
     ] });
     assert.ok(!codigos(venda("RICHARD", "GERENCIA")).includes("POSSIVEL_DUPLICIDADE"), "vendedores diferentes: não é duplicidade");
-    assert.ok(codigos(venda("RICHARD", "RICHARD")).includes("POSSIVEL_DUPLICIDADE"), "mesmo vendedor: continua avisando");
-    assert.ok(codigos(venda("RICHARD", "")).includes("POSSIVEL_DUPLICIDADE"), "NFC-e sem vendedor (aguardando autorização): continua avisando");
+    // v3.8.3: mesmo vendedor (ou NFC-e ainda sem vendedor) = conversão — a
+    // reconciliação final resolve sozinha e o aviso não sobra.
+    assert.ok(!codigos(venda("RICHARD", "RICHARD")).includes("POSSIVEL_DUPLICIDADE"), "mesmo vendedor: absorvida, sem aviso pendente");
+    assert.ok(!codigos(venda("RICHARD", "")).includes("POSSIVEL_DUPLICIDADE"), "NFC-e sem vendedor: absorvida, sem aviso pendente");
+    // Itens dos dois lados sem nenhum em comum: são duas vendas — nem absorve, nem avisa.
+    const comItens = venda("RICHARD", "RICHARD");
+    comItens.alt = [{ pedido: "63538", desc: "CANETA AZUL", qtd: 1, total: 19 }, { pedido: "125319", desc: "CADERNO", qtd: 1, total: 19 }];
+    const htmlItens = gerar(montarPasta({}, comItens));
+    const dItens = JSON.parse(htmlItens.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+    assert.strictEqual(dItens.vendas.length, 2, "itens diferentes: as duas vendas ficam");
+    assert.ok(!dItens.autoteste.achados.some(a => a.codigo === "POSSIVEL_DUPLICIDADE"), "itens diferentes: não é duplicidade");
 });
 
 test("padrão de fábrica: config.json do repositório sem dados de loja e sem proibidos embutidos", () => {
@@ -201,6 +210,62 @@ test("gerador: duplicata gerencial→NFC-e vai para o painel e sai da tabela", (
     assert.strictEqual(dados.duplicatas.confirmadas.length, 1);
     assert.strictEqual(dados.duplicatas.confirmadas[0].gerencial, "300");
     assert.ok(!dados.vendas.some(v => v.numero === "300" || v.numero === "000300"), "gerencial absorvida continuou na tabela");
+});
+
+test("gerador: gerencial convertida sem vínculo é absorvida pelo documento fiscal usando os valores FINAIS", () => {
+    // Caso real (v3.8.3): o NFCE.TOTAL bruto da gerencial (1000) difere do total
+    // final (itens do ALTERACA = 1215,51) — a 1ª reconciliação não via o par,
+    // só o auto-teste. Agora o documento fiscal prevalece automaticamente.
+    const dir = montarPasta({}, {
+        nfce: [
+            { numero: "62418", hora: "10:00:00", modelo: 99, total: 1000, vendedor: "RICHARD" },
+            { numero: "306", hora: "10:07:00", modelo: 65, total: 1215.51, vendedor: "RICHARD" },
+            // Mesmo valor e janela, vendedores diferentes: duas vendas — fica tudo.
+            { numero: "63538", hora: "11:00:00", modelo: 99, total: 19, vendedor: "RICHARD" },
+            { numero: "125319", hora: "11:03:00", modelo: 65, total: 19, vendedor: "GERENCIA" }
+        ],
+        alt: [
+            { pedido: "62418", desc: "PRODUTO A", qtd: 1, total: 1000 },
+            { pedido: "62418", desc: "PRODUTO B", qtd: 1, total: 215.51 }
+        ]
+    });
+    const html = gerar(dir);
+    const dados = JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+    const num = v => String(v.numero).replace(/^0+/, "");
+    assert.ok(!dados.vendas.some(v => num(v) === "62418"), "gerencial convertida continuou na tabela");
+    const doc = dados.vendas.find(v => num(v) === "306");
+    assert.ok(doc, "o documento fiscal tem que continuar");
+    assert.ok(Math.abs(doc.total - 1215.51) < 0.001);
+    const par = dados.duplicatas.provaveis.find(d => String(d.gerencial).replace(/^0+/, "") === "62418");
+    assert.ok(par, "o par vai para o painel Duplicatas");
+    assert.strictEqual(String(par.docNumero).replace(/^0+/, ""), "306");
+    assert.strictEqual(par.docModelo, 65);
+    assert.ok(Math.abs(par.total - 1215.51) < 0.001, "total do par = total final da gerencial");
+    assert.ok(Array.isArray(par.itensDetalhe) && par.itensDetalhe.length === 2, "itens da gerencial seguem no par (para \"manter apenas a gerencial\")");
+    assert.ok(Math.abs(dados.totaisDia.geral - (1215.51 + 19 + 19)) < 0.001, "a venda não pode ser contada duas vezes");
+    assert.ok(dados.vendas.some(v => num(v) === "63538") && dados.vendas.some(v => num(v) === "125319"), "vendedores diferentes: as duas vendas ficam");
+    assert.ok(dados.autoteste && Array.isArray(dados.autoteste.achados), "auto-teste presente no relatório");
+    assert.ok(!dados.autoteste.achados.some(a => a.codigo === "POSSIVEL_DUPLICIDADE"), "par já resolvido não pode continuar no aviso do auto-teste");
+});
+
+test("gerador: gerencial absorvida pelos valores finais vira \"convertida\" no hora-fixada-cache.json", (t) => {
+    const agoraT = new Date(), minHoje = agoraT.getHours() * 60 + agoraT.getMinutes();
+    if (minHoje < 15) { t.skip("logo após a meia-noite: o caso de 10 min atrás não cabe no dia"); return; }
+    const dir = montarPasta({}, {
+        nfce: [{ numero: "62418", hora: horaHaMin(10), modelo: 99, total: 1000 }],
+        alt: [{ pedido: "62418", desc: "PRODUTO A", qtd: 1, total: 1215.51 }]
+    });
+    const lerCache = () => JSON.parse(fs.readFileSync(path.join(dir, "hora-fixada-cache.json"), "utf8"));
+    const k = hojeISO() + "|62418";
+    gerar(dir);
+    assert.ok(lerCache()[k], "gerencial ativa ganha hora fixada");
+    const st = JSON.parse(fs.readFileSync(path.join(dir, "estado.json"), "utf8"));
+    st.nfce.push({ numero: "306", hora: horaHaMin(5), modelo: 65, total: 1215.51 });
+    gravarEstado(dir, st);
+    gerar(dir);
+    const ent = lerCache()[k];
+    assert.strictEqual(ent.situacao, "convertida");
+    assert.deepStrictEqual(ent.convertidaEm, { tipo: "nfce", numero: "306" });
 });
 
 // ---------------------------------------------------------------------------

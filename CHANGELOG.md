@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.5 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.2 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.3 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -165,6 +165,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.8.3 — 2026-10-08 19:30
+
+**Gerencial convertida sai sozinha; escolha por par no painel Duplicatas.**
+
+- A reconciliação gerencial → NF-e comparava o NFCE.TOTAL/HORA BRUTOS da gerencial, mas o total exibido vem dos itens do ALTERACA (ou do PAGAMENT): o auto-teste via o par (gerencial 062418 × NF-e 000306, R$ 1215,51, mesmo vendedor) e a gerencial continuava na tela e na soma. Nova reconciliação FINAL sobre as linhas já calculadas, com o mesmo critério do auto-teste (mesma data, mesmo valor, documento 0–20 min depois, vendedores não diferentes) mais uma trava: com itens dos dois lados, precisa haver ao menos um item em comum (a mesma trava vale no aviso POSSIVEL_DUPLICIDADE). Cada documento absorve no máximo 1 gerencial; documento com vínculo pela coluna GERENCIAL fica de fora. Vale para NFC-e e NF-e. O documento fiscal sempre prevalece: herda pagamento, itens, vendedor e cliente que não tiver; a gerencial vira "convertida" no hora-fixada-cache.json.
+- Painel Duplicatas (fallback de dúvida), por par: "Manter apenas NF-e/NFC-e" (padrão), "Manter as duas", "Manter apenas a gerencial" e "Perguntar depois". Escolha salva no navegador; totais do dia e por vendedor acompanham; pares já decididos aparecem no painel para trocar a escolha (vale na próxima atualização).
 
 ### 3.8.2 — 2026-10-08 09:00
 

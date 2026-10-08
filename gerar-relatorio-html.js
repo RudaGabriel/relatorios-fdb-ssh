@@ -1,19 +1,25 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.2
+ * @version 3.8.3
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.2 - 2026-10-08 09:00 - Vendedores diferentes não são a mesma venda.
- *     - O aviso POSSIVEL_DUPLICIDADE (gerencial × NFC-e/NF-e de mesmo valor, até 20 min
- *       depois) comparava só valor e horário: gerencial 063538 (RICHARD) × NFC-e 125319
- *       (GERENCIA) era apontada como possível duplicidade. Agora, se os DOIS vendedores
- *       são conhecidos e diferentes, o par é descartado. Vendedor vazio, "?" ou
- *       "(aguardando autorização)" — a NFC-e convertida só ganha vendedor depois da
- *       SEFAZ — não descarta.
- *     - A mesma regra vale na reconciliação gerencial → NF-e da tabela VENDAS, que
- *       absorve a gerencial e muda o total do dia: com vendedores diferentes, não absorve.
+ *   3.8.3 - 2026-10-08 19:30 - Gerencial convertida sai sozinha; escolha por par no painel Duplicatas.
+ *     - A reconciliação gerencial → NF-e comparava o NFCE.TOTAL/HORA BRUTOS da gerencial,
+ *       mas o total exibido vem dos itens do ALTERACA (ou do PAGAMENT): o auto-teste via o
+ *       par (gerencial 062418 × NF-e 000306, R$ 1215,51, mesmo vendedor) e a gerencial
+ *       continuava na tela e na soma. Nova reconciliação FINAL sobre as linhas já
+ *       calculadas, com o mesmo critério do auto-teste (mesma data, mesmo valor, documento
+ *       0–20 min depois, vendedores não diferentes) mais uma trava: com itens dos dois
+ *       lados, precisa haver ao menos um item em comum (a mesma trava vale no aviso
+ *       POSSIVEL_DUPLICIDADE). Cada documento absorve no máximo 1 gerencial; documento com
+ *       vínculo pela coluna GERENCIAL fica de fora. Vale para NFC-e e NF-e. O documento fiscal sempre prevalece: herda pagamento, itens, vendedor e
+ *       cliente que não tiver; a gerencial vira "convertida" no hora-fixada-cache.json.
+ *     - Painel Duplicatas (fallback de dúvida), por par: "Manter apenas NF-e/NFC-e"
+ *       (padrão), "Manter as duas", "Manter apenas a gerencial" e "Perguntar depois".
+ *       Escolha salva no navegador; totais do dia e por vendedor acompanham; pares já
+ *       decididos aparecem no painel para trocar a escolha (vale na próxima atualização).
  */
 
 (function() {
@@ -21,7 +27,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.2";
+    const SCRIPT_VERSION = "3.8.3";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -322,6 +328,18 @@
             const conhecido = (v) => v !== "" && v !== "?" && !v.startsWith("(");
             return conhecido(x) && conhecido(y) && x !== y;
         };
+        // Itens dos DOIS lados e nenhum em comum = vendas diferentes (v3.8.3) — mesma
+        // regra da reconciliação final do gerador (descrição normalizada, 20 caracteres).
+        const itensIncompativeis = (a, b) => {
+            const descs = (l) => new Set((Array.isArray(l && l.itensDetalhe) ? l.itensDetalhe : [])
+                .map((it) => String(it && it.desc || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                    .toUpperCase().replace(/\s+/g, " ").trim().slice(0, 20))
+                .filter(Boolean));
+            const x = descs(a), y = descs(b);
+            if (x.size === 0 || y.size === 0) return false;
+            for (const d of x) if (y.has(d)) return false;
+            return true;
+        };
 
         const linhas = Array.isArray(ctx.linhas) ? ctx.linhas : [];
         const totais = ctx.totais || {};
@@ -399,6 +417,7 @@
                     if (usados.has(i) || dm === null || d._dtKey !== g._dtKey) continue;
                     if (Math.abs(Number(d.total) - Number(g.total)) > 0.01 || dm - gm < 0 || dm - gm > toleranciaMin) continue;
                     if (vendedoresDiferentes(g.vendedor, d.vendedor)) continue; // ex.: RICHARD × GERENCIA — vendas distintas
+                    if (itensIncompativeis(g, d)) continue; // itens sem nada em comum — vendas distintas
                     usados.add(i);
                     pares.push("gerencial " + g.numero + " × " + d.tipo + " " + d.numero + " (" + reais(g.total) + ")");
                     break;
@@ -973,12 +992,22 @@
 			const _dedupFundidas = [];   // NF-e fundidas por virem das duas tabelas com números diferentes
 
 			const _gerenciaisAbsorvidasPorDocFiscal = new Map(); // gerencial (id) -> {docNumero, docModelo}
+			// Chaves "dt|número" de documentos fiscais que JÁ têm vínculo pela coluna
+			// GERENCIAL — não entram na reconciliação final por valor (v3.8.3).
+			const _docsComVinculo = new Set();
 			if (validCols.includes("GERENCIAL")) {
 				for (const n of rNfce.rows) {
 					const _modeloDoc = Number(n.MODELO || 0);
 					if (_modeloDoc !== 65 && _modeloDoc !== 55) continue; // só documento fiscal válido conta
 					if (n.CANC === 'S' || n.CANC === 'T' || n.SIT === 'C' || n.EMI === 'C') continue; // o próprio doc não pode estar cancelado/rejeitado
 					const _gVal = String(n.VAL_GERENCIAL || "").trim().replace(/^0+/, "");
+					if (_gVal) {
+						const _dtDoc = toISO(n.DATA);
+						for (const c of validCols) {
+							const _idDoc = String(n["VAL_" + c] || "").trim().replace(/^0+/, "");
+							if (_idDoc && _idDoc !== _gVal) _docsComVinculo.add(_dtDoc + "|" + _idDoc);
+						}
+					}
 					if (!_gVal || _gerenciaisAbsorvidasPorDocFiscal.has(_gVal)) continue;
 					const _docNumero = validCols.map(c => String(n["VAL_" + c] || "").trim().replace(/^0+/, "")).find(v => v && v !== _gVal) || "?";
 					_gerenciaisAbsorvidasPorDocFiscal.set(_gVal, { docNumero: _docNumero, docModelo: _modeloDoc });
@@ -1280,6 +1309,19 @@
 			// deixa duas gerenciais desaparecerem em cima do mesmo documento.
 			const TOLERANCIA_VALOR = 0.01;      // R$ — mesma régua de arredondamento do resto do sistema
 			const TOLERANCIA_MINUTOS = 20;      // janela de emissão da NF-e após o fechamento da gerencial
+			// Vendedores diferentes = vendas diferentes (v3.8.2). Só vale quando os DOIS
+			// são conhecidos: vazio, "?" e rótulos como "(aguardando autorização)" — a
+			// NFC-e convertida chega sem vendedor até a SEFAZ autorizar — não descartam.
+			const _vendedoresDiferentes = (a, b) => {
+			    const norm = (v) => String(v == null ? "" : v).trim().toUpperCase()
+			        .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+			    const x = norm(a), y = norm(b);
+			    const conhecido = (v) => v !== "" && v !== "?" && !v.startsWith("(");
+			    return conhecido(x) && conhecido(y) && x !== y;
+			};
+			// Documentos (chave do mapVendas) que já absorveram 1 gerencial nesta
+			// reconciliação — a passada final (v3.8.3) não os usa de novo.
+			const _docsQueAbsorveram = new Set();
 			if (_novasNfeParaReconciliar.length > 0) {
 				const _nfeJaAbsorveu = new Set(); // key da NF-e -> já usada, não pode absorver 2ª gerencial
 				// Ordena gerenciais por horário para casar de forma determinística
@@ -1293,16 +1335,6 @@
 				}
 				_gerenciais99.sort((a, b) => a.gerHoraMin - b.gerHoraMin);
 
-				// Vendedores diferentes = vendas diferentes (v3.8.2). Só vale quando os DOIS
-				// são conhecidos: vazio, "?" e rótulos como "(aguardando autorização)" — a
-				// NFC-e convertida chega sem vendedor até a SEFAZ autorizar — não descartam.
-				const _vendedoresDiferentes = (a, b) => {
-				    const norm = (v) => String(v == null ? "" : v).trim().toUpperCase()
-				        .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
-				    const x = norm(a), y = norm(b);
-				    const conhecido = (v) => v !== "" && v !== "?" && !v.startsWith("(");
-				    return conhecido(x) && conhecido(y) && x !== y;
-				};
 				for (const { gerKey, gerVenda, gerHoraMin } of _gerenciais99) {
 					const candidatas = _novasNfeParaReconciliar.filter(c => {
 						if (_nfeJaAbsorveu.has(c.key)) return false; // já usada por outra gerencial
@@ -1328,6 +1360,7 @@
 					if (!alvo.cliente  && gerVenda.cliente)  alvo.cliente  = gerVenda.cliente;
 					alvo._gerencialOrigemNumero = gerVenda.numero;
 					_nfeJaAbsorveu.add(escolhida.key);
+					_docsQueAbsorveram.add(escolhida.key);
 					// CORREÇÃO (v3.0.0) — recebimento duplicado: antes, o idIndex da gerencial
 					// era apagado. Os pagamentos dela (PAGAMENT) deixavam de achar a venda e o
 					// Pass 2 criava um "recebimento fantasma" (modelo 99, is_recebimento) com o
@@ -1344,7 +1377,7 @@
 					const _obs = candidatas.length > 1 ? ` (${candidatas.length} candidatas disponíveis, escolhida a mais próxima)` : "";
 					console.log(`RECONCILIACAO: Gerencial ${gerVenda.numero} absorvida pela NF-e ${alvo.numero} (mesma data/valor, ${escolhida.horaMin - gerHoraMin}min depois)${_obs}.`);
 					_duplicatasProvaveis.push({
-						gerencial: gerVenda.numero, docNumero: alvo.numero, diffMin: escolhida.horaMin - gerHoraMin,
+						gerencial: gerVenda.numero, docNumero: alvo.numero, docModelo: 55, diffMin: escolhida.horaMin - gerHoraMin,
 						ambiguo: candidatas.length > 1,
 						// Campos extras (v2.9.0) — ver comentário em _duplicatasConfirmadas.push acima.
 						dt: gerVenda._dtKey, hora: gerVenda.hora, caixa: gerVenda.caixa,
@@ -1681,6 +1714,7 @@
 			for (const [k, v] of mapVendas) if (!v.is_recebimento && _situacaoCache.get(k)) _situacaoCache.set(k, null);
 
 			const linhas = [];
+			const _chaveLinha = new Map(); // linha -> chave do mapVendas ("dt|número"), uso interno
 
 
 			// _normForma fora do loop — evita recriar a função a cada iteração
@@ -1858,6 +1892,7 @@
 					// Preservado para impedir reclassificação indevida como NF-e
 					is_recebimento: !!v.is_recebimento
 				});
+				_chaveLinha.set(linhas[linhas.length - 1], key);
 			}
 			
 			linhas.sort((a, b) => {
@@ -1908,6 +1943,109 @@
 				if (_reNfe.test(_formaBruta) || _tokensNorm.includes("NFE")) {
 					x.modelo = 55;
 					x.tipo   = "nf-e";
+				}
+			}
+
+			// ── Reconciliação FINAL Gerencial → NFC-e/NF-e (v3.8.3) ──────────────────
+			// A reconciliação acima roda antes de PAGAMENT/ALTERACA e compara o
+			// NFCE.TOTAL/NFCE.HORA BRUTOS da gerencial. Só que o total exibido da
+			// gerencial vem da soma dos itens do ALTERACA (ou do PAGAMENT) e a hora
+			// pode vir do ALTERACA: o auto-teste (que olha o resultado final) via o
+			// par e a reconciliação não — caso real: gerencial 062418 × NF-e 000306,
+			// R$ 1215,51, mesmo vendedor, convertida no SmallSoft e ainda listada aqui.
+			// Esta passada aplica o MESMO critério do auto-teste às LINHAS FINAIS:
+			// mesma data, mesmo valor (±0,01), documento fiscal emitido 0–20 min
+			// DEPOIS, vendedores não diferentes. Travas mantidas: cada documento
+			// absorve no máximo 1 gerencial (a mais cedo vence; empate de candidatos
+			// fica marcado como ambíguo) e documento que já tem vínculo pela coluna
+			// GERENCIAL ou já absorveu uma gerencial não entra. O documento fiscal
+			// SEMPRE prevalece; a gerencial sai da lista e da soma e vai para o painel
+			// Duplicatas, onde o usuário pode escolher manter as duas ou só a gerencial.
+			{
+				const _ehDocFiscal = (l) => (l.modelo === 65 || l.modelo === 55) && !l.is_recebimento;
+				const _docsLivres = linhas.filter((l) => {
+					if (!_ehDocFiscal(l)) return false;
+					const k = _chaveLinha.get(l);
+					return !_docsComVinculo.has(k) && !_docsQueAbsorveram.has(k);
+				});
+				const _gersFinais = linhas
+					.filter((l) => l.modelo === 99 && !l.is_recebimento && Number(l.total) > 0)
+					.map((l) => ({ l, m: _horaParaMinutos(l.hora) }))
+					.filter((g) => g.m !== null)
+					.sort((a, b) => a.m - b.m);
+				// Rótulos que o gerador usa quando NÃO há forma de pagamento conhecida.
+				const _semForma = (p) => {
+					const t = String(p || "").trim().toLowerCase();
+					return t === "" || t === "não identificado" || t === "aguardando autorização" || t === "não declarado";
+				};
+				const _vendConhecido = (v) => { const t = String(v || "").trim(); return t !== "" && t !== "?" && !t.startsWith("("); };
+				// Itens normalizados (descrição sem acento, maiúscula, 20 primeiros caracteres —
+				// ALTERACA e ITENS001 podem truncar diferente). Os DOIS lados com itens e
+				// NENHUM em comum = vendas diferentes, mesmo com valor/vendedor/horário iguais.
+				const _descsItens = (l) => new Set((Array.isArray(l.itensDetalhe) ? l.itensDetalhe : [])
+					.map((it) => String(it && it.desc || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+						.toUpperCase().replace(/\s+/g, " ").trim().slice(0, 20))
+					.filter(Boolean));
+				const _itensIncompativeis = (a, b) => {
+					const x = _descsItens(a), y = _descsItens(b);
+					if (x.size === 0 || y.size === 0) return false;
+					for (const dsc of x) if (y.has(dsc)) return false;
+					return true;
+				};
+				const _remover = new Set();
+				const _docUsado = new Set();
+				for (const { l: g, m: gm } of _gersFinais) {
+					const _cands = [];
+					for (const d of _docsLivres) {
+						if (_docUsado.has(d)) continue;
+						if (d._dtKey !== g._dtKey) continue;
+						if (Math.abs(Number(d.total) - Number(g.total)) > TOLERANCIA_VALOR) continue;
+						const dm = _horaParaMinutos(d.hora);
+						if (dm === null) continue;
+						const diff = dm - gm; // documento fiscal sempre emitido DEPOIS da gerencial
+						if (diff < 0 || diff > TOLERANCIA_MINUTOS) continue;
+						if (_vendedoresDiferentes(g.vendedor, d.vendedor)) continue;
+						if (_itensIncompativeis(g, d)) continue;
+						_cands.push({ d, diff });
+					}
+					if (_cands.length === 0) continue;
+					_cands.sort((a, b) => a.diff - b.diff);
+					const { d, diff } = _cands[0];
+					_docUsado.add(d);
+					_remover.add(g);
+					// Dado fiscal presente no documento prevalece; da gerencial só entra
+					// o que o documento não tem (vendedor, cliente, pagamento, itens).
+					if (!_vendConhecido(d.vendedor) && _vendConhecido(g.vendedor)) d.vendedor = g.vendedor;
+					if (!String(d.cliente || "").trim() && g.cliente) d.cliente = g.cliente;
+					const _docTemForma = d.formasValores && Object.keys(d.formasValores).length > 0;
+					if (!_docTemForma && g.formasValores && Object.keys(g.formasValores).length > 0) {
+						d.formasValores = { ...g.formasValores };
+						if (_semForma(d.pagamentos) && !_semForma(g.pagamentos)) d.pagamentos = g.pagamentos;
+					}
+					if ((!Array.isArray(d.itensDetalhe) || d.itensDetalhe.length === 0) && Array.isArray(g.itensDetalhe) && g.itensDetalhe.length > 0) {
+						d.itensDetalhe = g.itensDetalhe.slice();
+						if (!d.itens && g.itens) d.itens = g.itens;
+					}
+					const _gerKey = _chaveLinha.get(g);
+					const _numDoc = String(d.numero || "").replace(/^0+/, "") || String(d.numero || "");
+					if (_gerKey) _situacaoCache.set(_gerKey, { situacao: "convertida", convertidaEm: { tipo: _tipoDoModelo(d.modelo), numero: _numDoc } });
+					const _rotDoc = d.modelo === 65 ? "NFC-e" : "NF-e";
+					const _obs = _cands.length > 1 ? ` (${_cands.length} candidatas, escolhida a mais próxima)` : "";
+					console.log(`RECONCILIACAO: Gerencial ${g.numero} absorvida pela ${_rotDoc} ${d.numero} (valores finais: mesma data/valor/vendedor, ${diff}min depois)${_obs}.`);
+					_duplicatasProvaveis.push({
+						gerencial: g.numero, docNumero: d.numero, docModelo: d.modelo, diffMin: diff,
+						ambiguo: _cands.length > 1,
+						dt: g._dtKey, hora: g.hora, caixa: g.caixa,
+						vendedor: g.vendedor, cliente: g.cliente,
+						natureza: g.natureza, total: g.total,
+						// Pagamento/itens reais da gerencial — permitem ao painel Duplicatas
+						// reconstituí-la completa se o usuário escolher mantê-la.
+						pagamentos: g.pagamentos, formasValores: g.formasValores || {},
+						itens: g.itens, itensDetalhe: Array.isArray(g.itensDetalhe) ? g.itensDetalhe : []
+					});
+				}
+				if (_remover.size > 0) {
+					for (let i = linhas.length - 1; i >= 0; i--) if (_remover.has(linhas[i])) linhas.splice(i, 1);
 				}
 			}
 
@@ -3371,106 +3509,192 @@ const ligarEditorProibidos=(ta,elCont)=>{
     }catch(e){}
 })();
 
-// ── Painel "Duplicatas" (v2.9.0) ────────────────────────────────────────
+// ── Painel "Duplicatas" (v2.9.0; escolhas por par em v3.8.3) ─────────────
 // Gerenciais que o gerador suprimiu automaticamente nesta geração (já
-// convertidas em NFC-e/NF-e — ver _gerenciaisAbsorvidasPorDocFiscal e a
-// reconciliação por valor no lado Node.js). Por padrão elas continuam
-// FORA da tabela e da soma (mesmo comportamento de antes). Este painel
-// pergunta o que fazer, com 3 ações (pedidas pelo usuário):
-//   1) "Manter todas as duplicatas" — ação GLOBAL: passa a sempre exibir
-//      e somar toda duplicata encontrada (nesta e nas próximas gerações),
-//      até o usuário desativar. Persistida em localStorage.
-//   2) "Perguntar depois sobre essa" — não decide nada; essa gerencial
-//      continua oculta POR ENQUANTO, mas volta a aparecer no painel na
-//      próxima geração (nada é salvo).
-//   3) "Não perguntar mais sobre essa" — oculta essa gerencial em
-//      definitivo (comportamento atual) e nunca mais pergunta sobre ela.
-//      Persistida em localStorage por par gerencial+documento.
-// Um único modal para todas as duplicatas pendentes (nunca um por item).
-// LIMITAÇÃO CONHECIDA: a linha reconstituída ao "manter" não tem o
-// detalhamento de pagamento/itens (isso exigiria refazer os joins de
-// PAGAMENT/ITENS001 que já rodaram e descartaram essa gerencial no
-// servidor) — aparece com essa ressalva visível na tabela.
+// convertidas em NFC-e/NF-e — vínculo pela coluna Gerencial ou reconciliação
+// por data/valor/vendedor no lado Node.js). Por padrão o documento fiscal
+// PREVALECE: a gerencial fica FORA da tabela e da soma. Como fallback de
+// dúvida, o painel oferece por par (pedido do usuário):
+//   • "Manter as duas"            — exibe e soma a gerencial E o documento.
+//   • "Manter apenas NF-e/NFC-e"  — padrão: só o documento fiscal.
+//   • "Manter apenas a gerencial" — o documento sai da tabela/soma e a
+//      gerencial volta no lugar dele.
+//   • "Perguntar depois"          — não decide nada; volta na próxima geração.
+// As 3 escolhas ficam salvas em localStorage por par gerencial+documento.
+// Ação GLOBAL "Manter todas as duplicatas": exibe e soma a gerencial de toda
+// duplicata SEM escolha salva (nesta e nas próximas gerações), até desativar.
+// Escolha específica do par vence a global. Um único modal para todas.
+// LIMITAÇÃO: a gerencial reconstituída pela coluna Gerencial (confirmada)
+// não tem o detalhamento de pagamento/itens — aparece com essa ressalva.
+// A da reconciliação final (v3.8.3) traz pagamento e itens reais.
 const LS_DUP_MANTER_TODAS = "__dup_manter_todas__";
-const LS_DUP_OCULTO_PREFIXO = "__dup_oculto__::";
+const LS_DUP_OCULTO_PREFIXO = "__dup_oculto__::";   // legado (v2.9.0) = "fiscal"
+const LS_DUP_ESCOLHA_PREFIXO = "__dup_escolha__::";
+const DUP_ESCOLHAS = ["todas", "fiscal", "gerencial"];
 const _dupChaveItem = d => String(d.gerencial) + "::" + String(d.docNumero);
+const _dupRotDoc = d => Number(d.docModelo) === 65 ? "NFC-e" : "NF-e";
 const _dupLerManterTodas = () => { try { return localStorage.getItem(LS_DUP_MANTER_TODAS) === "1"; } catch(e) { return false; } };
 const _dupSalvarManterTodas = (v) => { try { if (v) localStorage.setItem(LS_DUP_MANTER_TODAS, "1"); else localStorage.removeItem(LS_DUP_MANTER_TODAS); } catch(e) {} };
-const _dupEstaOculto = (d) => { try { return localStorage.getItem(LS_DUP_OCULTO_PREFIXO + _dupChaveItem(d)) === "1"; } catch(e) { return false; } };
-const _dupMarcarOculto = (d) => { try { localStorage.setItem(LS_DUP_OCULTO_PREFIXO + _dupChaveItem(d), "1"); } catch(e) {} };
+const _dupLerEscolha = (d) => {
+    try {
+        const ch = _dupChaveItem(d);
+        const v = localStorage.getItem(LS_DUP_ESCOLHA_PREFIXO + ch);
+        if (DUP_ESCOLHAS.includes(v)) return v;
+        if (localStorage.getItem(LS_DUP_OCULTO_PREFIXO + ch) === "1") return "fiscal";
+    } catch(e) {}
+    return null;
+};
+const _dupSalvarEscolha = (d, v) => {
+    if (!DUP_ESCOLHAS.includes(v)) return;
+    try {
+        const ch = _dupChaveItem(d);
+        localStorage.setItem(LS_DUP_ESCOLHA_PREFIXO + ch, v);
+        localStorage.removeItem(LS_DUP_OCULTO_PREFIXO + ch);
+    } catch(e) {}
+};
 
 const _dupConf = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.confirmadas)) ? DADOS.duplicatas.confirmadas : []).map(d => ({...d, _tipo: "confirmado"}));
 const _dupProv = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.provaveis))   ? DADOS.duplicatas.provaveis   : []).map(d => ({...d, _tipo: "provavel"}));
 const _dupTodas = [..._dupConf, ..._dupProv];
 
 // Reconstitui a linha da gerencial no formato de DADOS.vendas, para poder
-// exibi-la e somá-la quando o usuário escolhe manter. Ver LIMITAÇÃO acima.
-const _dupSintetizarLinha = d => ({
-    _dtKey: d.dt || DADOS.data,
-    vendedor: d.vendedor || "",
-    modelo: 99,
-    tipo: "gerencial",
-    numero: d.gerencial,
-    caixa: d.caixa || "",
-    hora: d.hora || "",
-    cliente: d.cliente || "",
-    natureza: d.natureza || "",
-    total: Number(d.total || 0),
-    pagamentos: "Duplicata mantida manualmente — pagamento indisponível",
-    itens: "",
-    itensDetalhe: [],
-    formasValores: {},
-    is_recebimento: false,
-    _duplicataMantida: true
-});
+// exibi-la e somá-la quando o usuário escolhe mantê-la.
+const _dupSintetizarLinha = d => {
+    const _temPag = d.formasValores && typeof d.formasValores === "object" && Object.keys(d.formasValores).length > 0;
+    return {
+        _dtKey: d.dt || DADOS.data,
+        vendedor: d.vendedor || "",
+        modelo: 99,
+        tipo: "gerencial",
+        numero: d.gerencial,
+        caixa: d.caixa || "",
+        hora: d.hora || "",
+        cliente: d.cliente || "",
+        natureza: d.natureza || "",
+        total: Number(d.total || 0),
+        pagamentos: _temPag && d.pagamentos ? String(d.pagamentos) : "Duplicata mantida manualmente — pagamento indisponível",
+        itens: d.itens || "",
+        itensDetalhe: Array.isArray(d.itensDetalhe) ? d.itensDetalhe : [],
+        formasValores: _temPag ? {...d.formasValores} : {},
+        is_recebimento: false,
+        _duplicataMantida: true
+    };
+};
 
-// Injeta na tabela + ajusta os totais fixos (DADOS.totaisDia/DADOS.totais/
-// DADOS.vendTotaisDia — não são recalculados a partir de DADOS.vendas,
-// então precisam ser somados manualmente aqui; os badges de QUANTIDADE
-// (#tQtdGer etc.) SÃO recalculados de DADOS.vendas mais abaixo, então já
-// ficam corretos sem nenhum ajuste extra).
-const _dupInjetarNaTabela = (d) => {
-    // BUG FIX (v2.9.1): _idx e _busca são atribuídos a DADOS.vendas num laço
-    // que roda ANTES deste trecho — a linha reconstituída ficava sem eles:
-    // o clique abria o modal errado/nenhum (data-idx="undefined") e a busca
-    // por texto não a encontrava.
-    const _linha = _dupSintetizarLinha(d);
-    _linha._idx = DADOS.vendas.length;
-    _linha._busca = rmAcento((_linha.vendedor||"")+" "+(_linha.tipo||"")+" "+(_linha.pagamentos||"")+" "+(_linha.caixa||"")+" "+(_linha.numero||"")+" "+(_linha.cliente||"")+" "+(_linha.natureza||"")).toLowerCase();
-    DADOS.vendas.push(_linha);
-    const v = Number(d.total || 0);
-    if (DADOS.totais) { DADOS.totais.total = Number(DADOS.totais.total || 0) + v; DADOS.totais.qtd = Number(DADOS.totais.qtd || 0) + 1; }
-    if (DADOS.totaisDia && DADOS.totaisDia.ok) {
-        DADOS.totaisDia.selecionado    = Number(DADOS.totaisDia.selecionado    || 0) + v;
-        DADOS.totaisDia.gerencial      = Number(DADOS.totaisDia.gerencial      || 0) + v;
-        DADOS.totaisDia.geral          = Number(DADOS.totaisDia.geral          || 0) + v;
-        DADOS.totaisDia.qtd_gerencial  = Number(DADOS.totaisDia.qtd_gerencial  || 0) + 1;
+const _dupPrepararLinha = (linha, idx) => {
+    linha._idx = idx;
+    linha._busca = rmAcento((linha.vendedor||"")+" "+(linha.tipo||"")+" "+(linha.pagamentos||"")+" "+(linha.itens||"")+" "+(linha.caixa||"")+" "+(linha.numero||"")+" "+(linha.cliente||"")+" "+(linha.natureza||"")).toLowerCase();
+};
+
+// Soma (sinal +1) ou subtrai (sinal -1) uma linha dos totais fixos
+// (DADOS.totais/DADOS.totaisDia/DADOS.vendTotaisDia — não são recalculados a
+// partir de DADOS.vendas; os badges de QUANTIDADE (#tQtdGer etc.) SÃO, então
+// já ficam corretos sem ajuste extra).
+const _dupCent = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const _dupAjustarTotais = (x, sinal) => {
+    const v = Number(x && x.total || 0) * sinal;
+    const m = Number(x && x.modelo || 0);
+    const campo = m === 99 ? "gerencial" : m === 65 ? "nfce" : m === 55 ? "nfe" : null;
+    if (DADOS.totais) {
+        DADOS.totais.total = _dupCent(Number(DADOS.totais.total || 0) + v);
+        DADOS.totais.qtd = Math.max(0, Number(DADOS.totais.qtd || 0) + sinal);
     }
-    // vendTotaisDia é a fonte real do painel "Vendedores" ({vendedor, gerencial,
-    // nfce, nfe, geral, qtd} — ver linha ~1471); DADOS.vendedores é só um
-    // resumo derivado dela, então é resincronizado inteiro logo abaixo.
-    if (Array.isArray(DADOS.vendTotaisDia)) {
-        const nomeVend = d.vendedor || "";
-        let vt = DADOS.vendTotaisDia.find(x => x.vendedor === nomeVend);
-        if (!vt) { vt = { vendedor: nomeVend, gerencial: 0, nfce: 0, nfe: 0, geral: 0, qtd: 0 }; DADOS.vendTotaisDia.push(vt); }
-        vt.gerencial = Number(vt.gerencial || 0) + v;
-        vt.geral     = Number(vt.geral     || 0) + v;
-        vt.qtd       = Number(vt.qtd       || 0) + 1;
-        if (Array.isArray(DADOS.vendedores)) {
-            DADOS.vendedores = DADOS.vendTotaisDia.map(x => ({ vendedor: x.vendedor, qtd: x.qtd, total: x.geral }));
+    if (DADOS.totaisDia && DADOS.totaisDia.ok) {
+        const td = DADOS.totaisDia;
+        td.selecionado = _dupCent(Number(td.selecionado || 0) + v);
+        td.geral       = _dupCent(Number(td.geral       || 0) + v);
+        if (campo) {
+            td[campo] = _dupCent(Number(td[campo] || 0) + v);
+            td["qtd_" + campo] = Math.max(0, Number(td["qtd_" + campo] || 0) + sinal);
         }
     }
+    // vendTotaisDia é a fonte real do painel "Vendedores"; DADOS.vendedores é só
+    // um resumo derivado dela, então é resincronizado inteiro logo abaixo.
+    if (Array.isArray(DADOS.vendTotaisDia)) {
+        const nomeVend = (x && x.vendedor) || "";
+        let vt = DADOS.vendTotaisDia.find(y => y.vendedor === nomeVend);
+        if (!vt && sinal > 0) { vt = { vendedor: nomeVend, gerencial: 0, nfce: 0, nfe: 0, geral: 0, qtd: 0 }; DADOS.vendTotaisDia.push(vt); }
+        if (vt) {
+            if (campo) vt[campo] = _dupCent(Number(vt[campo] || 0) + v);
+            vt.geral = _dupCent(Number(vt.geral || 0) + v);
+            vt.qtd   = Math.max(0, Number(vt.qtd || 0) + sinal);
+            if (vt.qtd === 0) DADOS.vendTotaisDia.splice(DADOS.vendTotaisDia.indexOf(vt), 1);
+        }
+        DADOS.vendTotaisDia.sort((a, b) => String(a.vendedor).localeCompare(String(b.vendedor), "pt-BR", { sensitivity: "base" }));
+        if (Array.isArray(DADOS.vendedores)) {
+            DADOS.vendedores = DADOS.vendTotaisDia.map(y => ({ vendedor: y.vendedor, qtd: y.qtd, total: y.geral }));
+        }
+    }
+};
+
+// Limpa o HTML em cache de uma linha (as caches são declaradas mais abaixo;
+// na carga ainda estão em zona morta — e vazias —, por isso o try/catch).
+const _dupLimparCacheLinha = (idx) => {
+    try { _tdHtmlCache.delete(idx); } catch(e) {}
+    try { _miniHtmlCache.delete(idx); } catch(e) {}
+};
+
+// "Manter as duas": a gerencial entra na tabela e na soma.
+const _dupInjetarNaTabela = (d) => {
+    const _linha = _dupSintetizarLinha(d);
+    _dupPrepararLinha(_linha, DADOS.vendas.length);
+    DADOS.vendas.push(_linha);
+    _dupAjustarTotais(_linha, +1);
+};
+
+// Acha a linha do documento fiscal do par em DADOS.vendas (número sem zeros à
+// esquerda, mesma data quando informada; modelo igual tem preferência porque a
+// NFC-e pode ter sido reclassificada como NF-e no gerador).
+const _dupAcharDoc = (d) => {
+    const alvo = String(d.docNumero == null ? "" : d.docNumero).trim().replace(/^0+/, "");
+    if (!alvo) return -1;
+    let idxQualquer = -1;
+    for (let i = 0; i < DADOS.vendas.length; i++) {
+        const x = DADOS.vendas[i];
+        if (!x || x.is_recebimento || x._duplicataMantida) continue;
+        const m = Number(x.modelo || 0);
+        if (m !== 65 && m !== 55) continue;
+        if (d.dt && x._dtKey && x._dtKey !== d.dt) continue;
+        if (String(x.numero == null ? "" : x.numero).trim().replace(/^0+/, "") !== alvo) continue;
+        if (Number(d.docModelo) === m) return i;
+        if (idxQualquer < 0) idxQualquer = i;
+    }
+    return idxQualquer;
+};
+
+// "Manter apenas a gerencial": a gerencial ocupa o lugar do documento (mesmo
+// _idx — nenhuma outra linha muda de índice) e os totais trocam um pelo outro.
+// Documento não encontrado (ex.: filtrado nesta geração): só entra a gerencial.
+const _dupTrocarDocPelaGerencial = (d) => {
+    const i = _dupAcharDoc(d);
+    if (i < 0) { _dupInjetarNaTabela(d); return; }
+    _dupAjustarTotais(DADOS.vendas[i], -1);
+    const _linha = _dupSintetizarLinha(d);
+    _dupPrepararLinha(_linha, i);
+    DADOS.vendas[i] = _linha;
+    _dupLimparCacheLinha(i);
+    _dupAjustarTotais(_linha, +1);
+};
+
+// Aplica a escolha UMA vez por par nesta página (nunca soma/troca em dobro).
+const _dupAplicar = (d, escolha) => {
+    if (d._aplicada) return false;
+    if (escolha === "todas") _dupInjetarNaTabela(d);
+    else if (escolha === "gerencial") _dupTrocarDocPelaGerencial(d);
+    d._aplicada = escolha;
+    return escolha !== "fiscal";
 };
 
 // ── Aplica decisões já salvas (localStorage) ANTES de qualquer render ──
 let _dupManterTodasAtivo = _dupLerManterTodas();
 const _dupPendentes = [];
-// Precedência: a decisão ESPECÍFICA ("não perguntar mais sobre essa") vence a GERAL
-// ("manter todas"). É a mesma regra do clique ao vivo em "Manter todas", que só atua
-// sobre as pendentes — assim carga e clique nunca divergem.
+// Precedência: a escolha ESPECÍFICA do par vence a GERAL ("manter todas"). É a
+// mesma regra do clique ao vivo em "Manter todas", que só atua sobre as
+// pendentes — assim carga e clique nunca divergem.
 for (const d of _dupTodas) {
-    if (_dupEstaOculto(d)) continue;
-    if (_dupManterTodasAtivo) { _dupInjetarNaTabela(d); continue; }
+    const escSalva = _dupLerEscolha(d);
+    if (escSalva) { _dupAplicar(d, escSalva); continue; }
+    if (_dupManterTodasAtivo) { _dupAplicar(d, "todas"); continue; }
     _dupPendentes.push(d); // sem decisão — vai pro modal
 }
 
@@ -3484,6 +3708,8 @@ for (const d of _dupTodas) {
     }
 })();
 
+const _DUP_ROTULO_ESCOLHA = { todas: "manter as duas", fiscal: "manter apenas o documento fiscal", gerencial: "manter apenas a gerencial" };
+
 const abrirDuplicatas=(itens)=>{
     if (document.getElementById("ovDup")) return; // guarda contra abertura dupla
     const bg=document.createElement("div"); bg.className="ov"; bg.id="ovDup"; bg.setAttribute("aria-hidden","false");
@@ -3495,30 +3721,44 @@ const abrirDuplicatas=(itens)=>{
     const escKey=(e)=>{ if(e.key==="Escape") fechar(); };
     const fechar=()=>{ document.removeEventListener("keydown",escKey); _fecharOverlayAnimado(bg); };
 
-    const linhaItem = d => {
+    // Pares que já têm escolha salva — listados à parte para poder REVER a escolha.
+    const decididas = () => _dupTodas.filter(d => !itens.includes(d) && _dupLerEscolha(d));
+
+    const linhaItem = (d, decidida) => {
+        const doc = _dupRotDoc(d);
         const rotulo = d._tipo === "confirmado"
-            ? '<span style="color:var(--st-ok)">● confirmado</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+(d.docModelo===65?'NFC-e':'NF-e')+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
-            : '<span style="color:var(--st-warn)">● provável</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → NF-e <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(mesmo valor/data, +'+esc(d.diffMin)+'min'+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
+            ? '<span style="color:var(--st-ok)">● confirmado</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
+            : '<span style="color:var(--st-warn)">● provável</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(mesmo valor/data/vendedor, +'+esc(d.diffMin)+'min'+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
+        const valor = Number(d.total || 0) > 0 ? ' <span style="opacity:.75">'+esc(Number(d.total).toLocaleString("pt-BR",{style:"currency",currency:"BRL"}))+(d.vendedor?' · '+esc(d.vendedor):'')+'</span>' : '';
+        const atual = decidida ? _dupLerEscolha(d) : null;
+        const botao = (cls, txt, escolha) => '<div class="btn '+cls+'" style="font-size:12px;padding:4px 10px'+(atual===escolha?';outline:2px solid var(--accent)':'')+'">'+txt+'</div>';
         return '<div class="dupItem" data-chave="'+esc(_dupChaveItem(d))+'" style="padding:10px;border-bottom:1px solid var(--line-soft);font-size:13px">'
-            + '<div style="margin-bottom:6px">'+rotulo+'</div>'
+            + '<div style="margin-bottom:6px">'+rotulo+valor+'</div>'
+            + (atual ? '<div style="margin-bottom:6px;font-size:12px;opacity:.75">Escolha salva: <b>'+esc(_DUP_ROTULO_ESCOLHA[atual]||atual)+'</b></div>' : '')
             + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-            + '<div class="btn dupBtnDepois" style="font-size:12px;padding:4px 10px">Perguntar depois sobre essa</div>'
-            + '<div class="btn dupBtnNunca" style="font-size:12px;padding:4px 10px">Não perguntar mais sobre essa</div>'
+            + botao("dupBtnFiscal", "Manter apenas "+doc, "fiscal")
+            + botao("dupBtnTodas1", "Manter as duas", "todas")
+            + botao("dupBtnGer", "Manter apenas a gerencial", "gerencial")
+            + (decidida ? '' : '<div class="btn dupBtnDepois" style="font-size:12px;padding:4px 10px">Perguntar depois</div>')
             + '</div></div>';
     };
 
     const render=()=>{
-        const corpoHtml = itens.length === 0
+        const listaDec = decididas();
+        const corpoPend = itens.length === 0
             ? '<div style="padding:16px;opacity:.7;font-size:13px">Nenhuma duplicata pendente de decisão.'
-              + (_dupManterTodasAtivo ? '<br><br>Modo <b>"manter todas"</b> está ativo — toda duplicata encontrada é exibida e somada automaticamente.' : '')
+              + (_dupManterTodasAtivo ? '<br><br>Modo <b>"manter todas"</b> está ativo — toda duplicata sem escolha salva é exibida e somada automaticamente.' : '')
               + '</div>'
-            : itens.map(linhaItem).join("");
+            : itens.map(d => linhaItem(d, false)).join("");
+        const corpoDec = listaDec.length === 0 ? '' :
+            '<div style="padding:10px 10px 4px;font-size:12px;font-weight:700;opacity:.7">Já decididas — trocar a escolha vale a partir da próxima atualização do relatório</div>'
+            + listaDec.map(d => linhaItem(d, true)).join("");
         const txtManterTodas = _dupManterTodasAtivo ? 'Desativar "manter todas"' : "Manter todas as duplicatas";
-        bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais já convertidas em NFC-e/NF-e — escolha o que fazer com cada uma.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
+        bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais convertidas em NFC-e/NF-e — por padrão só o documento fiscal fica. Escolha o que fazer com cada par.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
             + '<div class="mbody" style="padding-bottom:0">'
             + '<div class="btn" id="dupBtnTodas" style="margin-bottom:10px;width:100%;justify-content:center">'+txtManterTodas+'</div>'
             + '</div>'
-            + '<div class="mbody" id="dupLista" style="max-height:50vh;overflow:auto;padding-top:0">'+corpoHtml+'</div></div>';
+            + '<div class="mbody" id="dupLista" style="max-height:50vh;overflow:auto;padding-top:0">'+corpoPend+corpoDec+'</div></div>';
 
         bg.querySelector("#dupFechar").addEventListener("click",fechar);
 
@@ -3527,31 +3767,56 @@ const abrirDuplicatas=(itens)=>{
             _dupSalvarManterTodas(ligar);
             _dupManterTodasAtivo = ligar;
             if (ligar) {
-                // Só as pendentes entram: as marcadas "não perguntar mais" continuam
-                // ocultas (decisão específica vence a geral — ver laço de carga).
-                for (const d of itens) _dupInjetarNaTabela(d);
+                // Só as pendentes entram: as que têm escolha salva seguem a escolha
+                // (decisão específica vence a geral — ver laço de carga).
+                for (const d of itens) _dupAplicar(d, "todas");
                 itens.length = 0;
                 renderTabela();
             }
             render();
-            toast("Duplicatas", ligar ? "Todas as duplicatas passam a ser exibidas." : "Modo \"manter todas\" desativado — vale a partir da próxima atualização do relatório.");
+            toast("Duplicatas", ligar ? "Todas as duplicatas sem escolha salva passam a ser exibidas." : "Modo \"manter todas\" desativado — vale a partir da próxima atualização do relatório.");
         });
 
-        bg.querySelectorAll(".dupBtnDepois").forEach((btn, i) => {
-            btn.addEventListener("click", () => {
-                itens.splice(i, 1); // some do modal SEM salvar decisão — volta a perguntar na próxima geração
-                if (itens.length === 0) { fechar(); return; }
-                render();
+        // Liga os botões de escolha de cada item (pendente: aplica já; decidida:
+        // salva e vale na próxima atualização — desfazer a troca ao vivo exigiria
+        // reconstituir linhas que a página não tem).
+        const ligarEscolhas = (lista, decidida) => {
+            const els = [...bg.querySelectorAll("#dupLista .dupItem")].filter(el => (el.dataset.dec === "1") === decidida);
+            els.forEach((el, i) => {
+                const d = lista[i];
+                if (!d) return;
+                const escolher = (escolha) => {
+                    if (decidida) {
+                        const antes = _dupLerEscolha(d);
+                        _dupSalvarEscolha(d, escolha);
+                        render();
+                        if (antes !== escolha) toast("Duplicatas", "Escolha trocada — vale a partir da próxima atualização do relatório.");
+                        return;
+                    }
+                    _dupSalvarEscolha(d, escolha);
+                    const mudou = _dupAplicar(d, escolha);
+                    const pos = itens.indexOf(d);
+                    if (pos >= 0) itens.splice(pos, 1);
+                    if (mudou) renderTabela();
+                    render();
+                };
+                const b1 = el.querySelector(".dupBtnFiscal"); if (b1) b1.addEventListener("click", () => escolher("fiscal"));
+                const b2 = el.querySelector(".dupBtnTodas1"); if (b2) b2.addEventListener("click", () => escolher("todas"));
+                const b3 = el.querySelector(".dupBtnGer");    if (b3) b3.addEventListener("click", () => escolher("gerencial"));
+                const b4 = el.querySelector(".dupBtnDepois");
+                if (b4) b4.addEventListener("click", () => {
+                    const pos = itens.indexOf(d);
+                    if (pos >= 0) itens.splice(pos, 1); // some do modal SEM salvar decisão — volta a perguntar na próxima geração
+                    if (itens.length === 0 && decididas().length === 0) { fechar(); return; }
+                    render();
+                });
             });
-        });
-        bg.querySelectorAll(".dupBtnNunca").forEach((btn, i) => {
-            btn.addEventListener("click", () => {
-                _dupMarcarOculto(itens[i]);
-                itens.splice(i, 1);
-                if (itens.length === 0) { fechar(); return; }
-                render();
-            });
-        });
+        };
+        // Marca cada item com o grupo (pendente/decidida) na mesma ordem do HTML.
+        const _todosEls = [...bg.querySelectorAll("#dupLista .dupItem")];
+        _todosEls.forEach((el, i) => { el.dataset.dec = i < itens.length ? "0" : "1"; });
+        ligarEscolhas(itens.slice(), false);
+        ligarEscolhas(listaDec, true);
     };
 
     // Clique FORA do conteúdo fecha. Ligado uma única vez: o render() só troca o
