@@ -280,12 +280,14 @@ test("gerador: NFC-e reemitida como NF-e (mesmos itens e valor) conta uma vez s�
     const dir = montarPasta({}, {
         nfce: [
             { numero: "125636", hora: "16:17:00", modelo: 65, total: 453.35, vendedor: "CASIMIRO" },
-            { numero: "307", hora: "17:05:00", modelo: 55, total: 453.35, vendedor: "" },
+            // Hora da NF-e (saída) ANTES da NFC-e: não pode impedir (v3.8.6).
+            { numero: "307", hora: "08:00:00", modelo: 55, total: 453.35, vendedor: "" },
             // Mesmo valor, itens diferentes: duas vendas — ficam as duas.
             { numero: "125700", hora: "16:30:00", modelo: 65, total: 80, vendedor: "ANA" },
             { numero: "308", hora: "16:40:00", modelo: 55, total: 80, vendedor: "" }
         ],
-        alt: [...itens("125636"), ...itens("307"),
+        // A NFC-e tem a linha de desconto (5%); a NF-e não — v3.8.6 ignora descontos.
+        alt: [...itens("125636"), { pedido: "125636", desc: "DESCONTO", qtd: 1, total: -21.65 }, ...itens("307"),
             { pedido: "125700", desc: "COLEIRA", qtd: 1, total: 80 },
             { pedido: "308", desc: "SHAMPOO", qtd: 1, total: 80 }]
     });

@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.6 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.5 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.6 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -171,6 +171,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.8.6 — 2026-10-16 20:30
+
+**NFC-e com desconto reemitida como NF-e; badge do total na tela.**
+
+- NFC-e 125636 × NF-e 000307 continuavam as duas na lista: a NFC-e tem a linha "Desconto de 5%" (item de valor negativo) e a NF-e não, então as listas de itens nunca eram iguais. A comparação agora usa só PRODUTOS (descontos/acréscimos fora), em todas as reconciliações e no auto-teste. A hora deixou de ser critério (a da NF-e é a de saída) e cliente também (NFC-e traz CPF/"consumidor"). A NF-e sempre prevalece.
+- Badge #bDiaBrk estourava para fora do monitor: a grade da página (.app) sem coluna definida crescia até a largura do conteúdo e o excesso era cortado. Coluna travada em minmax(0, 1fr) e ajuste em etapas aplicadas de uma vez (sem piscar): oculta hora, encolhe o botão de vendedor, badges compactos, quebra de linha dos badges e, por último, quebra dentro do próprio total. Testado de 1920 a 390 px.
 
 ### 3.8.5 — 2026-10-16 19:30
 
