@@ -1,19 +1,20 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.4
+ * @version 3.8.5
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.4 - 2026-10-16 18:00 - NFC-e reemitida como NF-e conta uma vez só.
- *     - NFC-e 125636 (Casimiro, crédito) e NF-e 000307 (cliente, sem vendedor), ambas de
- *       R$ 453,35 com os mesmos 3 itens, eram somadas — a venda aparecia em dobro no
- *       total. Nova reconciliação NFC-e → NF-e: mesma data, mesmo valor e a MESMA lista
- *       de itens (os dois lados com itens), sem vendedores ou clientes diferentes, NF-e
- *       não anterior à NFC-e. A NF-e prevalece e herda vendedor, hora e formas de
- *       pagamento que não tiver; a NFC-e vira "convertida" no hora-fixada-cache.json.
- *     - Painel Duplicatas também lista esses pares: "Manter apenas NF-e" (padrão),
- *       "Manter as duas", "Manter apenas a NFC-e" e "Perguntar depois".
+ *   3.8.5 - 2026-10-16 19:30 - Nomes com acento saem certos ("Thiago Paraíba").
+ *     - O SmallSoft grava nomes em colunas sem charset (NONE) com bytes Windows-1252;
+ *       pedidos como texto numa conexão UTF8, o "í" chegava como U+FFFD ("Para�ba").
+ *       Vendedor, cliente, natureza, status, formas de pagamento e descrição dos itens
+ *       (NFCE, ALTERACA, PAGAMENT, VENDAS, ITENS001) agora são lidos como bytes
+ *       (CHARACTER SET OCTETS) e decodificados no Node: UTF-8 válido como está, senão
+ *       Windows-1252 (latin1 se o Node não tiver ICU completo). Testado no Firebird 3
+ *       com node-firebird 1.1.9, 1.1.10, 2.0.0 e 2.18.2 e colunas NONE/UTF8/WIN1252.
+ *     - Firebird que recusar a conversão: a consulta é refeita do jeito antigo (aviso
+ *       "AVISO TEXTO" no log) — a geração nunca cai por causa disso.
  */
 
 (function() {
@@ -21,7 +22,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.4";
+    const SCRIPT_VERSION = "3.8.5";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -273,7 +274,20 @@
         .replace(/\u2028/g, "\\u2028")
         .replace(/\u2029/g, "\\u2029");
 
-    const decoder = new TextDecoder("windows-1252");
+    // Texto vindo do banco como bytes crus (CHARACTER SET OCTETS — ver _txt): o
+    // SmallSoft grava nomes em colunas sem charset (NONE) com bytes Windows-1252;
+    // pedidos como texto, o "í" chegava trocado pelo caractere de substituição U+FFFD. UTF-8
+    // válido é usado como está (coluna declarada UTF8); senão, Windows-1252.
+    // Node sem ICU completo não tem windows-1252: cai em latin1 (mesmos acentos).
+    const _decUtf8Estrito = (() => { try { return new TextDecoder("utf-8", { fatal: true }); } catch (_) { return null; } })();
+    const _decWin1252 = (() => { try { return new TextDecoder("windows-1252"); } catch (_) { return null; } })();
+    const decoder = {
+        decode(buf) {
+            if (_decUtf8Estrito) { try { return _decUtf8Estrito.decode(buf); } catch (_) { /* não é UTF-8 */ } }
+            if (_decWin1252) { try { return _decWin1252.decode(buf); } catch (_) { /* segue */ } }
+            return Buffer.from(buf).toString("latin1");
+        }
+    };
 
     // Limpeza em "melhor esforço" (detach de conexão, remoção de arquivo temporário):
     // usada SÓ onde uma falha secundária não pode mascarar o erro principal que já
@@ -541,7 +555,30 @@
 	// ISOLATION_READ_UNCOMMITTED, que no node-firebird 1.x abre transação de
 	// ESCRITA com espera — o oposto do que este comentário prometia.)
 	// Aceita timeoutMs opcional — usado para escalonar por intervalo de datas.
-	const query = (db, sql, params, timeoutMs) => new Promise((resolve, reject) => {
+	// Campo de texto exibido na tela, pedido como BYTES (OCTETS): o driver devolve
+	// Buffer em qualquer versão (1.x/2.x) e "decoder" acima escolhe a codificação.
+	// Pedido como texto, uma coluna NONE com "í" Windows-1252 chega já estragada.
+	// Cast DIRETO para OCTETS (cabe até 4 bytes/char): um cast intermediário para
+	// varchar sem charset faz o Firebird 3 recusar coluna NONE ("Malformed string").
+	// Testado com node-firebird 1.1.9, 2.0.0 e 2.18.2 e colunas NONE/UTF8/WIN1252.
+	const _txt = (expr, tam) => `cast(${expr} as varchar(${tam * 4}) character set octets)`;
+	// Firebird que recusar a conversão para OCTETS: a consulta é refeita sem ela
+	// (comportamento anterior) e as próximas já saem sem — nunca derruba a geração.
+	const _RE_OCTETS = / character set octets/gi;
+	const _RE_ERRO_OCTETS = /octets|transliterat|character set|charset|malformed|conversion|truncation|arithmetic/i;
+	let _octetsRecusado = false;
+	const query = (db, sql, params, timeoutMs) => {
+		const _temOctets = typeof sql === "string" && _RE_OCTETS.test(sql);
+		_RE_OCTETS.lastIndex = 0;
+		if (_temOctets && _octetsRecusado) sql = sql.replace(_RE_OCTETS, "");
+		return _queryBase(db, sql, params, timeoutMs).then((r) => {
+			if (!r.e || !_temOctets || _octetsRecusado || !_RE_ERRO_OCTETS.test(String(r.e.message || r.e))) return r;
+			_octetsRecusado = true;
+			console.log("AVISO TEXTO: o banco recusou ler texto como bytes (" + String(r.e.message || r.e).slice(0, 160) + ") — seguindo com a leitura antiga (acentos podem sair errados).");
+			return _queryBase(db, sql.replace(_RE_OCTETS, ""), params, timeoutMs);
+		});
+	};
+	const _queryBase = (db, sql, params, timeoutMs) => new Promise((resolve, reject) => {
 		const _qt = setTimeout(() => {
 			const seg = Math.round((timeoutMs || _tQuery) / 1000);
 			reject(new Error(`Timeout na query apos ${seg}s. Conexao pode estar travada.`));
@@ -812,7 +849,7 @@
 			const camposNfce = await camposTabela("NFCE");
 			const validCols = ["NUMERONF", "CONTROLE", "GERENCIAL", "PEDIDO"].filter(c => camposNfce.has(c));
 			const colsSelect = validCols.length > 0 ? ", " + validCols.map(c => `cast(n.${c} as varchar(30)) as VAL_${c}`).join(", ") : "";
-			const campoVendedorNfce = camposNfce.has("VENDEDOR") ? "cast(n.VENDEDOR as varchar(60))" : "cast(null as varchar(60))";
+			const campoVendedorNfce = camposNfce.has("VENDEDOR") ? _txt("n.VENDEDOR", 60) : "cast(null as varchar(60))";
 			const campoCaixa = camposNfce.has("CAIXA") ? "CAIXA" : (camposNfce.has("NUMCAIXA") ? "NUMCAIXA" : "null");
 			const selCaixa = campoCaixa !== "null" ? `cast(n.${campoCaixa} as varchar(20))` : `cast('' as varchar(20))`;
 
@@ -828,12 +865,12 @@
 			// Campo nome do cliente (NF-e) — tenta nomes comuns
 			const _clienteCandidatos = ["NOMECLIENTE","CLIENTE","NOME_CLIENTE","NOMECLI","RAZAOSOCIAL","RAZAO_SOCIAL","NOMEDESTINATARIO"];
 			const campoClienteNome = _clienteCandidatos.find(c => camposNfce.has(c)) || null;
-			const selClienteNome   = campoClienteNome ? `cast(n.${campoClienteNome} as varchar(80))` : `cast('' as varchar(80))`;
+			const selClienteNome   = campoClienteNome ? _txt(`n.${campoClienteNome}`, 80) : `cast('' as varchar(80))`;
 
 			// Campo natureza da operação (NF-e)
 			const _naturezaCandidatos = ["NATUREZA","NATOP","NATUREZA_OP","NAT_OP","NATOPERACAO","NATUREZAOP"];
 			const campoNaturezaOp = _naturezaCandidatos.find(c => camposNfce.has(c)) || null;
-			const selNaturezaOp   = campoNaturezaOp ? `cast(n.${campoNaturezaOp} as varchar(60))` : `cast('' as varchar(60))`;
+			const selNaturezaOp   = campoNaturezaOp ? _txt(`n.${campoNaturezaOp}`, 60) : `cast('' as varchar(60))`;
 
 			const nfceSql = `
 			select
@@ -854,7 +891,7 @@
 			  and coalesce(n.modelo, 65) in (99, 65, 55)
 			`;
 			const camposAlt = await camposTabela("ALTERACA");
-			const campoVendAlt  = camposAlt.has("VENDEDOR")  ? "cast(VENDEDOR as varchar(60))"  : "cast(null as varchar(60))";
+			const campoVendAlt  = camposAlt.has("VENDEDOR")  ? _txt("VENDEDOR", 60)  : "cast(null as varchar(60))";
 			const campoHoraAlt  = camposAlt.has("HORA")      ? "cast(HORA as varchar(8))"        : "cast('' as varchar(8))";
 			// Campo de total por item: preferência TOTAL > PRECO (×QUANTIDADE) > null
 			const campoTotalAlt = camposAlt.has("TOTAL")
@@ -878,7 +915,7 @@
 
 			const altSql = `
 			select DATA, cast(PEDIDO as varchar(30)) as PED, cast(CAIXA as varchar(10)) as CX,
-			       DESCRICAO, QUANTIDADE, ${campoVendAlt} as VENDEDOR_ALT, ${campoHoraAlt} as HORA_ALT,
+			       ${_txt("DESCRICAO", 400)} as DESCRICAO, QUANTIDADE, ${campoVendAlt} as VENDEDOR_ALT, ${campoHoraAlt} as HORA_ALT,
 			       ${campoTotalAlt} as TOTAL_ITEM
 			from ALTERACA
 			where DATA between cast(? as date) and cast(? as date)
@@ -895,15 +932,15 @@
 			select
 			  p.data as DATA,
 			  cast(p.pedido as varchar(30)) as PEDIDO,
-			  p.vendedor as VENDEDOR,
+			  ${_txt("p.vendedor", 200)} as VENDEDOR,
 			  cast(p.valor as double precision) as VALOR,
 			  substring(trim(p.forma) from 1 for 2) as FORMA_PREF,
-			  trim(iif(
+			  ${_txt(`trim(iif(
 			    substring(trim(p.forma) from 1 for 2) between '00' and '99'
 			    and substring(trim(p.forma) from 3 for 1) = ' ',
 			    trim(substring(trim(p.forma) from 4)),
 			    trim(p.forma)
-			  )) as FORMA_NOME
+			  ))`, 200)} as FORMA_NOME
 			from pagament p
 			where p.data between cast(? as date) and cast(? as date)
 			  and p.valor is not null
@@ -1171,9 +1208,9 @@
 				const _camV = await camposTabela("VENDAS");
 				if (_camV.size > 0 && _camV.has("NUMERONF") && _camV.has("TOTAL")) {
 					const _cVd  = _camV.has("SAIDAD")      ? "cast(v.SAIDAD as date)"           : "cast(v.EMISSAO as date)";
-					const _cVv  = _camV.has("VENDEDOR")    ? "cast(v.VENDEDOR as varchar(60))"  : "cast(null as varchar(60))";
-					const _cVc  = _camV.has("CLIENTE")     ? "cast(v.CLIENTE as varchar(80))"   : "cast('' as varchar(80))";
-					const _cVop = _camV.has("OPERACAO")    ? "cast(v.OPERACAO as varchar(60))"  : "cast('' as varchar(60))";
+					const _cVv  = _camV.has("VENDEDOR")    ? _txt("v.VENDEDOR", 60)            : "cast(null as varchar(60))";
+					const _cVc  = _camV.has("CLIENTE")     ? _txt("v.CLIENTE", 80)             : "cast('' as varchar(80))";
+					const _cVop = _camV.has("OPERACAO")    ? _txt("v.OPERACAO", 60)            : "cast('' as varchar(60))";
 					const _cVh  = _camV.has("SAIDAH")      ? "cast(v.SAIDAH as varchar(8))"     : "cast('' as varchar(8))";
 					const _cVn  = _camV.has("NSU")         ? "cast(v.NSU as varchar(20))"       : "cast(null as varchar(20))";
 					const _cVm  = _camV.has("MODELO")      ? "cast(v.MODELO as varchar(5))"     : "'55'";
@@ -1185,7 +1222,7 @@
 					// Coluna lida condicionalmente (camposTabela) para não quebrar em bases
 					// onde STATUS não exista; filtro final é feito em JS abaixo (evita
 					// depender de função de acentuação do Firebird na cláusula WHERE).
-					const _cVstat = _camV.has("STATUS") ? "cast(v.STATUS as varchar(200))" : "cast(null as varchar(200))";
+					const _cVstat = _camV.has("STATUS") ? _txt("v.STATUS", 200) : "cast(null as varchar(200))";
 					const _rV = await query(db, `
 						SELECT ${_cVd}  as DATA_V,
 						       cast(v.NUMERONF as varchar(30)) as NF_NUM,
@@ -1588,7 +1625,7 @@
 						            : "cast(null as double precision)";
 						const _rI = await query(db, `
 							SELECT cast(i.NUMERONF as varchar(30)) as NF_I,
-							       cast(i.DESCRICAO as varchar(120)) as DESC_I,
+							       ${_txt("i.DESCRICAO", 120)} as DESC_I,
 							       ${_cIq} as QTD_I,
 							       ${_cIp} as PRECO_I
 							FROM ITENS001 i

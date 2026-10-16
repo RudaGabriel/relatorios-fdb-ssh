@@ -103,11 +103,18 @@ function query(sql, params, cb) {
                 })));
             if (/from nfce n where n.data between/i.test(s)) {
                 registrar("GERACAO");
+                // Coluna sem charset (NONE) com bytes Windows-1252, como no SmallSoft:
+                // pedida como OCTETS chega como Buffer (bytes crus); pedida como texto,
+                // o acento vira U+FFFD. estado.semOctets simula um Firebird que recusa
+                // a conversão para OCTETS.
+                const _octets = /character set octets/i.test(s);
+                if (_octets && st.semOctets) return cb(new Error("Malformed string"));
+                const _texto = v => (v == null ? v : _octets ? Buffer.from(String(v), "latin1") : String(v).replace(/[^\x00-\x7F]/g, "\uFFFD"));
                 // estado.atrasoGeracaoMs: simula banco lento na consulta da geração.
                 const _resp = (st.nfce || []).map(r => ({
                     // r.canc: "S" = cancelada, "T" = gerencial convertida (vínculo na coluna
                     // GERENCIAL da NFC-e/NF-e nova, r.gerencial).
-                    DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: r.total === undefined ? 10 : r.total, CAIXA: "1", VENDEDOR_NFCE: r.vendedor === undefined ? "ANA" : r.vendedor,
+                    DATA: hojeUTC(), MODELO: r.modelo || 65, TOTAL: r.total === undefined ? 10 : r.total, CAIXA: "1", VENDEDOR_NFCE: _texto(r.vendedor === undefined ? "ANA" : r.vendedor),
                     CANC: r.canc || "N", SIT: "", EMI: "", HORA: r.hora, CLI_NOME: "", NAT_OP: "",
                     VAL_NUMERONF: r.numero, VAL_GERENCIAL: r.gerencial || null
                 }));

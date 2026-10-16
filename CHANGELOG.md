@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.5 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.4 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.6 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.5 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -28,6 +28,12 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.15.6 — 2026-10-16 19:30
+
+**Acentos dos itens no modal de detalhes.**
+
+- /api/itens-detalhe lê a DESCRICAO do ALTERACA como bytes (CHARACTER SET OCTETS) e decodifica no Node: UTF-8 válido como está, senão Windows-1252. Coluna sem charset (NONE) com acento chegava com o caractere U+FFFD. Firebird que recusar a conversão: a consulta é refeita do jeito antigo.
 
 ### 2.15.5 — 2026-10-07 23:00
 
@@ -165,6 +171,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.8.5 — 2026-10-16 19:30
+
+**Nomes com acento saem certos ("Thiago Paraíba").**
+
+- O SmallSoft grava nomes em colunas sem charset (NONE) com bytes Windows-1252; pedidos como texto numa conexão UTF8, o "í" chegava como U+FFFD ("Para�ba"). Vendedor, cliente, natureza, status, formas de pagamento e descrição dos itens (NFCE, ALTERACA, PAGAMENT, VENDAS, ITENS001) agora são lidos como bytes (CHARACTER SET OCTETS) e decodificados no Node: UTF-8 válido como está, senão Windows-1252 (latin1 se o Node não tiver ICU completo). Testado no Firebird 3 com node-firebird 1.1.9, 1.1.10, 2.0.0 e 2.18.2 e colunas NONE/UTF8/WIN1252.
+- Firebird que recusar a conversão: a consulta é refeita do jeito antigo (aviso "AVISO TEXTO" no log) — a geração nunca cai por causa disso.
 
 ### 3.8.4 — 2026-10-16 18:00
 
