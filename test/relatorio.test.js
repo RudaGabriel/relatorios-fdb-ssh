@@ -269,6 +269,42 @@ test("gerador: gerencial absorvida pelos valores finais vira \"convertida\" no h
 });
 
 // ---------------------------------------------------------------------------
+test("gerador: NFC-e reemitida como NF-e (mesmos itens e valor) conta uma vez só e a NF-e prevalece", () => {
+    // Caso real (v3.8.4): NFC-e 125636 (CASIMIRO, 16:17) e NF-e 000307 (cliente,
+    // sem vendedor) com os mesmos 3 itens e R$ 453,35 — eram somadas as duas.
+    const itens = p => [
+        { pedido: p, desc: "FN CAES VET HIPOALERGENICA RMG 10KG", qtd: 1, total: 300 },
+        { pedido: p, desc: "FLAMAVET ECONOMICA 0,2MG AGENER", qtd: 1, total: 53.35 },
+        { pedido: p, desc: "DOXIFIN TABS ECONOMICO 50MG OURO FINO", qtd: 1, total: 100 }
+    ];
+    const dir = montarPasta({}, {
+        nfce: [
+            { numero: "125636", hora: "16:17:00", modelo: 65, total: 453.35, vendedor: "CASIMIRO" },
+            { numero: "307", hora: "17:05:00", modelo: 55, total: 453.35, vendedor: "" },
+            // Mesmo valor, itens diferentes: duas vendas — ficam as duas.
+            { numero: "125700", hora: "16:30:00", modelo: 65, total: 80, vendedor: "ANA" },
+            { numero: "308", hora: "16:40:00", modelo: 55, total: 80, vendedor: "" }
+        ],
+        alt: [...itens("125636"), ...itens("307"),
+            { pedido: "125700", desc: "COLEIRA", qtd: 1, total: 80 },
+            { pedido: "308", desc: "SHAMPOO", qtd: 1, total: 80 }]
+    });
+    const html = gerar(dir);
+    const dados = JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+    const num = v => String(v.numero).replace(/^0+/, "");
+    assert.ok(!dados.vendas.some(v => num(v) === "125636"), "NFC-e reemitida continuou na tabela");
+    const nfe = dados.vendas.find(v => num(v) === "307");
+    assert.ok(nfe && nfe.modelo === 55, "a NF-e tem que continuar");
+    assert.strictEqual(nfe.vendedor, "CASIMIRO", "NF-e sem vendedor herda o da NFC-e");
+    assert.ok(Math.abs(dados.totaisDia.geral - (453.35 + 80 + 80)) < 0.001, "a venda não pode ser contada duas vezes");
+    assert.ok(dados.vendas.some(v => num(v) === "125700") && dados.vendas.some(v => num(v) === "308"), "itens diferentes: as duas ficam");
+    const par = dados.duplicatas.provaveis.find(d => num({ numero: d.gerencial }) === "125636");
+    assert.ok(par, "o par vai para o painel Duplicatas");
+    assert.strictEqual(par.origemModelo, 65);
+    assert.strictEqual(par.docModelo, 55);
+    assert.strictEqual(num({ numero: par.docNumero }), "307");
+});
+
 test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só na tela, com linha de base", { timeout: 60000 }, async (t) => {
     // As vendas do teste são "N minutos atrás" com a data de HOJE: perto da
     // meia-noite elas cairiam no dia anterior (e virariam hora no futuro).
