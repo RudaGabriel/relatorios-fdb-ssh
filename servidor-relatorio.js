@@ -2,36 +2,17 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.15.5
+ * @version 2.15.6
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.15.5 - 2026-10-07 23:00 - Correções da varredura de bugs.
- *     - pollStatus (reserva) comparava vendas+pagamentos (400) com o total da
- *       geração, que conta só vendas (201): ao ligar dava sempre "Dados
- *       alterados: vendas 400 > 201 → regerando", e gravava a soma no status
- *       que a tela compara (recarga à toa). Agora tem linha de base própria e
- *       não grava qt/total; regenera pelo mesmo caminho do fast-poll (sem
- *       apagar a geração em curso). A 1ª linha de base do fast-poll gera uma
- *       vez em silêncio — cobre a venda feita entre a 1ª geração e ela.
- *     - Fast-poll: watchdog e callbacks de um ciclo anterior (troca de banco,
- *       reconexão) não derrubam mais a conexão nova; a parte complementar (sem
- *       índice) tem prazo maior que 2 s e conta para "saudável".
- *     - Parar o polling descarta a venda pendente; ciclo do pollStatus de um
- *       banco anterior não grava nada.
- *     - Somente leitura: se a versão do node-firebird não puder ser lida, a
- *       transação continua readOnly (antes caía na forma de lista, que no
- *       driver 1.x/2.x vira transação de ESCRITA com espera).
- *     - Log: stack de várias linhas — cada linha física leva data, hora e
- *       categoria; data e hora do mesmo instante; poda ao ligar; erros da
- *       tela limitados a 30/min.
- *     - pollInterval 100–60000 ms e maxLogLines 100–100000 (sem teto, um
- *       valor enorme virava setInterval de 1 ms ou log sem limite); GET
- *       /api/config devolve os valores efetivos.
- *     - /periodo: no máximo 3 períodos gerando ao mesmo tempo.
- *     - Cache de hora só é regravado na saída se havia gravação pendente.
+ *   2.15.6 - 2026-10-16 19:30 - Acentos dos itens no modal de detalhes.
+ *     - /api/itens-detalhe lê a DESCRICAO do ALTERACA como bytes (CHARACTER SET
+ *       OCTETS) e decodifica no Node: UTF-8 válido como está, senão Windows-1252.
+ *       Coluna sem charset (NONE) com acento chegava com o caractere U+FFFD.
+ *       Firebird que recusar a conversão: a consulta é refeita do jeito antigo.
  */
 
 
@@ -39,7 +20,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.15.5";
+const SERVER_VERSION = "2.15.6";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -200,8 +181,18 @@ var fs          = require("fs");
 var os          = require("os");
 var TextDecoder = require("util").TextDecoder;
 
-// Decoder Windows-1252 — constante de módulo: evita recriar a cada request /api/itens-detalhe.
-var _win1252Decoder = new TextDecoder("windows-1252");
+// Decoder de texto lido como bytes (CHARACTER SET OCTETS) — constante de módulo.
+// UTF-8 válido é usado como está; senão Windows-1252 (colunas sem charset do
+// SmallSoft); Node sem ICU completo cai em latin1 (mesmos acentos).
+var _decUtf8Estrito = (function(){ try { return new TextDecoder("utf-8", { fatal: true }); } catch(_) { return null; } })();
+var _decWin1252Base = (function(){ try { return new TextDecoder("windows-1252"); } catch(_) { return null; } })();
+var _win1252Decoder = {
+    decode: function(buf) {
+        if (_decUtf8Estrito) { try { return _decUtf8Estrito.decode(buf); } catch(_) { /* não é UTF-8 */ } }
+        if (_decWin1252Base) { try { return _decWin1252Base.decode(buf); } catch(_) { /* segue */ } }
+        return Buffer.from(buf).toString("latin1");
+    }
+};
 
 // Formatador de quantidade — constante de módulo: converte número para string BR sem recriar a cada request.
 var _fmtQuantidade = function(v) {
@@ -4425,8 +4416,10 @@ var server=http.createServer(function(req,res){
                 // ROBUSTEZ: QUANTIDADE e ITEM só entram na SQL se existirem no
                 // catálogo — em bases antigas do Small Commerce a ausência de uma
                 // delas fazia a query inteira falhar com "column unknown".
+                // DESCRICAO como BYTES (OCTETS): coluna sem charset com acento chegava
+                // com "\uFFFD". Firebird que recusar a conversão: refeita sem ela.
                 var _sqlAlt =
-                    "SELECT cast(DESCRICAO as varchar(120)) as DESC_A," +
+                    "SELECT cast(DESCRICAO as varchar(480) character set octets) as DESC_A," +
                     "       cast(" + _colQtd + " as double precision) as QTD_A," +
                     "       " + _colTotal + " as TOT_A " +
                     "FROM ALTERACA " +
@@ -4434,7 +4427,14 @@ var server=http.createServer(function(req,res){
                     "  AND cast(PEDIDO as varchar(60)) IN (" + _ph + ") " +
                     (_cols.ITEM ? "ORDER BY ITEM" : "");
 
-                idDb.query(_sqlAlt, [_idData, _idData].concat(_pedidos), function(errQ, rows){
+                var _paramsAlt = [_idData, _idData].concat(_pedidos);
+                var _aoLerItens = function(errQ, rows){
+                    if (errQ && !_idRespondido && _sqlAlt.indexOf(" character set octets") >= 0 &&
+                        /octets|transliterat|character set|charset|malformed|conversion|truncation|arithmetic/i.test(String(errQ.message || errQ))) {
+                        _sqlAlt = _sqlAlt.replace("cast(DESCRICAO as varchar(480) character set octets)", "cast(DESCRICAO as varchar(120))");
+                        idDb.query(_sqlAlt, _paramsAlt, _aoLerItens);
+                        return;
+                    }
                     // O cliente pode ter desconectado ou o timeout de 8s já pode ter
                     // respondido enquanto esta query rodava — não processa nem responde de novo.
                     if (_idRespondido) { _idFechar(); return; }
@@ -4470,7 +4470,8 @@ var server=http.createServer(function(req,res){
 
                     _idFechar();
                     _idResponder(200, {ok:true, itens:itens});
-                });
+                };
+                idDb.query(_sqlAlt, _paramsAlt, _aoLerItens);
             });
         });
         return;

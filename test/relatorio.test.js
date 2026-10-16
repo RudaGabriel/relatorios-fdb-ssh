@@ -305,6 +305,18 @@ test("gerador: NFC-e reemitida como NF-e (mesmos itens e valor) conta uma vez s�
     assert.strictEqual(num({ numero: par.docNumero }), "307");
 });
 
+test("gerador: nome com acento em coluna sem charset sai certo (lido como bytes)", () => {
+    // Caso real (v3.8.5): "Thiago Paraíba" aparecia como "Thiago Para\uFFFDba".
+    const estado = { nfce: [{ numero: "500", hora: "10:00:00", modelo: 65, total: 30, vendedor: "THIAGO PARAÍBA" }] };
+    const ler = html => JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+    const d1 = ler(gerar(montarPasta({}, estado)));
+    assert.strictEqual(d1.vendas[0].vendedor, "THIAGO PARAÍBA");
+    // Firebird que recusa OCTETS: a geração não cai, só volta ao comportamento antigo.
+    const d2 = ler(gerar(montarPasta({}, Object.assign({ semOctets: true }, estado))));
+    assert.strictEqual(d2.vendas.length, 1, "a venda continua no relatório");
+    assert.strictEqual(d2.vendas[0].vendedor, "THIAGO PARA\uFFFDBA");
+});
+
 test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só na tela, com linha de base", { timeout: 60000 }, async (t) => {
     // As vendas do teste são "N minutos atrás" com a data de HOJE: perto da
     // meia-noite elas cairiam no dia anterior (e virariam hora no futuro).
