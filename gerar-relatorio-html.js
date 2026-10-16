@@ -1,25 +1,19 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.3
+ * @version 3.8.4
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.3 - 2026-10-08 19:30 - Gerencial convertida sai sozinha; escolha por par no painel Duplicatas.
- *     - A reconciliação gerencial → NF-e comparava o NFCE.TOTAL/HORA BRUTOS da gerencial,
- *       mas o total exibido vem dos itens do ALTERACA (ou do PAGAMENT): o auto-teste via o
- *       par (gerencial 062418 × NF-e 000306, R$ 1215,51, mesmo vendedor) e a gerencial
- *       continuava na tela e na soma. Nova reconciliação FINAL sobre as linhas já
- *       calculadas, com o mesmo critério do auto-teste (mesma data, mesmo valor, documento
- *       0–20 min depois, vendedores não diferentes) mais uma trava: com itens dos dois
- *       lados, precisa haver ao menos um item em comum (a mesma trava vale no aviso
- *       POSSIVEL_DUPLICIDADE). Cada documento absorve no máximo 1 gerencial; documento com
- *       vínculo pela coluna GERENCIAL fica de fora. Vale para NFC-e e NF-e. O documento fiscal sempre prevalece: herda pagamento, itens, vendedor e
- *       cliente que não tiver; a gerencial vira "convertida" no hora-fixada-cache.json.
- *     - Painel Duplicatas (fallback de dúvida), por par: "Manter apenas NF-e/NFC-e"
- *       (padrão), "Manter as duas", "Manter apenas a gerencial" e "Perguntar depois".
- *       Escolha salva no navegador; totais do dia e por vendedor acompanham; pares já
- *       decididos aparecem no painel para trocar a escolha (vale na próxima atualização).
+ *   3.8.4 - 2026-10-16 18:00 - NFC-e reemitida como NF-e conta uma vez só.
+ *     - NFC-e 125636 (Casimiro, crédito) e NF-e 000307 (cliente, sem vendedor), ambas de
+ *       R$ 453,35 com os mesmos 3 itens, eram somadas — a venda aparecia em dobro no
+ *       total. Nova reconciliação NFC-e → NF-e: mesma data, mesmo valor e a MESMA lista
+ *       de itens (os dois lados com itens), sem vendedores ou clientes diferentes, NF-e
+ *       não anterior à NFC-e. A NF-e prevalece e herda vendedor, hora e formas de
+ *       pagamento que não tiver; a NFC-e vira "convertida" no hora-fixada-cache.json.
+ *     - Painel Duplicatas também lista esses pares: "Manter apenas NF-e" (padrão),
+ *       "Manter as duas", "Manter apenas a NFC-e" e "Perguntar depois".
  */
 
 (function() {
@@ -27,7 +21,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.3";
+    const SCRIPT_VERSION = "3.8.4";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -2049,6 +2043,87 @@
 				}
 			}
 
+			// ── NFC-e reemitida como NF-e (v3.8.4) ───────────────────────────────────
+			// Caso real: NFC-e 125636 (Casimiro, 16:17, crédito, R$ 453,35) e NF-e 000307
+			// (cliente ELANE, sem vendedor, R$ 453,35) com os MESMOS 3 itens — o cliente
+			// pediu nota com nome/CPF e a venda foi refeita como NF-e. As duas eram
+			// somadas. Diferente da gerencial, aqui os DOIS são documentos fiscais e a
+			// emissão da NF-e pode ser bem depois; por isso a régua é mais forte:
+			// mesma data, mesmo valor (±0,01) e a MESMA lista de itens (descrição
+			// normalizada, com repetição; os dois lados precisam ter itens). Não pode
+			// haver vendedores diferentes nem clientes diferentes (ambos conhecidos), e
+			// a NF-e não pode ser anterior à NFC-e quando as duas horas existem. Cada
+			// NF-e absorve no máximo 1 NFC-e (a de horário mais próximo). A NF-e
+			// prevalece e herda vendedor, hora e formas de pagamento que não tiver; a
+			// NFC-e vai para o painel Duplicatas (manter as duas / só uma delas).
+			{
+				const _normTxt = (v) => String(v == null ? "" : v).normalize("NFD").replace(/[̀-ͯ]/g, "")
+					.toUpperCase().replace(/\s+/g, " ").trim();
+				const _assinaturaItens = (l) => (Array.isArray(l.itensDetalhe) ? l.itensDetalhe : [])
+					.map((it) => _normTxt(it && it.desc).slice(0, 20)).filter(Boolean).sort().join("\u0001");
+				const _vendConhecido = (v) => { const t = String(v || "").trim(); return t !== "" && t !== "?" && !t.startsWith("("); };
+				const _clienteConhecido = (c) => { const t = _normTxt(c); return t !== "" && !t.includes("CONSUMIDOR"); };
+				const _nfces = linhas.filter((l) => l.modelo === 65 && !l.is_recebimento && Number(l.total) > 0)
+					.map((l) => ({ l, ass: _assinaturaItens(l), m: _horaParaMinutos(l.hora) }))
+					.filter((x) => x.ass !== "")
+					.sort((a, b) => (a.m === null ? 1e9 : a.m) - (b.m === null ? 1e9 : b.m));
+				const _nfes = linhas.filter((l) => l.modelo === 55 && !l.is_recebimento && Number(l.total) > 0)
+					.map((l) => ({ l, ass: _assinaturaItens(l), m: _horaParaMinutos(l.hora) }))
+					.filter((x) => x.ass !== "");
+				const _removerNfce = new Set();
+				const _nfeUsada = new Set();
+				for (const n of _nfces) {
+					const _cands = [];
+					for (const e of _nfes) {
+						if (_nfeUsada.has(e.l)) continue;
+						if (e.l._dtKey !== n.l._dtKey) continue;
+						if (Math.abs(Number(e.l.total) - Number(n.l.total)) > TOLERANCIA_VALOR) continue;
+						if (e.ass !== n.ass) continue;
+						if (n.m !== null && e.m !== null && e.m < n.m) continue; // NF-e nunca antes da NFC-e
+						if (_vendedoresDiferentes(n.l.vendedor, e.l.vendedor)) continue;
+						if (_clienteConhecido(n.l.cliente) && _clienteConhecido(e.l.cliente) && _normTxt(n.l.cliente) !== _normTxt(e.l.cliente)) continue;
+						_cands.push({ e, diff: (n.m !== null && e.m !== null) ? e.m - n.m : null });
+					}
+					if (_cands.length === 0) continue;
+					// Mais próxima em horário primeiro; sem hora vai para o fim.
+					_cands.sort((a, b) => (a.diff === null ? 1e9 : a.diff) - (b.diff === null ? 1e9 : b.diff));
+					const { e, diff } = _cands[0];
+					const doc = e.l, nf = n.l;
+					_nfeUsada.add(doc);
+					_removerNfce.add(nf);
+					if (!_vendConhecido(doc.vendedor) && _vendConhecido(nf.vendedor)) doc.vendedor = nf.vendedor;
+					if (!String(doc.cliente || "").trim() && nf.cliente) doc.cliente = nf.cliente;
+					if (_horaParaMinutos(doc.hora) === null && nf.hora) doc.hora = nf.hora;
+					const _docTemForma = doc.formasValores && Object.keys(doc.formasValores).length > 0;
+					if (!_docTemForma && nf.formasValores && Object.keys(nf.formasValores).length > 0) doc.formasValores = { ...nf.formasValores };
+					const _nfceKey = _chaveLinha.get(nf);
+					const _numDoc = String(doc.numero || "").replace(/^0+/, "") || String(doc.numero || "");
+					if (_nfceKey) _situacaoCache.set(_nfceKey, { situacao: "convertida", convertidaEm: { tipo: "nfe", numero: _numDoc } });
+					// Gerencial que esta NFC-e já tinha absorvido passa a apontar para a NF-e
+					// (senão "manter apenas a gerencial" procuraria uma NFC-e que saiu).
+					const _numNf = String(nf.numero || "").replace(/^0+/, "");
+					for (const dp of _duplicatasProvaveis.concat(_duplicatasConfirmadas)) {
+						if (Number(dp.docModelo) === 65 && String(dp.docNumero || "").replace(/^0+/, "") === _numNf && (!dp.dt || dp.dt === nf._dtKey)) {
+							dp.docNumero = doc.numero; dp.docModelo = 55;
+						}
+					}
+					const _obs = _cands.length > 1 ? ` (${_cands.length} candidatas, escolhida a mais próxima)` : "";
+					console.log(`RECONCILIACAO: NFC-e ${nf.numero} absorvida pela NF-e ${doc.numero} (mesma data/valor/itens${diff !== null ? ", " + diff + "min depois" : ""})${_obs}.`);
+					_duplicatasProvaveis.push({
+						gerencial: nf.numero, origemModelo: 65, docNumero: doc.numero, docModelo: 55,
+						diffMin: diff, ambiguo: _cands.length > 1, criterio: "itens",
+						dt: nf._dtKey, hora: nf.hora, caixa: nf.caixa,
+						vendedor: nf.vendedor, cliente: nf.cliente,
+						natureza: nf.natureza, total: nf.total,
+						pagamentos: nf.pagamentos, formasValores: nf.formasValores || {},
+						itens: nf.itens, itensDetalhe: Array.isArray(nf.itensDetalhe) ? nf.itensDetalhe : []
+					});
+				}
+				if (_removerNfce.size > 0) {
+					for (let i = linhas.length - 1; i >= 0; i--) if (_removerNfce.has(linhas[i])) linhas.splice(i, 1);
+				}
+			}
+
 			const totaisDia = { ok: true, gerencial: 0, nfce: 0, nfe: 0, geral: 0, selecionado: 0, qtd_gerencial: 0, qtd_nfce: 0, qtd_nfe: 0, modelos: [] };
 			const mpVend = new Map();
 
@@ -3512,7 +3587,8 @@ const ligarEditorProibidos=(ta,elCont)=>{
 // ── Painel "Duplicatas" (v2.9.0; escolhas por par em v3.8.3) ─────────────
 // Gerenciais que o gerador suprimiu automaticamente nesta geração (já
 // convertidas em NFC-e/NF-e — vínculo pela coluna Gerencial ou reconciliação
-// por data/valor/vendedor no lado Node.js). Por padrão o documento fiscal
+// por data/valor/vendedor no lado Node.js) e NFC-e reemitidas como NF-e
+// (mesma data/valor/itens — v3.8.4; nesse caso "gerencial" abaixo = a NFC-e). Por padrão o documento fiscal
 // PREVALECE: a gerencial fica FORA da tabela e da soma. Como fallback de
 // dúvida, o painel oferece por par (pedido do usuário):
 //   • "Manter as duas"            — exibe e soma a gerencial E o documento.
@@ -3533,6 +3609,9 @@ const LS_DUP_ESCOLHA_PREFIXO = "__dup_escolha__::";
 const DUP_ESCOLHAS = ["todas", "fiscal", "gerencial"];
 const _dupChaveItem = d => String(d.gerencial) + "::" + String(d.docNumero);
 const _dupRotDoc = d => Number(d.docModelo) === 65 ? "NFC-e" : "NF-e";
+// Documento absorvido: gerencial (padrão) ou NFC-e reemitida como NF-e (v3.8.4).
+const _dupOrigemNfce = d => Number(d.origemModelo) === 65;
+const _dupRotOrigem = d => _dupOrigemNfce(d) ? "NFC-e" : "Gerencial";
 const _dupLerManterTodas = () => { try { return localStorage.getItem(LS_DUP_MANTER_TODAS) === "1"; } catch(e) { return false; } };
 const _dupSalvarManterTodas = (v) => { try { if (v) localStorage.setItem(LS_DUP_MANTER_TODAS, "1"); else localStorage.removeItem(LS_DUP_MANTER_TODAS); } catch(e) {} };
 const _dupLerEscolha = (d) => {
@@ -3564,8 +3643,8 @@ const _dupSintetizarLinha = d => {
     return {
         _dtKey: d.dt || DADOS.data,
         vendedor: d.vendedor || "",
-        modelo: 99,
-        tipo: "gerencial",
+        modelo: _dupOrigemNfce(d) ? 65 : 99,
+        tipo: _dupOrigemNfce(d) ? "nfc-e" : "gerencial",
         numero: d.gerencial,
         caixa: d.caixa || "",
         hora: d.hora || "",
@@ -3708,7 +3787,7 @@ for (const d of _dupTodas) {
     }
 })();
 
-const _DUP_ROTULO_ESCOLHA = { todas: "manter as duas", fiscal: "manter apenas o documento fiscal", gerencial: "manter apenas a gerencial" };
+const _DUP_ROTULO_ESCOLHA = { todas: "manter as duas", fiscal: "manter apenas o documento final", gerencial: "manter apenas o documento de origem" };
 
 const abrirDuplicatas=(itens)=>{
     if (document.getElementById("ovDup")) return; // guarda contra abertura dupla
@@ -3726,9 +3805,13 @@ const abrirDuplicatas=(itens)=>{
 
     const linhaItem = (d, decidida) => {
         const doc = _dupRotDoc(d);
+        const origem = _dupRotOrigem(d);
+        const _motivo = d.criterio === "itens"
+            ? 'mesmo valor/data e mesmos itens'+(d.diffMin != null ? ', +'+esc(d.diffMin)+'min' : '')
+            : 'mesmo valor/data/vendedor, +'+esc(d.diffMin)+'min';
         const rotulo = d._tipo === "confirmado"
-            ? '<span style="color:var(--st-ok)">● confirmado</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
-            : '<span style="color:var(--st-warn)">● provável</span> — Gerencial <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(mesmo valor/data/vendedor, +'+esc(d.diffMin)+'min'+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
+            ? '<span style="color:var(--st-ok)">● confirmado</span> — '+origem+' <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">(vínculo direto pela coluna Gerencial)</span>'
+            : '<span style="color:var(--st-warn)">● provável</span> — '+origem+' <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">('+_motivo+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
         const valor = Number(d.total || 0) > 0 ? ' <span style="opacity:.75">'+esc(Number(d.total).toLocaleString("pt-BR",{style:"currency",currency:"BRL"}))+(d.vendedor?' · '+esc(d.vendedor):'')+'</span>' : '';
         const atual = decidida ? _dupLerEscolha(d) : null;
         const botao = (cls, txt, escolha) => '<div class="btn '+cls+'" style="font-size:12px;padding:4px 10px'+(atual===escolha?';outline:2px solid var(--accent)':'')+'">'+txt+'</div>';
@@ -3738,7 +3821,7 @@ const abrirDuplicatas=(itens)=>{
             + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
             + botao("dupBtnFiscal", "Manter apenas "+doc, "fiscal")
             + botao("dupBtnTodas1", "Manter as duas", "todas")
-            + botao("dupBtnGer", "Manter apenas a gerencial", "gerencial")
+            + botao("dupBtnGer", "Manter apenas a "+origem, "gerencial")
             + (decidida ? '' : '<div class="btn dupBtnDepois" style="font-size:12px;padding:4px 10px">Perguntar depois</div>')
             + '</div></div>';
     };
@@ -3754,7 +3837,7 @@ const abrirDuplicatas=(itens)=>{
             '<div style="padding:10px 10px 4px;font-size:12px;font-weight:700;opacity:.7">Já decididas — trocar a escolha vale a partir da próxima atualização do relatório</div>'
             + listaDec.map(d => linhaItem(d, true)).join("");
         const txtManterTodas = _dupManterTodasAtivo ? 'Desativar "manter todas"' : "Manter todas as duplicatas";
-        bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais convertidas em NFC-e/NF-e — por padrão só o documento fiscal fica. Escolha o que fazer com cada par.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
+        bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais convertidas em NFC-e/NF-e e NFC-e reemitidas como NF-e — por padrão só o documento final fica. Escolha o que fazer com cada par.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
             + '<div class="mbody" style="padding-bottom:0">'
             + '<div class="btn" id="dupBtnTodas" style="margin-bottom:10px;width:100%;justify-content:center">'+txtManterTodas+'</div>'
             + '</div>'

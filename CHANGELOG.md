@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.5 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.3 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.4 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -165,6 +165,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.8.4 — 2026-10-16 18:00
+
+**NFC-e reemitida como NF-e conta uma vez só.**
+
+- NFC-e 125636 (Casimiro, crédito) e NF-e 000307 (cliente, sem vendedor), ambas de R$ 453,35 com os mesmos 3 itens, eram somadas — a venda aparecia em dobro no total. Nova reconciliação NFC-e → NF-e: mesma data, mesmo valor e a MESMA lista de itens (os dois lados com itens), sem vendedores ou clientes diferentes, NF-e não anterior à NFC-e. A NF-e prevalece e herda vendedor, hora e formas de pagamento que não tiver; a NFC-e vira "convertida" no hora-fixada-cache.json.
+- Painel Duplicatas também lista esses pares: "Manter apenas NF-e" (padrão), "Manter as duas", "Manter apenas a NFC-e" e "Perguntar depois".
 
 ### 3.8.3 — 2026-10-08 19:30
 
