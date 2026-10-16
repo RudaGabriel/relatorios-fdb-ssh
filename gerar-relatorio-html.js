@@ -1,20 +1,23 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.5
+ * @version 3.8.6
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.5 - 2026-10-16 19:30 - Nomes com acento saem certos ("Thiago Paraíba").
- *     - O SmallSoft grava nomes em colunas sem charset (NONE) com bytes Windows-1252;
- *       pedidos como texto numa conexão UTF8, o "í" chegava como U+FFFD ("Para�ba").
- *       Vendedor, cliente, natureza, status, formas de pagamento e descrição dos itens
- *       (NFCE, ALTERACA, PAGAMENT, VENDAS, ITENS001) agora são lidos como bytes
- *       (CHARACTER SET OCTETS) e decodificados no Node: UTF-8 válido como está, senão
- *       Windows-1252 (latin1 se o Node não tiver ICU completo). Testado no Firebird 3
- *       com node-firebird 1.1.9, 1.1.10, 2.0.0 e 2.18.2 e colunas NONE/UTF8/WIN1252.
- *     - Firebird que recusar a conversão: a consulta é refeita do jeito antigo (aviso
- *       "AVISO TEXTO" no log) — a geração nunca cai por causa disso.
+ *   3.8.6 - 2026-10-16 20:30 - NFC-e com desconto reemitida como NF-e; badge do total na tela.
+ *     - NFC-e 125636 × NF-e 000307 continuavam as duas na lista: a NFC-e tem a linha
+ *       "Desconto de 5%" (item de valor negativo) e a NF-e não, então as listas de itens
+ *       nunca eram iguais. A comparação agora usa só PRODUTOS (descontos/acréscimos
+ *       fora), em todas as reconciliações e no auto-teste. A hora deixou de ser
+ *       critério (a da NF-e é a de saída) e cliente também (NFC-e traz CPF/"consumidor").
+ *       A NF-e sempre prevalece.
+ *     - Badge #bDiaBrk estourava para fora do monitor: a grade da página (.app) sem
+ *       coluna definida crescia até a largura do conteúdo e o excesso era cortado.
+ *       Coluna travada em minmax(0, 1fr) e ajuste em etapas aplicadas de uma vez (sem
+ *       piscar): oculta hora, encolhe o botão de vendedor, badges compactos, quebra de
+ *       linha dos badges e, por último, quebra dentro do próprio total. Testado de
+ *       1920 a 390 px.
  */
 
 (function() {
@@ -22,7 +25,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.5";
+    const SCRIPT_VERSION = "3.8.6";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -340,9 +343,10 @@
         // regra da reconciliação final do gerador (descrição normalizada, 20 caracteres).
         const itensIncompativeis = (a, b) => {
             const descs = (l) => new Set((Array.isArray(l && l.itensDetalhe) ? l.itensDetalhe : [])
-                .map((it) => String(it && it.desc || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                .filter((it) => it && !(Number.isFinite(Number(it.total)) && it.total !== null && Number(it.total) < 0))
+                .map((it) => String(it.desc || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
                     .toUpperCase().replace(/\s+/g, " ").trim().slice(0, 20))
-                .filter(Boolean));
+                .filter((d) => d && !/\b(DESCONTO|ACRESCIMO)\b/.test(d)));
             const x = descs(a), y = descs(b);
             if (x.size === 0 || y.size === 0) return false;
             for (const d of x) if (y.has(d)) return false;
@@ -2014,9 +2018,10 @@
 				// ALTERACA e ITENS001 podem truncar diferente). Os DOIS lados com itens e
 				// NENHUM em comum = vendas diferentes, mesmo com valor/vendedor/horário iguais.
 				const _descsItens = (l) => new Set((Array.isArray(l.itensDetalhe) ? l.itensDetalhe : [])
-					.map((it) => String(it && it.desc || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+					.filter((it) => it && !(Number.isFinite(Number(it.total)) && it.total !== null && Number(it.total) < 0))
+					.map((it) => String(it.desc || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
 						.toUpperCase().replace(/\s+/g, " ").trim().slice(0, 20))
-					.filter(Boolean));
+					.filter((d) => d && !/\b(DESCONTO|ACRESCIMO)\b/.test(d)));
 				const _itensIncompativeis = (a, b) => {
 					const x = _descsItens(a), y = _descsItens(b);
 					if (x.size === 0 || y.size === 0) return false;
@@ -2088,18 +2093,28 @@
 			// emissão da NF-e pode ser bem depois; por isso a régua é mais forte:
 			// mesma data, mesmo valor (±0,01) e a MESMA lista de itens (descrição
 			// normalizada, com repetição; os dois lados precisam ter itens). Não pode
-			// haver vendedores diferentes nem clientes diferentes (ambos conhecidos), e
-			// a NF-e não pode ser anterior à NFC-e quando as duas horas existem. Cada
+			// haver vendedores diferentes (cliente não é critério: a NFC-e costuma
+			// trazer CPF/"consumidor" e a NF-e o nome completo). A
+			// hora NÃO é critério (v3.8.6): a da NF-e é a de saída, que pode ser
+			// anterior à emissão. Descontos/acréscimos não contam como item. Cada
 			// NF-e absorve no máximo 1 NFC-e (a de horário mais próximo). A NF-e
 			// prevalece e herda vendedor, hora e formas de pagamento que não tiver; a
 			// NFC-e vai para o painel Duplicatas (manter as duas / só uma delas).
 			{
 				const _normTxt = (v) => String(v == null ? "" : v).normalize("NFD").replace(/[̀-ͯ]/g, "")
 					.toUpperCase().replace(/\s+/g, " ").trim();
+				// Só PRODUTOS entram na comparação: linha de desconto/acréscimo (valor
+				// negativo ou descrição DESCONTO/ACRESCIMO) existe na NFC-e e não na NF-e
+				// — caso real 125636 × 000307 (desconto de 5%) não casava por causa dela.
+				const _ehProduto = (it) => {
+					if (!it) return false;
+					if (it.total !== null && it.total !== undefined && Number.isFinite(Number(it.total)) && Number(it.total) < 0) return false;
+					return !/\b(DESCONTO|ACRESCIMO)\b/.test(_normTxt(it.desc));
+				};
 				const _assinaturaItens = (l) => (Array.isArray(l.itensDetalhe) ? l.itensDetalhe : [])
-					.map((it) => _normTxt(it && it.desc).slice(0, 20)).filter(Boolean).sort().join("\u0001");
+					.filter(_ehProduto)
+					.map((it) => _normTxt(it.desc).slice(0, 20)).filter(Boolean).sort().join("\u0001");
 				const _vendConhecido = (v) => { const t = String(v || "").trim(); return t !== "" && t !== "?" && !t.startsWith("("); };
-				const _clienteConhecido = (c) => { const t = _normTxt(c); return t !== "" && !t.includes("CONSUMIDOR"); };
 				const _nfces = linhas.filter((l) => l.modelo === 65 && !l.is_recebimento && Number(l.total) > 0)
 					.map((l) => ({ l, ass: _assinaturaItens(l), m: _horaParaMinutos(l.hora) }))
 					.filter((x) => x.ass !== "")
@@ -2116,9 +2131,7 @@
 						if (e.l._dtKey !== n.l._dtKey) continue;
 						if (Math.abs(Number(e.l.total) - Number(n.l.total)) > TOLERANCIA_VALOR) continue;
 						if (e.ass !== n.ass) continue;
-						if (n.m !== null && e.m !== null && e.m < n.m) continue; // NF-e nunca antes da NFC-e
 						if (_vendedoresDiferentes(n.l.vendedor, e.l.vendedor)) continue;
-						if (_clienteConhecido(n.l.cliente) && _clienteConhecido(e.l.cliente) && _normTxt(n.l.cliente) !== _normTxt(e.l.cliente)) continue;
 						_cands.push({ e, diff: (n.m !== null && e.m !== null) ? e.m - n.m : null });
 					}
 					if (_cands.length === 0) continue;
@@ -2597,8 +2610,8 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 10px; border: 2px solid var(--bg-app); }
 ::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
-.app { height: 100%; max-height: 100vh; display: grid; grid-template-rows: auto 1fr; overflow: hidden; animation: fadeIn 0.28s var(--easing); }
-.top { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 16px 28px; background: var(--top-bg); backdrop-filter: var(--top-blur); border-bottom: 1px solid var(--border); z-index: 50; box-shadow: var(--shadow-sm); }
+.app { height: 100%; max-height: 100vh; display: grid; grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); overflow: hidden; animation: fadeIn 0.28s var(--easing); }
+.top { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 16px; padding: 16px 28px; background: var(--top-bg); backdrop-filter: var(--top-blur); border-bottom: 1px solid var(--border); z-index: 50; box-shadow: var(--shadow-sm); }
 /* AJUSTE SOLICITADO: "overflow: hidden" removido daqui. Estava cortando
    conteudo que ultrapassasse a largura da barra superior (o filtro de
    vendedor com nome longo, badges, etc.) em vez de deixar transbordar.
@@ -2609,6 +2622,9 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
    pararia de funcionar. */
 .top .left { display: flex; flex-wrap: nowrap; gap: 14px; align-items: center; justify-content: space-between; min-width: 0; }
 .badges { display: flex; gap: 10px; align-items: center; flex-wrap: nowrap; }
+.top.badgesCompactos .badge { font-size: 10px; letter-spacing: 0.02em; padding: 5px 9px; }
+.top.badgesQuebra .badges { flex-wrap: wrap; min-width: 0; flex: 1 1 auto; justify-content: flex-end; row-gap: 6px; gap: 6px; }
+.top.totalQuebra #bDiaBrk { white-space: normal; flex-wrap: wrap; max-width: 100%; line-height: 1.5; }
 .badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); background: var(--bg-panel); border: 1px solid var(--border); padding: 6px 12px; border-radius: 99px; white-space: nowrap; transition: var(--transition); box-shadow: var(--shadow-sm); }
 .badge:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
 .badgeHora { background: transparent; border-color: transparent; box-shadow: none; }
@@ -2812,7 +2828,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .cardMeta, .cardPay { font-size: 13px; color: var(--text-main); margin-bottom: 6px; font-weight: 500; }
 .cardPay { color: var(--text-muted); }
 
-@media (max-width: 1024px) { .top { grid-template-columns: 1fr; padding: 16px 20px; } .top .right { justify-content: flex-start; flex-wrap: wrap; } .content { padding: 20px; } }
+@media (max-width: 1024px) { .top { grid-template-columns: minmax(0, 1fr); padding: 16px 20px; } .top .right { justify-content: flex-start; flex-wrap: wrap; } .content { padding: 20px; } }
 @media (max-width: 920px) { .main { grid-template-columns: 1fr; } .sidebar { display: none; } .vendBtn { display: flex; } #acoes { display: inline-flex; } .radioBusca { flex: 1 1 100%; justify-content: space-between; } }
 @media (max-width: 680px) {
   .content { padding: 12px; } .tableTop { padding: 20px; } table { display: none; } .cards { display: block; padding-bottom: 100px; }
@@ -6028,87 +6044,50 @@ const fixHead=()=>{
     'use strict';
     const $ = (s) => document.querySelector(s);
     let lastTopWidth = 0;
-    let cooldown = false;
-    const estado = { bhora: false, vb1: false, vb2: false, vb3: false };
 
+    // Só a direção HORIZONTAL conta: com a página rolada o topo pode ter
+    // top < 0 sem estar "estourando" — antes isso disparava as etapas à toa.
     const estaEscapando = (el) => {
-        if (!el) return false;
+        if (!el || el.offsetParent === null) return false;
         const r = el.getBoundingClientRect();
-        return r.right > window.innerWidth || r.left < 0
-            || r.bottom > window.innerHeight || r.top < 0;
+        const larg = document.documentElement.clientWidth || window.innerWidth;
+        return r.right > larg + 0.5 || r.left < -0.5;
     };
 
-    const ativarCooldown = () => {
-        cooldown = true;
-        setTimeout(() => { cooldown = false; }, 350);
+    // Etapas, da mais leve para a mais forte. A cada verificação tudo é
+    // desfeito e reaplicado SÓ até o badge caber — leituras de layout
+    // (getBoundingClientRect) são síncronas e o navegador só pinta no fim,
+    // então não há piscada nem vai-e-volta. As 3 últimas (v3.8.6) garantem
+    // que o total nunca sai da tela, mesmo com valores grandes.
+    const etapas = [
+        () => { const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)"); if (bh) bh.style.display = "none"; },
+        () => { const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "110px"; },
+        () => { const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "85px"; },
+        () => {
+            const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "0";
+            const icon = $("span.vendIcon"); if (icon) icon.style.transform = "translateX(4px)";
+        },
+        () => { const t = $("div.top"); if (t) t.classList.add("badgesCompactos"); },
+        () => { const t = $("div.top"); if (t) t.classList.add("badgesQuebra"); },
+        () => { const t = $("div.top"); if (t) t.classList.add("totalQuebra"); }
+    ];
+    const restaurar = () => {
+        const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)"); if (bh) bh.style.display = "";
+        const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "";
+        const icon = $("span.vendIcon"); if (icon) icon.style.transform = "";
+        const t = $("div.top"); if (t) t.classList.remove("badgesCompactos", "badgesQuebra", "totalQuebra");
     };
 
     const executarVerificacao = () => {
-        if (cooldown) return;
-
         const alvo = $("#bDiaBrk");
         if (!alvo) return;
-
-        // Layout voltou ao normal (janela alargada) — restaura tudo que foi
-        // ocultado/encolhido nas etapas abaixo. Sem isso, badge e vendBtn
-        // ficavam permanentemente ocultos/colapsados mesmo após alargar a
-        // janela, pois os flags de estado eram um "ratchet" só de ida.
-        if (!estaEscapando(alvo)) {
-            if (estado.bhora) {
-                const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)");
-                if (bh) bh.style.display = "";
-                estado.bhora = false;
+        try {
+            restaurar();
+            for (const etapa of etapas) {
+                if (!estaEscapando(alvo)) break;
+                etapa();
             }
-            if (estado.vb1 || estado.vb2 || estado.vb3) {
-                const vb = $(".vendBtn");
-                if (vb) vb.style.maxWidth = "";
-                const icon = $("span.vendIcon");
-                if (icon) icon.style.transform = "";
-                estado.vb1 = estado.vb2 = estado.vb3 = false;
-            }
-            return;
-        }
-
-        // Etapa 1 — oculta badge de hora
-        const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)");
-        if (bh && !estado.bhora) {
-            bh.style.display = "none";
-            estado.bhora = true;
-            ativarCooldown();
-        }
-
-        // Etapas 2→3→4 encadeadas
-        requestAnimationFrame(() => {
-            if (!estaEscapando(alvo)) return;
-            const vb = $(".vendBtn");
-            if (vb && !estado.vb1) {
-                vb.style.maxWidth = "110px";
-                estado.vb1 = true;
-                ativarCooldown();
-            }
-
-            requestAnimationFrame(() => {
-                if (!estaEscapando(alvo)) return;
-                const vb = $(".vendBtn");
-                if (vb && !estado.vb2) {
-                    vb.style.maxWidth = "85px";
-                    estado.vb2 = true;
-                    ativarCooldown();
-                }
-
-                requestAnimationFrame(() => {
-                    if (!estaEscapando(alvo)) return;
-                    const vb = $(".vendBtn");
-                    if (vb && !estado.vb3) {
-                        vb.style.maxWidth = "0";
-                        const icon = $("span.vendIcon");
-                        if (icon) icon.style.transform = "translateX(4px)";
-                        estado.vb3 = true;
-                        ativarCooldown();
-                    }
-                });
-            });
-        });
+        } catch (_) { /* layout é cosmético — nunca derruba a página */ }
     };
 
     let timer;
