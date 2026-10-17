@@ -1,23 +1,25 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.6
+ * @version 3.8.7
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.6 - 2026-10-16 20:30 - NFC-e com desconto reemitida como NF-e; badge do total na tela.
- *     - NFC-e 125636 × NF-e 000307 continuavam as duas na lista: a NFC-e tem a linha
- *       "Desconto de 5%" (item de valor negativo) e a NF-e não, então as listas de itens
- *       nunca eram iguais. A comparação agora usa só PRODUTOS (descontos/acréscimos
- *       fora), em todas as reconciliações e no auto-teste. A hora deixou de ser
- *       critério (a da NF-e é a de saída) e cliente também (NFC-e traz CPF/"consumidor").
- *       A NF-e sempre prevalece.
- *     - Badge #bDiaBrk estourava para fora do monitor: a grade da página (.app) sem
- *       coluna definida crescia até a largura do conteúdo e o excesso era cortado.
- *       Coluna travada em minmax(0, 1fr) e ajuste em etapas aplicadas de uma vez (sem
- *       piscar): oculta hora, encolhe o botão de vendedor, badges compactos, quebra de
- *       linha dos badges e, por último, quebra dentro do próprio total. Testado de
- *       1920 a 390 px.
+ *   3.8.7 - 2026-10-17 15:00 - Rastro da escolha no painel Duplicatas; badge do total nunca estoura.
+ *     - Painel Duplicatas: a opção escolhida fica preenchida com "✓" e "Escolha aplicada: …",
+ *       o par pisca e um aviso confirma. Trocar a escolha de um par já decidido aplica na hora
+ *       (a página recarrega e reabre o painel no par). Na tabela, a venda que ficou ganha o
+ *       chip "Duplicata: <documento> oculta" (ou "também aparece"), com o porquê no tooltip;
+ *       clicar no chip abre o painel com o par destacado.
+ *     - Badge #bDiaBrk ainda estourava: a verificação só rodava quando a largura da barra
+ *       mudava, e a fonte web chegando depois do carregamento alargava o texto sem novo
+ *       ajuste. Agora o próprio CSS garante: sem espaço, os badges descem de linha e o total
+ *       quebra por dentro em último caso. O ajuste por etapas (oculta hora, encolhe o botão
+ *       de vendedor, compacta) também reage a mudança de conteúdo e ao fim do carregamento
+ *       das fontes.
+ *     - Filtros "NFC-e"/"NF-e" não quebram mais em duas linhas quando o espaço aperta, e a
+ *       caixa de busca não some mais (sumia perto de 1100 px): tem largura mínima e, sem
+ *       espaço, os botões descem para a linha de baixo.
  */
 
 (function() {
@@ -25,7 +27,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.6";
+    const SCRIPT_VERSION = "3.8.7";
     // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
     // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
@@ -2623,12 +2625,18 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 .top .left { display: flex; flex-wrap: nowrap; gap: 14px; align-items: center; justify-content: space-between; min-width: 0; }
 .badges { display: flex; gap: 10px; align-items: center; flex-wrap: nowrap; }
 .top.badgesCompactos .badge { font-size: 10px; letter-spacing: 0.02em; padding: 5px 9px; }
-.top.badgesQuebra .badges { flex-wrap: wrap; min-width: 0; flex: 1 1 auto; justify-content: flex-end; row-gap: 6px; gap: 6px; }
-.top.totalQuebra #bDiaBrk { white-space: normal; flex-wrap: wrap; max-width: 100%; line-height: 1.5; }
+/* GARANTIA (v3.8.7): nunca estoura — sem espaço, os badges descem de linha e o
+   total, sozinho na linha e ainda maior que ela, quebra o próprio texto. */
+.top .badges { flex-wrap: wrap; min-width: 0; flex: 1 1 auto; justify-content: flex-end; row-gap: 6px; }
+.top #bDiaBrk { white-space: normal; flex-wrap: wrap; max-width: 100%; min-width: 0; line-height: 1.5; }
+.top #bDiaBrk > span { white-space: nowrap; }
+.top #bDiaBrk #tDiaBrkMini { white-space: normal; }
+.top #bDiaBrk #tDiaBrkMini > span { white-space: nowrap; }
+.radio span { white-space: nowrap; }
 .badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); background: var(--bg-panel); border: 1px solid var(--border); padding: 6px 12px; border-radius: 99px; white-space: nowrap; transition: var(--transition); box-shadow: var(--shadow-sm); }
 .badge:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
 .badgeHora { background: transparent; border-color: transparent; box-shadow: none; }
-.top .right { display: flex; gap: 10px; align-items: center; }
+.top .right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; row-gap: 10px; }
 /* vendBtn trunca o nome do vendedor — nunca força a topbar a crescer */
 .vendBtn { display: none; max-width: 260px; min-width: 0; }
 .vendIcon { flex-shrink: 0; display: flex; align-items: center; }
@@ -2636,7 +2644,7 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 .input { flex: 1 1 auto; background: var(--bg-panel); border: 1px solid var(--border); color: var(--text-main); padding: 10px 16px; font-size: 13px; border-radius: var(--radius-md); outline: none; transition: var(--transition-fast); width: 100%; }
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
 /* Wrapper do campo de busca com X interno */
-.inputWrap { position: relative; flex: 1 1 auto; display: flex; align-items: center; min-width: 0; }
+.inputWrap { position: relative; flex: 1 1 160px; display: flex; align-items: center; min-width: min(160px, 100%); }
 .inputWrap .input { padding-right: 36px; }
 .inputWrap #limpar {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
@@ -2738,6 +2746,12 @@ thead tr { user-select: none; }
 tbody tr:hover .tdItemChip { border-color: var(--text-muted); color: var(--text-main); background: var(--chip-bg-hover); }
 tbody tr:hover .tdItemMais { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 .tdItemDesc { color: var(--danger, #e55); border-color: var(--danger, #e55); border-color: color-mix(in srgb, var(--danger, #e55) 45%, transparent); background: color-mix(in srgb, var(--danger, #e55) 12%, transparent); font-weight: 700; }
+.tdItemDup { color: var(--accent); border-color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 700; cursor: pointer; }
+tbody tr:hover .tdItemDup { color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.btn.dupEscolhido { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.dupEscolhaTxt { margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--accent); }
+@keyframes dupPisca { 0%, 100% { background: transparent; } 30% { background: color-mix(in srgb, var(--accent) 22%, transparent); } }
+.dupItem.dupDestaque { animation: dupPisca 1.6s ease 2; border-radius: 10px; }
 tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--danger, #e55); background: color-mix(in srgb, var(--danger, #e55) 18%, transparent); }
 .tdItemQtd { color: var(--accent); font-weight: 700; margin-right: 6px; font-family: 'JetBrains Mono', monospace; }
 .itensMini .itensChips { max-height: 220px; overflow-y: auto; padding-right: 4px; scroll-behavior: smooth; }
@@ -3659,6 +3673,7 @@ const ligarEditorProibidos=(ta,elCont)=>{
 const LS_DUP_MANTER_TODAS = "__dup_manter_todas__";
 const LS_DUP_OCULTO_PREFIXO = "__dup_oculto__::";   // legado (v2.9.0) = "fiscal"
 const LS_DUP_ESCOLHA_PREFIXO = "__dup_escolha__::";
+const SS_DUP_REABRIR = "__dup_reabrir__"; // sessionStorage: reabrir o painel após trocar uma escolha
 const DUP_ESCOLHAS = ["todas", "fiscal", "gerencial"];
 const _dupChaveItem = d => String(d.gerencial) + "::" + String(d.docNumero);
 const _dupRotDoc = d => Number(d.docModelo) === 65 ? "NFC-e" : "NF-e";
@@ -3830,6 +3845,51 @@ for (const d of _dupTodas) {
     _dupPendentes.push(d); // sem decisão — vai pro modal
 }
 
+// ── Rastro na tabela (v3.8.7) ──────────────────────────────────────────────
+// A linha que ficou na tabela ganha um chip "Duplicata" dizendo qual documento
+// do par foi ocultado (ou que os dois estão aparecendo) e por qual escolha —
+// salva pelo usuário ou o padrão (documento final prevalece). Clicar no chip
+// abre o painel Duplicatas já com o par destacado.
+const _dupNum = v => String(v == null ? "" : v).trim().replace(/^0+/, "");
+const _dupAcharOrigemMantida = (d) => {
+    const alvo = _dupNum(d.gerencial);
+    for (let i = 0; i < DADOS.vendas.length; i++) {
+        const x = DADOS.vendas[i];
+        if (x && x._duplicataMantida && _dupNum(x.numero) === alvo && (!d.dt || !x._dtKey || x._dtKey === d.dt)) return i;
+    }
+    return -1;
+};
+const _dupMarcarLinhas = () => {
+    for (const x of DADOS.vendas) if (x && x._dupNota) { delete x._dupNota; }
+    for (const d of _dupTodas) {
+        const salva = _dupLerEscolha(d);
+        const escolha = d._aplicada || salva || "fiscal";
+        const porque = salva ? "escolha salva: " + (_DUP_ROTULO_ESCOLHA_CURTO[salva] ? _DUP_ROTULO_ESCOLHA_CURTO[salva](d) : salva)
+            : (d._aplicada === "todas" ? "modo \"manter todas\"" : (_dupPendentes.includes(d) ? "padrão — aguardando sua escolha" : "padrão: o documento final prevalece"));
+        const nota = (i, rotulo, texto) => {
+            if (i < 0 || !DADOS.vendas[i]) return;
+            DADOS.vendas[i]._dupNota = { rotulo, tip: texto + "\n(" + porque + ")\n\nClique para abrir o painel Duplicatas", chave: _dupChaveItem(d) };
+        };
+        const origem = _dupRotOrigem(d) + " " + d.gerencial, doc = _dupRotDoc(d) + " " + d.docNumero;
+        if (escolha === "gerencial") {
+            nota(_dupAcharOrigemMantida(d), "Duplicata: " + doc + " oculta", "Esta venda também foi emitida como " + doc + ", que está oculta.");
+        } else if (escolha === "todas") {
+            nota(_dupAcharDoc(d), "Duplicata: " + origem + " também aparece", "Mesma venda que " + origem + " — as duas estão na lista e na soma.");
+            nota(_dupAcharOrigemMantida(d), "Duplicata: " + doc + " também aparece", "Mesma venda que " + doc + " — as duas estão na lista e na soma.");
+        } else {
+            nota(_dupAcharDoc(d), "Duplicata: " + origem + " oculta", "Esta venda também foi lançada como " + origem + ", que está oculta.");
+        }
+    }
+    try { _tdHtmlCache.clear(); } catch (e) {}
+    try { _miniHtmlCache.clear(); } catch (e) {}
+};
+const _DUP_ROTULO_ESCOLHA_CURTO = {
+    fiscal: d => "manter apenas " + _dupRotDoc(d),
+    todas: () => "manter as duas",
+    gerencial: d => "manter apenas a " + _dupRotOrigem(d)
+};
+_dupMarcarLinhas();
+
 (function _initBtnDuplicatas(){
     const btn = document.getElementById("btnDuplicatas");
     if (!btn) return;
@@ -3842,7 +3902,7 @@ for (const d of _dupTodas) {
 
 const _DUP_ROTULO_ESCOLHA = { todas: "manter as duas", fiscal: "manter apenas o documento final", gerencial: "manter apenas o documento de origem" };
 
-const abrirDuplicatas=(itens)=>{
+const abrirDuplicatas=(itens, destaque)=>{
     if (document.getElementById("ovDup")) return; // guarda contra abertura dupla
     const bg=document.createElement("div"); bg.className="ov"; bg.id="ovDup"; bg.setAttribute("aria-hidden","false");
 
@@ -3867,10 +3927,12 @@ const abrirDuplicatas=(itens)=>{
             : '<span style="color:var(--st-warn)">● provável</span> — '+origem+' <b>'+esc(d.gerencial)+'</b> → '+doc+' <b>'+esc(d.docNumero)+'</b> <span style="opacity:.6">('+_motivo+(d.ambiguo?', havia mais de uma candidata':'')+')</span>';
         const valor = Number(d.total || 0) > 0 ? ' <span style="opacity:.75">'+esc(Number(d.total).toLocaleString("pt-BR",{style:"currency",currency:"BRL"}))+(d.vendedor?' · '+esc(d.vendedor):'')+'</span>' : '';
         const atual = decidida ? _dupLerEscolha(d) : null;
-        const botao = (cls, txt, escolha) => '<div class="btn '+cls+'" style="font-size:12px;padding:4px 10px'+(atual===escolha?';outline:2px solid var(--accent)':'')+'">'+txt+'</div>';
+        const botao = (cls, txt, escolha) => atual===escolha
+            ? '<div class="btn '+cls+' dupEscolhido" aria-pressed="true" style="font-size:12px;padding:4px 10px">✓ '+txt+'</div>'
+            : '<div class="btn '+cls+'" style="font-size:12px;padding:4px 10px">'+txt+'</div>';
         return '<div class="dupItem" data-chave="'+esc(_dupChaveItem(d))+'" style="padding:10px;border-bottom:1px solid var(--line-soft);font-size:13px">'
             + '<div style="margin-bottom:6px">'+rotulo+valor+'</div>'
-            + (atual ? '<div style="margin-bottom:6px;font-size:12px;opacity:.75">Escolha salva: <b>'+esc(_DUP_ROTULO_ESCOLHA[atual]||atual)+'</b></div>' : '')
+            + (atual ? '<div class="dupEscolhaTxt">✓ Escolha aplicada: <b>'+esc(_DUP_ROTULO_ESCOLHA_CURTO[atual] ? _DUP_ROTULO_ESCOLHA_CURTO[atual](d) : atual)+'</b></div>' : '')
             + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
             + botao("dupBtnFiscal", "Manter apenas "+doc, "fiscal")
             + botao("dupBtnTodas1", "Manter as duas", "todas")
@@ -3887,7 +3949,7 @@ const abrirDuplicatas=(itens)=>{
               + '</div>'
             : itens.map(d => linhaItem(d, false)).join("");
         const corpoDec = listaDec.length === 0 ? '' :
-            '<div style="padding:10px 10px 4px;font-size:12px;font-weight:700;opacity:.7">Já decididas — trocar a escolha vale a partir da próxima atualização do relatório</div>'
+            '<div style="padding:10px 10px 4px;font-size:12px;font-weight:700;opacity:.7">Já decididas — clique em outra opção para trocar (a página recarrega já com a nova escolha)</div>'
             + listaDec.map(d => linhaItem(d, true)).join("");
         const txtManterTodas = _dupManterTodasAtivo ? 'Desativar "manter todas"' : "Manter todas as duplicatas";
         bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Duplicatas</div><div class="msub">Gerenciais convertidas em NFC-e/NF-e e NFC-e reemitidas como NF-e — por padrão só o documento final fica. Escolha o que fazer com cada par.</div></div><div class="btn" id="dupFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div>'
@@ -3922,19 +3984,27 @@ const abrirDuplicatas=(itens)=>{
                 const d = lista[i];
                 if (!d) return;
                 const escolher = (escolha) => {
+                    const rot = _DUP_ROTULO_ESCOLHA_CURTO[escolha] ? _DUP_ROTULO_ESCOLHA_CURTO[escolha](d) : escolha;
                     if (decidida) {
                         const antes = _dupLerEscolha(d);
+                        if (antes === escolha) return; // já é a escolha atual
                         _dupSalvarEscolha(d, escolha);
-                        render();
-                        if (antes !== escolha) toast("Duplicatas", "Escolha trocada — vale a partir da próxima atualização do relatório.");
+                        // Desfazer a troca anterior ao vivo exigiria reconstituir linhas que a
+                        // página não tem: recarrega e reabre o painel com o par destacado — as
+                        // escolhas salvas são aplicadas na carga, do mesmo jeito de sempre.
+                        try { sessionStorage.setItem(SS_DUP_REABRIR, JSON.stringify({ chave: _dupChaveItem(d), msg: rot })); } catch (e) {}
+                        location.reload();
                         return;
                     }
                     _dupSalvarEscolha(d, escolha);
-                    const mudou = _dupAplicar(d, escolha);
+                    _dupAplicar(d, escolha);
                     const pos = itens.indexOf(d);
                     if (pos >= 0) itens.splice(pos, 1);
-                    if (mudou) renderTabela();
+                    _dupMarcarLinhas();
+                    renderTabela();
                     render();
+                    _dupDestacar(_dupChaveItem(d));
+                    toast("Duplicatas", "Escolha aplicada: " + rot + ".");
                 };
                 const b1 = el.querySelector(".dupBtnFiscal"); if (b1) b1.addEventListener("click", () => escolher("fiscal"));
                 const b2 = el.querySelector(".dupBtnTodas1"); if (b2) b2.addEventListener("click", () => escolher("todas"));
@@ -3959,13 +4029,38 @@ const abrirDuplicatas=(itens)=>{
     // innerHTML interno e não recria o próprio bg, então o listener sobrevive.
     bg.addEventListener("click",e=>{ if(e.target===bg) fechar(); });
 
+    // Destaca (rola até e pisca) o par recém-decidido — rastro visual da escolha.
+    const _dupDestacar = (chave) => {
+        if (!chave) return;
+        const el = [...bg.querySelectorAll("#dupLista .dupItem")].find(x => x.dataset.chave === chave);
+        if (!el) return;
+        try { el.scrollIntoView({ block: "nearest" }); } catch (e) {}
+        el.classList.remove("dupDestaque"); void el.offsetWidth; el.classList.add("dupDestaque");
+    };
+
     render();
     document.body.appendChild(bg);
     void bg.offsetWidth;          // força reflow p/ a transição de opacidade rodar
     bg.classList.add("on");
     document.addEventListener("keydown",escKey);
+    if (destaque) _dupDestacar(destaque);
 };
 { const _b = document.getElementById("btnDuplicatas"); if (_b) _b.addEventListener("click", () => abrirDuplicatas(_dupPendentes)); }
+// Chip "Duplicata" da tabela abre o painel com o par destacado (captura: não
+// deixa o clique seguir para a linha, que abriria o modal da venda).
+document.addEventListener("click", (e) => {
+    const chip = e.target && e.target.closest ? e.target.closest(".tdItemDup") : null;
+    if (!chip) return;
+    e.preventDefault(); e.stopPropagation();
+    abrirDuplicatas(_dupPendentes, chip.getAttribute("data-dup") || "");
+}, true);
+// Volta de uma troca de escolha (recarga): reabre o painel no par e confirma.
+let _dupReabrir = null;
+try { _dupReabrir = JSON.parse(sessionStorage.getItem(SS_DUP_REABRIR) || "null"); sessionStorage.removeItem(SS_DUP_REABRIR); } catch (e) { _dupReabrir = null; }
+if (_dupReabrir && _dupReabrir.chave) {
+    abrirDuplicatas(_dupPendentes, _dupReabrir.chave);
+    setTimeout(() => { try { toast("Duplicatas", "Escolha aplicada: " + String(_dupReabrir.msg || "") + "."); } catch (e) {} }, 0);
+} else
 // Abre automaticamente se houver duplicata pendente de decisão nesta geração —
 // pedido explícito: "peça uma ação do usuário" (não fica só esperando clique no botão).
 // Usa a MESMA referência de array em ambos os pontos de abertura — decisões
@@ -4136,7 +4231,11 @@ const itensTdHTML=(itensRaw,venda)=>{
     const desc=descontoVenda(venda);
     // Chip de desconto: vermelho, ao passar o mouse mostra o detalhamento; o
     // clique segue para a linha (abre o modal, como os demais chips).
-    const chipDesc=desc?'<span class="tdItemChip tdItemDesc" data-tip="'+esc(desc.tip)+'">'+esc(desc.rotulo)+'</span>':'';
+    const chipDesc0=desc?'<span class="tdItemChip tdItemDesc" data-tip="'+esc(desc.tip)+'">'+esc(desc.rotulo)+'</span>':'';
+    // Rastro do painel Duplicatas (v3.8.7): qual documento do par foi ocultado e por quê.
+    const dupN=venda&&venda._dupNota;
+    const chipDup=dupN?'<span class="tdItemChip tdItemDup" data-dup="'+esc(dupN.chave)+'" data-tip="'+esc(dupN.tip)+'">'+esc(dupN.rotulo)+'</span>':'';
+    const chipDesc=chipDesc0+chipDup;
     if(!t)return chipDesc?{html:'<div class="tdItemsWrap">'+chipDesc+'</div>',title:""}:{html:"",title:""};
     const linhas=t.split(/\n+/g).map(s=>String(s||"").replace(/^⤷\s*/,"").trim()).filter(Boolean);
     const tituloPartes=[];
@@ -6043,22 +6142,30 @@ const fixHead=()=>{
 (() => {
     'use strict';
     const $ = (s) => document.querySelector(s);
-    let lastTopWidth = 0;
-
-    // Só a direção HORIZONTAL conta: com a página rolada o topo pode ter
-    // top < 0 sem estar "estourando" — antes isso disparava as etapas à toa.
-    const estaEscapando = (el) => {
+    // GARANTIA (v3.8.7): o CSS já impede o estouro sozinho — .badges quebra
+    // de linha quando falta espaço e o próprio total quebra por dentro em
+    // último caso (ver .badges/#bDiaBrk no <style>). Este bloco só tenta
+    // manter tudo em UMA linha antes de deixar quebrar: oculta a hora,
+    // encolhe o botão de vendedor e compacta os badges, nessa ordem.
+    //
+    // "Precisa de ajuste" = o total saiu da tela OU desceu para outra linha.
+    const precisaAjuste = (el) => {
         if (!el || el.offsetParent === null) return false;
         const r = el.getBoundingClientRect();
         const larg = document.documentElement.clientWidth || window.innerWidth;
-        return r.right > larg + 0.5 || r.left < -0.5;
+        if (r.right > larg + 0.5 || r.left < -0.5) return true;
+        const primeiro = el.parentElement && el.parentElement.querySelector(".badge");
+        if (primeiro && primeiro !== el) {
+            const r0 = primeiro.getBoundingClientRect();
+            if (r0.height > 0 && r.top > r0.top + 4) return true;      // desceu para a linha de baixo
+            if (r0.height > 0 && r.height > r0.height * 1.5) return true; // quebrou o próprio texto
+        }
+        return false;
     };
 
     // Etapas, da mais leve para a mais forte. A cada verificação tudo é
-    // desfeito e reaplicado SÓ até o badge caber — leituras de layout
-    // (getBoundingClientRect) são síncronas e o navegador só pinta no fim,
-    // então não há piscada nem vai-e-volta. As 3 últimas (v3.8.6) garantem
-    // que o total nunca sai da tela, mesmo com valores grandes.
+    // desfeito e reaplicado SÓ até caber — as leituras de layout são
+    // síncronas e o navegador só pinta no fim: sem piscada, sem vai-e-volta.
     const etapas = [
         () => { const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)"); if (bh) bh.style.display = "none"; },
         () => { const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "110px"; },
@@ -6067,76 +6174,66 @@ const fixHead=()=>{
             const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "0";
             const icon = $("span.vendIcon"); if (icon) icon.style.transform = "translateX(4px)";
         },
-        () => { const t = $("div.top"); if (t) t.classList.add("badgesCompactos"); },
-        () => { const t = $("div.top"); if (t) t.classList.add("badgesQuebra"); },
-        () => { const t = $("div.top"); if (t) t.classList.add("totalQuebra"); }
+        () => { const t = $("div.top"); if (t) t.classList.add("badgesCompactos"); }
     ];
     const restaurar = () => {
         const bh = $("div.badge.badgeHora:not(.badgeGeradoMobile)"); if (bh) bh.style.display = "";
         const vb = $(".vendBtn"); if (vb) vb.style.maxWidth = "";
         const icon = $("span.vendIcon"); if (icon) icon.style.transform = "";
-        const t = $("div.top"); if (t) t.classList.remove("badgesCompactos", "badgesQuebra", "totalQuebra");
+        const t = $("div.top"); if (t) t.classList.remove("badgesCompactos");
     };
 
+    let verificando = false;
     const executarVerificacao = () => {
         const alvo = $("#bDiaBrk");
-        if (!alvo) return;
+        if (!alvo || verificando) return;
+        verificando = true;
         try {
             restaurar();
             for (const etapa of etapas) {
-                if (!estaEscapando(alvo)) break;
+                if (!precisaAjuste(alvo)) break;
                 etapa();
             }
         } catch (_) { /* layout é cosmético — nunca derruba a página */ }
+        finally { verificando = false; }
     };
 
-    let timer;
-    const aoMudarLarguraTop = () => {
-        const topDiv = $("div.top");
-        if (!topDiv) return;
-        const larguraAtual = topDiv.clientWidth;
-        if (larguraAtual !== lastTopWidth) {
-            lastTopWidth = larguraAtual;
-            clearTimeout(timer);
-            timer = setTimeout(() =>
-                requestAnimationFrame(executarVerificacao), 80);
-        }
+    // Agenda UMA verificação por quadro, venha de onde vier o gatilho.
+    let agendado = 0;
+    const agendar = () => {
+        if (agendado) return;
+        agendado = requestAnimationFrame(() => { agendado = 0; executarVerificacao(); });
     };
 
-    const observador = new ResizeObserver(aoMudarLarguraTop);
+    // Gatilhos: largura da barra, tamanho/conteúdo do próprio total (valores
+    // que mudam depois), fontes web terminando de carregar (alargam o texto
+    // depois do "load" — causa do estouro que sobrava na v3.8.6) e resize.
+    const observador = new ResizeObserver(() => { if (!verificando) agendar(); });
+    const mutacoes = new MutationObserver(agendar);
     const iniciar = () => {
         const topDiv = $("div.top");
-        if (topDiv) {
-            observador.disconnect();
-            observador.observe(topDiv);
-            lastTopWidth = topDiv.clientWidth;
-            executarVerificacao();
-        }
+        const alvo = $("#bDiaBrk");
+        if (!topDiv) return;
+        observador.disconnect();
+        observador.observe(topDiv);
+        mutacoes.disconnect();
+        if (alvo) mutacoes.observe(alvo, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+        executarVerificacao();
+        try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(agendar).catch(() => {}); } catch (_) {}
+        try { if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener("loadingdone", agendar); } catch (_) {}
     };
 
-    window.addEventListener("resize", () => {
-        clearTimeout(timer);
-        timer = setTimeout(() =>
-            requestAnimationFrame(executarVerificacao), 80);
-    }, { passive: true });
+    window.addEventListener("resize", agendar, { passive: true });
 
-    // Ao carregar a página: fonts/imagens podem deslocar o layout após o
-    // snapshot inicial. Dispara uma última verificação quando todos os
-    // recursos estiverem prontos, respeitando o cooldown e o guard
-    // estaEscapando() — sem flickering e sem loops.
-    //
-    // O <script> fica no fim do <body>, então roda DEPOIS do HTML parseado.
-    // Se todos os recursos já estiverem em cache (comum ao reabrir o mesmo
-    // relatório), o evento "load" já disparou antes deste listener existir —
-    // anexar cegamente faria a verificação nunca rodar. Checa readyState
-    // primeiro; só anexa o listener se o carregamento ainda estiver em curso.
+    // O <script> fica no fim do <body>: se tudo já estava em cache, o "load"
+    // já passou — checa readyState antes de anexar o listener.
     if (document.readyState === "complete") {
-        requestAnimationFrame(executarVerificacao);
+        agendar();
     } else {
-        window.addEventListener("load", () => {
-            requestAnimationFrame(executarVerificacao);
-        }, { passive: true, once: true });
+        window.addEventListener("load", agendar, { passive: true, once: true });
     }
+    // Rede de segurança: algumas fontes/estilos chegam depois de tudo isso.
+    setTimeout(agendar, 1500);
 
     // NÃO chama iniciar() aqui — renderTudo() ainda não rodou,
     // então div.top não existe no DOM e a chamada seria silenciosa.
