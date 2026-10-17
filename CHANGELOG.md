@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.6 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.6 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.7 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -171,6 +171,14 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.8.7 — 2026-10-17 15:00
+
+**Rastro da escolha no painel Duplicatas; badge do total nunca estoura.**
+
+- Painel Duplicatas: a opção escolhida fica preenchida com "✓" e "Escolha aplicada: …", o par pisca e um aviso confirma. Trocar a escolha de um par já decidido aplica na hora (a página recarrega e reabre o painel no par). Na tabela, a venda que ficou ganha o chip "Duplicata: <documento> oculta" (ou "também aparece"), com o porquê no tooltip; clicar no chip abre o painel com o par destacado.
+- Badge #bDiaBrk ainda estourava: a verificação só rodava quando a largura da barra mudava, e a fonte web chegando depois do carregamento alargava o texto sem novo ajuste. Agora o próprio CSS garante: sem espaço, os badges descem de linha e o total quebra por dentro em último caso. O ajuste por etapas (oculta hora, encolhe o botão de vendedor, compacta) também reage a mudança de conteúdo e ao fim do carregamento das fontes.
+- Filtros "NFC-e"/"NF-e" não quebram mais em duas linhas quando o espaço aperta, e a caixa de busca não some mais (sumia perto de 1100 px): tem largura mínima e, sem espaço, os botões descem para a linha de baixo.
 
 ### 3.8.6 — 2026-10-16 20:30
 
