@@ -9,23 +9,23 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 - Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
-@version 1.5.1
+@version 1.6.0
 @author Ruda Gabriel
 @changelog
   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-  1.5.1 - 2026-10-07 22:30 - Correcoes da varredura de bugs.
-    - Menu: "continue" dentro de um switch age sobre o SWITCH, nao sobre o
-      laco - cancelar a opcao 21 ou deixar a 7 em branco seguia para o
-      comando e mostrava um erro em seguida. Laco rotulado (continue menu).
-    - "encerrar": confirmacao SIM igual no menu e no modo direto (maiusculas);
-      textos dizem que, com o icone da bandeja ativo, o servidor e' religado
-      em ate ~10 s.
+  1.6.0 - 2026-10-22 16:00 - Controle remoto.
+    - Novos: temas, tema (troca o tema das telas abertas), aviso (mensagem em
+      todas as telas), recarregar-abas, info (versoes, maquina, banco, memoria),
+      log (ultimas linhas do relatorio.log com filtro e cores), programas e
+      abrir-programa (abre na maquina do servidor um programa da lista
+      "programas" do config.json de la'). Menu: opcoes 29 a 36.
 #>
 [CmdletBinding()]
 param(
     [string]$ConfigPath = "$PSScriptRoot\config.json",
     [ValidateSet("status","db-status","sse-clients","proibidos","config","salvar-fdb","abrir-picker","navigate-hoje","navigate-config","navigate-fdb","navigate-periodo","upload-favicon","restart","pronto","log-error","sse-test",
-                 "meu-ip","encerrar","foco","modal-config","modal-periodo","atualizar","itens-venda","abrir-navegador","abrir-periodo","menu")]
+                 "meu-ip","encerrar","foco","modal-config","modal-periodo","atualizar","itens-venda","abrir-navegador","abrir-periodo",
+                 "temas","tema","aviso","recarregar-abas","info","log","programas","abrir-programa","menu")]
     [string]$Endpoint = "menu",
     [object]$Payload,
     [string]$MaquinaIP = $null
@@ -537,6 +537,52 @@ function Executar-Endpoint {
             Start-Process $urlP
             return @{ ok = $true; msg = "Relatorio do periodo aberto no navegador desta maquina: $urlP" }
         }
+        # ---- CONTROLE REMOTO (v1.6.0) -------------------------------------
+        "temas" { return Invoke-ApiCall -Rota "/api/temas" }
+        "tema" {
+            # Payload: id do tema (ex: "hud"). Troca nas abas abertas e fica salvo no navegador delas.
+            $idT = ([string]$Data).Trim().ToLower()
+            if ($idT -notmatch '^[a-z0-9-]{1,40}$') { throw "Informe o id do tema (veja 'temas'). Ex: hud, indigo, executivo, ambar, ultra-dark, light." }
+            return Invoke-ApiCall -Rota "/api/navigate/tema/${idT}"
+        }
+        "aviso" {
+            # Payload: texto, ou @{ msg = "texto"; segundos = 15 }
+            $h = if ($Data -is [string]) { @{ msg = $Data } } else { ConvertTo-HashtableSegura -Objeto $Data }
+            if ($null -eq $h -or [string]::IsNullOrWhiteSpace([string]$h.msg)) { throw "Informe o texto do aviso." }
+            if (([string]$h.msg).Length -gt 300) { throw "Aviso muito longo (maximo 300 caracteres)." }
+            return Invoke-ApiCall -Rota "/api/navigate/aviso" -Metodo POST -Corpo ($h | ConvertTo-Json -Compress)
+        }
+        "recarregar-abas" { return Invoke-ApiCall -Rota "/api/navigate/recarregar" }
+        "info" { return Invoke-ApiCall -Rota "/api/info" }
+        "log" {
+            # Payload: numero de linhas (1-1000), ou @{ linhas = 100; filtro = "ERRO" }
+            $n = 50; $f = ""
+            if ($Data -is [int] -or ($Data -is [string] -and $Data -match '^\d+$')) { $n = [int]$Data }
+            elseif ($null -ne $Data) {
+                $h = ConvertTo-HashtableSegura -Objeto $Data
+                if ($h.linhas) { $n = [int]$h.linhas }
+                if ($h.filtro) { $f = [string]$h.filtro }
+            }
+            if ($n -lt 1 -or $n -gt 1000) { throw "Linhas deve ficar entre 1 e 1000." }
+            $q = "linhas=$n" + $(if ($f) { "&filtro=" + [System.Uri]::EscapeDataString($f) } else { "" })
+            $r = Invoke-ApiCall -Rota "/api/log?${q}" -Timeout 15
+            if ($r -and $r.linhas) {
+                Write-Host ""
+                foreach ($l in $r.linhas) {
+                    $cor = if ($l -match 'ERRO|FALHA|CRITICO') { "Red" } elseif ($l -match 'AVISO|WARN') { "Yellow" } else { "Gray" }
+                    Write-Host $l -ForegroundColor $cor
+                }
+                return @{ ok = $true; mostradas = @($r.linhas).Count; total_no_filtro = $r.total }
+            }
+            return $r
+        }
+        "programas" { return Invoke-ApiCall -Rota "/api/programas" }
+        "abrir-programa" {
+            # Payload: nome do programa, como aparece em 'programas'.
+            $nomeP = ([string]$Data).Trim()
+            if (-not $nomeP) { throw "Informe o nome do programa (veja 'programas')." }
+            return Invoke-ApiCall -Rota "/api/programas/abrir" -Metodo POST -Corpo (@{ nome = $nomeP } | ConvertTo-Json -Compress) -MaxRetries 0
+        }
         default { throw "Endpoint desconhecido: ${Ep}" }
     }
 }
@@ -581,6 +627,16 @@ function Mostrar-Menu {
     Write-Host "26. itens-venda      | Itens de uma venda (data + numero)"
     Write-Host "27. abrir-navegador  | Abrir o relatorio de hoje NESTA maquina"
     Write-Host "28. abrir-periodo    | Abrir relatorio de um periodo NESTA maquina"
+    Write-Host ""
+    Write-Host "=== CONTROLE REMOTO ==="
+    Write-Host "29. temas            | Listar os temas disponiveis"
+    Write-Host "30. tema             | Trocar o tema das telas abertas (fica salvo)"
+    Write-Host "31. aviso            | Mostrar uma mensagem em todas as telas"
+    Write-Host "32. recarregar-abas  | Recarregar todas as telas abertas"
+    Write-Host "33. info             | Versoes, maquina, banco, memoria, tempo ligado"
+    Write-Host "34. log              | Ultimas linhas do relatorio.log (com filtro)"
+    Write-Host "35. programas        | Programas que o servidor pode abrir"
+    Write-Host "36. abrir-programa   | Abrir um programa na maquina do servidor"
     Write-Host "`n 0. Sair"
     Write-Host "================================================================`n" -ForegroundColor Cyan
 }
@@ -620,6 +676,8 @@ if ($Endpoint -eq "menu") {
                 "18"="sse-test"; "20"="meu-ip"; "21"="encerrar"; "22"="foco"
                 "23"="modal-config"; "24"="modal-periodo"; "25"="atualizar"; "26"="itens-venda"
                 "27"="abrir-navegador"; "28"="abrir-periodo"
+                "29"="temas"; "30"="tema"; "31"="aviso"; "32"="recarregar-abas"; "33"="info"
+                "34"="log"; "35"="programas"; "36"="abrir-programa"
             }
             $epNome = $epMap[$escolha]
             if (-not $epNome) { Write-Warning "Opcao invalida"; continue }
@@ -666,6 +724,44 @@ if ($Endpoint -eq "menu") {
                     $di = Read-Host "Data da venda (AAAA-MM-DD, Enter = hoje)"
                     if ([string]::IsNullOrWhiteSpace($di)) { $di = (Get-Date).ToString('yyyy-MM-dd') }
                     $dados = @($di, (Read-Host "Numero da venda (cupom/pedido)"))
+                }
+                "30" {
+                    $lt = @((Executar-Endpoint -Ep "temas").temas)
+                    if ($lt.Count -eq 0) { Write-Warning "O servidor nao informou os temas."; continue menu }
+                    for ($i = 0; $i -lt $lt.Count; $i++) { Write-Host (" {0}. {1} ({2})" -f ($i + 1), $lt[$i].nome, $lt[$i].id) }
+                    $esc = (Read-Host "Numero ou id do tema").Trim()
+                    if (-not $esc) { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue menu }
+                    $num = 0
+                    if ([int]::TryParse($esc, [ref]$num) -and $num -ge 1 -and $num -le $lt.Count) { $dados = $lt[$num - 1].id } else { $dados = $esc }
+                }
+                "31" {
+                    $txtA = Read-Host "Texto do aviso (ate 300 caracteres)"
+                    if ([string]::IsNullOrWhiteSpace($txtA)) { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue menu }
+                    $segA = Read-Host "Segundos na tela (3-120, Enter = 12)"
+                    $dados = @{ msg = $txtA }
+                    $sN = 0
+                    if ($segA -and [int]::TryParse($segA, [ref]$sN)) { $dados["segundos"] = $sN }
+                }
+                "34" {
+                    $lnL = Read-Host "Quantas linhas (1-1000, Enter = 50)"
+                    $flL = Read-Host "Filtrar por texto (Enter = sem filtro; ex: ERRO, VENDAS, API)"
+                    $dados = @{ linhas = 50 }
+                    $nL = 0
+                    if ($lnL -and [int]::TryParse($lnL, [ref]$nL)) { $dados["linhas"] = $nL }
+                    if ($flL) { $dados["filtro"] = $flL.Trim() }
+                }
+                "36" {
+                    $lp = @((Executar-Endpoint -Ep "programas").programas)
+                    if ($lp.Count -eq 0) { Write-Warning "Nenhum programa disponivel."; continue menu }
+                    for ($i = 0; $i -lt $lp.Count; $i++) {
+                        $st = if ($lp[$i].existe) { "" } else { "  [arquivo nao encontrado]" }
+                        Write-Host (" {0}. {1}{2}" -f ($i + 1), $lp[$i].nome, $st)
+                    }
+                    Write-Host " (Para incluir programas: lista 'programas' no config.json da maquina do servidor)" -ForegroundColor DarkGray
+                    $escP = (Read-Host "Numero do programa").Trim()
+                    $numP = 0
+                    if (-not ([int]::TryParse($escP, [ref]$numP)) -or $numP -lt 1 -or $numP -gt $lp.Count) { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue menu }
+                    $dados = $lp[$numP - 1].nome
                 }
                 "28" {
                     $p1 = Read-Host "Data inicio (AAAA-MM-DD)"

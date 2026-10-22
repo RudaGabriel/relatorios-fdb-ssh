@@ -1,21 +1,13 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.9.0
+ * @version 3.9.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.9.0 - 2026-10-22 15:00 - Temas de estilo no lugar dos temas que só mudavam a cor.
- *     - Saíram os 14 temas que só trocavam a cor. Ficam "Escuro" e "Claro" e entram 4 temas
- *       de ESTILO, que mudam também a forma (cantos, bordas, brilho, fundo, cards, tabela e
- *       lista de vendedores):
- *         · HUD Ciano — painel futurista azul-marinho, linhas ciano com brilho, cantos retos.
- *         · Índigo Neon — índigo arredondado, lateral mais clara, destaques em degradê e pílulas.
- *         · Executivo — grafite corporativo denso, títulos em caixa alta, destaque laranja.
- *         · Âmbar Vidro — vidro escuro com brilhos âmbar nos cantos e cards bem arredondados.
- *     - Quem usava um tema removido passa sozinho para "Claro" (se era um tema claro) ou
- *       "Escuro" (os demais), e a troca fica salva. Menu de temas em 3 colunas, com prévia
- *       de cada estilo.
+ *   3.9.1 - 2026-10-22 16:00 - Tema trocado à distância.
+ *     - window.__aplicarTema: o servidor (api.ps1 → SSE "tema") troca o tema da tela, que
+ *       fica salvo no navegador e marcado no menu; um aviso informa quem está na tela.
  */
 
 (function() {
@@ -23,7 +15,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.9.0";
+    const SCRIPT_VERSION = "3.9.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3217,6 +3209,15 @@ const _salvarTema = (t) => {
     try { localStorage.setItem("fdb_theme", t); } catch(e) {}
     try { document.cookie = "fdb_theme=" + t + ";path=/;max-age=31536000;SameSite=Strict"; } catch(e) {}
     document.documentElement.setAttribute("data-theme", t);
+};
+// Troca remota (api.ps1 → servidor → SSE "tema"): aplica, salva e avisa quem está na tela.
+window.__aplicarTema = (id) => {
+    const t = _temaPorId(id);
+    if (!t) return false;
+    _salvarTema(t.id);
+    try { _tmMarcarAtual(); _tmAtualizarBotao(); } catch (e) {}
+    setTimeout(() => { try { toast("Tema", "Tema alterado para " + t.nome + "."); } catch (e) {} }, 0);
+    return true;
 };
 // Se o script do <head> falhou/foi bloqueado, o atributo pode estar ausente ou inválido: sincroniza.
 if (!_temaPorId(document.documentElement.getAttribute("data-theme"))) {

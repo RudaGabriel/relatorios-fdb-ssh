@@ -7,9 +7,9 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.6 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.9.0 |
-| [`api.ps1`](#apips1) | 1.5.1 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.9.1 |
+| [`api.ps1`](#apips1) | 1.6.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
@@ -28,6 +28,17 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.16.0 — 2026-10-22 16:00
+
+**Controle remoto pelo api.ps1.**
+
+- `/api/temas` e `/api/navigate/tema/ID`: troca o tema das telas abertas (SSE "tema"; a página aplica e salva, como a escolha no menu). Lista lida do próprio gerador.
+- `/api/navigate/aviso` (POST `{msg, segundos}`): aviso em destaque em todas as telas.
+- `/api/navigate/recarregar`: recarrega todas as telas abertas.
+- `/api/info`: versões, máquina, banco, memória, tempo ligado e abas conectadas.
+- `/api/log?linhas=N&filtro=texto`: últimas linhas do relatorio.log (só rede local).
+- `/api/programas` e `/api/programas/abrir` (POST `{nome}`): abre na máquina do servidor um programa da lista `programas` do config.json LOCAL (+ "Pasta do sistema" e "Log do servidor"). Pela rede só se escolhe um nome — nunca caminho ou comando livre — e a lista não pode ser alterada pela API. Só rede local.
 
 ### 2.15.6 — 2026-10-16 19:30
 
@@ -171,6 +182,12 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.9.1 — 2026-10-22 16:00
+
+**Tema trocado à distância.**
+
+- `window.__aplicarTema`: o servidor (api.ps1 → SSE "tema") troca o tema da tela, que fica salvo no navegador e marcado no menu; um aviso informa quem está na tela.
 
 ### 3.9.0 — 2026-10-22 15:00
 
@@ -328,6 +345,12 @@ gerenciais do filtro [proibidos] são convertidas manualmente por fora do fluxo 
 ## `api.ps1`
 
 Cliente de linha de comando.
+
+### 1.6.0 — 2026-10-22 16:00
+
+**Controle remoto.**
+
+- Novos: `temas`, `tema` (troca o tema das telas abertas), `aviso` (mensagem em todas as telas), `recarregar-abas`, `info` (versões, máquina, banco, memória), `log` (últimas linhas do relatorio.log com filtro e cores), `programas` e `abrir-programa` (abre na máquina do servidor um programa da lista `programas` do config.json de lá). Menu: opções 29 a 36.
 
 ### 1.5.1 — 2026-10-07 22:30
 
