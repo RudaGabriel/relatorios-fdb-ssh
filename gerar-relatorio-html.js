@@ -1,13 +1,21 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.9.1
+ * @version 3.10.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.9.1 - 2026-10-22 16:00 - Tema trocado à distância.
- *     - window.__aplicarTema: o servidor (api.ps1 → SSE "tema") troca o tema da tela, que
- *       fica salvo no navegador e marcado no menu; um aviso informa quem está na tela.
+ *   3.10.0 - 2026-10-22 17:00 - Modo leve para aparelhos fracos; tela de celular sem corte.
+ *     - Modo leve automático para computadores, notebooks e celulares fracos: sem animações
+ *       de entrada, desfoque, sombras pesadas, brilho de texto nem fundo fixo; transições de
+ *       80 ms; tabela desenhada em fatias menores. O visual do tema continua o mesmo.
+ *     - Detecção: hardware informado pelo navegador (memória/núcleos, celular com pouca
+ *       memória), economia de dados, "reduzir movimento" do sistema e um teste rápido de
+ *       processamento após o carregamento (mediana de 3 rodadas > 14 ms; PC atual ≈ 4 ms).
+ *       O resultado fica salvo por 7 dias: a página já abre leve, sem trocar no meio.
+ *     - Menu Tema → "Desempenho": Automático (padrão) / Completo / Leve, com o motivo.
+ *     - Celular: a área da tabela passava da tela (botões alargavam a coluna) e cortava
+ *       o valor das vendas. Coluna limitada em minmax(0, 1fr).
  */
 
 (function() {
@@ -15,7 +23,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.9.1";
+    const SCRIPT_VERSION = "3.10.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2252,6 +2260,32 @@
           document.documentElement.setAttribute("data-theme", t);
         } catch(e){}
       })();
+      // MODO LEVE (v3.10.0): decidido ANTES do primeiro desenho (sem piscar).
+      // fdb_perf = "auto" (padrão) | "completo" | "leve" — escolha no menu Tema.
+      // No automático: medição salva de visitas anteriores (fdb_perf_auto, vale
+      // 7 dias), economia de dados, "reduzir movimento" do sistema ou hardware
+      // fraco informado pelo navegador (memória/núcleos). O teste de desempenho
+      // roda depois do carregamento (ver _perfMedir).
+      window.__perfDecidir = function(){
+        try {
+          var h = document.documentElement, pref = "", leve = false, motivo = "";
+          try { pref = localStorage.getItem("fdb_perf") || ""; } catch (e1) {}
+          if (pref === "leve") { leve = true; motivo = "escolhido"; }
+          else if (pref !== "completo") {
+            var nv = navigator || {}, mem = Number(nv.deviceMemory) || 0, cpu = Number(nv.hardwareConcurrency) || 0, con = nv.connection || {};
+            var med = null; try { med = JSON.parse(localStorage.getItem("fdb_perf_auto") || "null"); } catch (e2) {}
+            var movel = /Android|iPhone|iPad|iPod|Mobile/i.test(String(nv.userAgent || ""));
+            if (med && med.v === "leve" && Date.now() - Number(med.ts || 0) < 7 * 864e5) { leve = true; motivo = "medido"; }
+            else if (con.saveData) { leve = true; motivo = "economia de dados"; }
+            else if ((mem && mem <= 2) || (cpu && cpu <= 2) || (movel && ((mem && mem <= 3) || (cpu && cpu <= 4)))) { leve = true; motivo = "hardware"; }
+            else { try { if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) { leve = true; motivo = "sistema"; } } catch (e3) {} }
+          }
+          h.setAttribute("data-perf", leve ? "leve" : "completo");
+          if (motivo) h.setAttribute("data-perf-motivo", motivo); else h.removeAttribute("data-perf-motivo");
+          return leve;
+        } catch (e) { return false; }
+      };
+      window.__perfDecidir();
     </script>
 <style>
 :root {
@@ -2514,6 +2548,25 @@ html[data-theme="ambar"] tbody tr:hover { background: rgba(242, 148, 98, 0.06); 
 @keyframes scaleIn { 0% { opacity: 0; transform: scale(0.96); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes reveal { 0% { opacity: 0; transform: translateY(-3px) scale(0.96); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
 .reveal { animation: reveal 0.32s var(--easing) both; }
+/* MODO LEVE (v3.10.0) — aparelhos fracos (automático) ou escolhido no menu Tema.
+   Mantém o visual do tema, mas tira o que pesa para GPU/CPU fracas: animações de
+   entrada, desfoque (backdrop-filter — o efeito mais caro de compor), sombras
+   grandes, brilho de texto e fundo "fixed" (repintado a cada rolagem). Transições
+   ficam curtíssimas (80 ms) em vez de sumirem: resposta visual sem custo. */
+html[data-perf="leve"] {
+  --shadow-sm: none; --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.22); --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.3);
+  --top-blur: none;
+}
+html[data-perf="leve"] *, html[data-perf="leve"] *::before, html[data-perf="leve"] *::after {
+  animation-duration: 0.001ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+  transition-duration: 0.08s !important; transition-delay: 0s !important;
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  text-shadow: none !important; scroll-behavior: auto !important; will-change: auto !important;
+}
+html[data-perf="leve"], html[data-perf="leve"] body { background-attachment: scroll !important; }
+html[data-perf="leve"] .__nc_toast_bar { display: none !important; }
+html[data-perf="leve"] .badge:hover, html[data-perf="leve"] .btn:hover, html[data-perf="leve"] .btn:active { transform: none !important; }
+html[data-perf="leve"] .ov { background: rgba(0, 0, 0, 0.72); }
 /* PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
    respeita a preferência de "reduzir movimento" do sistema operacional
    (Configurações > Acessibilidade no Windows) — quem já configurou isso,
@@ -2597,7 +2650,7 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 .btnLabel { gap: 7px; padding: 0 14px; font-size: 12px; font-weight: 600; }
 .btnLabel svg { flex-shrink: 0; }
 .btnProibidos { display: none; } .badgeGeradoMobile { display: none; }
-.main { min-height: 0; display: grid; grid-template-columns: 280px 1fr; }
+.main { min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
 .sidebar { min-height: 0; border-right: 1px solid var(--border); padding: 24px 20px; display: flex; flex-direction: column; background: var(--bg-app); }
 .sb-head { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; margin-bottom: 12px; }
 .sb-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); font-weight: 700; }
@@ -2769,7 +2822,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .cardPay { color: var(--text-muted); }
 
 @media (max-width: 1024px) { .top { grid-template-columns: minmax(0, 1fr); padding: 16px 20px; } .top .right { justify-content: flex-start; flex-wrap: wrap; } .content { padding: 20px; } }
-@media (max-width: 920px) { .main { grid-template-columns: 1fr; } .sidebar { display: none; } .vendBtn { display: flex; } #acoes { display: inline-flex; } .radioBusca { flex: 1 1 100%; justify-content: space-between; } }
+@media (max-width: 920px) { .main { grid-template-columns: minmax(0, 1fr); } .sidebar { display: none; } .vendBtn { display: flex; } #acoes { display: inline-flex; } .radioBusca { flex: 1 1 100%; justify-content: space-between; } }
 @media (max-width: 680px) {
   .content { padding: 12px; } .tableTop { padding: 20px; } table { display: none; } .cards { display: block; padding-bottom: 100px; }
   .mobileBar { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: var(--top-bg); backdrop-filter: blur(12px); padding: 16px 20px 24px 20px; gap: 12px; border-top: 1px solid var(--border); z-index: 50; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
@@ -2828,6 +2881,12 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .tmPDot { flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
 .tmPLn { display: block; flex: 1; height: 3px; border-radius: 2px; background: var(--text-muted); }
 .tmPVal { display: block; flex-shrink: 0; width: 14px; height: 3px; border-radius: 2px; background: var(--text-main); }
+.tmPerf { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.tmPerfOps { display: flex; gap: 6px; flex-wrap: wrap; }
+.tmPerfOp { flex: 1 1 0; min-width: 90px; height: 34px; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
+.tmPerfOp:hover { border-color: var(--border-focus); }
+.tmPerfOp[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.tmPerfDica { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 @media (max-width: 640px) { .tmGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 440px) { .tmGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tmMenu { padding: 12px 12px 14px; } }
 </style>
@@ -3219,6 +3278,69 @@ window.__aplicarTema = (id) => {
     setTimeout(() => { try { toast("Tema", "Tema alterado para " + t.nome + "."); } catch (e) {} }, 0);
     return true;
 };
+// ── Desempenho: modo leve (v3.10.0) ─────────────────────────────────────────
+// Preferência em localStorage "fdb_perf": "auto" (padrão), "completo" ou "leve".
+// No automático, além do que o <head> já decide (hardware, economia de dados,
+// "reduzir movimento", medição salva), um teste rápido de processamento roda
+// depois do carregamento: mediana de 3 rodadas acima de PERF_LIMITE_MS (máquina
+// atual ≈ 3–5 ms; aparelho fraco ≥ 15 ms) liga o modo leve e guarda o resultado
+// por 7 dias — nas próximas visitas a página já abre leve, sem trocar no meio.
+// Independe do tamanho do relatório (um período longo demora até em PC bom).
+const PERF_LIMITE_MS = 14;
+const _perfPref = () => { try { const v = localStorage.getItem("fdb_perf"); return v === "leve" || v === "completo" ? v : "auto"; } catch (e) { return "auto"; } };
+const _perfEhLeve = () => document.documentElement.getAttribute("data-perf") === "leve";
+const _PERF_MOTIVOS = { escolhido: "escolhido por você", medido: "aparelho com baixo desempenho", hardware: "aparelho com pouca memória/processador", "economia de dados": "economia de dados ativa", sistema: "\"reduzir movimento\" ligado no sistema" };
+const _perfEstadoTxt = () => {
+    const pref = _perfPref();
+    const leve = _perfEhLeve();
+    const mot = document.documentElement.getAttribute("data-perf-motivo") || "";
+    if (pref === "leve") return "Leve (escolhido)";
+    if (pref === "completo") return "Completo (escolhido)";
+    return "Automático — " + (leve ? "leve: " + (_PERF_MOTIVOS[mot] || mot || "aparelho mais lento") : "completo");
+};
+const _perfBench = () => {
+    const t0 = performance.now();
+    let a = 0; const arr = [];
+    for (let i = 0; i < 120000; i++) { a += Math.sqrt(i) * Math.sin(i); if ((i & 63) === 0) arr.push(String(a).slice(0, 6)); }
+    arr.sort();
+    return performance.now() - t0;
+};
+const _perfMedir = () => {
+    if (_perfPref() !== "auto" || _perfEhLeve()) return;
+    if (document.hidden) { document.addEventListener("visibilitychange", function _v() { if (!document.hidden) { document.removeEventListener("visibilitychange", _v); setTimeout(_perfMedir, 1500); } }); return; }
+    let ms;
+    try { const r = [_perfBench(), _perfBench(), _perfBench()].sort((x, y) => x - y); ms = r[1]; } catch (e) { return; }
+    const leve = ms > PERF_LIMITE_MS;
+    try { localStorage.setItem("fdb_perf_auto", JSON.stringify({ v: leve ? "leve" : "completo", ts: Date.now(), ms: Math.round(ms * 10) / 10 })); } catch (e) {}
+    if (leve && _perfPref() === "auto" && !_perfEhLeve()) {
+        document.documentElement.setAttribute("data-perf", "leve");
+        document.documentElement.setAttribute("data-perf-motivo", "medido");
+        try { toast("Modo leve", "Este aparelho é mais lento: animações e efeitos foram reduzidos para não travar. Mude em Tema → Desempenho."); } catch (e) {}
+        try { _perfMarcarMenu(); } catch (e) {}
+    }
+};
+const _perfEscolher = (v) => {
+    // "Automático" escolhido de novo: descarta a medição guardada e mede agora.
+    try { if (v === "auto") { localStorage.removeItem("fdb_perf"); localStorage.removeItem("fdb_perf_auto"); } else localStorage.setItem("fdb_perf", v); } catch (e) {}
+    if (typeof window.__perfDecidir === "function") window.__perfDecidir();
+    else document.documentElement.setAttribute("data-perf", v === "leve" ? "leve" : "completo");
+    if (v === "auto") setTimeout(_perfMedir, 50);
+    try { _perfMarcarMenu(); } catch (e) {}
+    try { window.dispatchEvent(new Event("resize")); } catch (e) {}
+    try { toast("Desempenho", _perfEstadoTxt() + "."); } catch (e) {}
+};
+// Menu Tema → seção "Desempenho": marca a opção atual e o estado efetivo.
+const _perfMarcarMenu = () => {
+    const m = document.getElementById("tmMenu");
+    if (!m) return;
+    const pref = _perfPref();
+    m.querySelectorAll(".tmPerfOp").forEach(b => b.setAttribute("aria-checked", b.getAttribute("data-perf") === pref ? "true" : "false"));
+    const est = m.querySelector(".tmPerfEstado");
+    if (est) est.textContent = _perfEstadoTxt();
+};
+if (document.readyState === "complete") setTimeout(_perfMedir, 2500);
+else window.addEventListener("load", () => setTimeout(_perfMedir, 2500), { once: true });
+
 // Se o script do <head> falhou/foi bloqueado, o atributo pode estar ausente ou inválido: sincroniza.
 if (!_temaPorId(document.documentElement.getAttribute("data-theme"))) {
     document.documentElement.setAttribute("data-theme", _lerTemaSalvo());
@@ -3262,9 +3384,19 @@ const _tmConstruir = () => {
     const m = document.createElement("div");
     m.id = "tmMenu"; m.className = "tmMenu";
     m.innerHTML = '<div class="tmHead"><span class="tmTitulo">Tema</span><span class="tmAtual"></span></div>'
-        + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>';
+        + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>'
+        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Desempenho</span><span class="tmAtual tmPerfEstado"></span></div>'
+        +   '<div class="tmPerfOps" role="radiogroup" aria-label="Desempenho">'
+        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="auto">Automático</button>'
+        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="completo">Completo</button>'
+        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="leve">Leve</button>'
+        +   '</div>'
+        +   '<div class="tmPerfDica">Leve: sem animações, desfoque nem sombras pesadas — para computadores, notebooks e celulares mais fracos. O automático detecta sozinho.</div>'
+        + '</div>';
     m.addEventListener("click", (e) => {
         const alvo = e.target;
+        const op = alvo && alvo.closest ? alvo.closest(".tmPerfOp") : null;
+        if (op && m.contains(op)) { _perfEscolher(op.getAttribute("data-perf")); return; }
         const c = alvo && alvo.closest ? alvo.closest(".tmCard") : null;
         if (!c || !m.contains(c)) return;
         _escolherTema(c.getAttribute("data-tema"));
@@ -3273,6 +3405,7 @@ const _tmConstruir = () => {
     document.body.appendChild(m);
     _tmMenu = m;
     _tmMarcarAtual();
+    _perfMarcarMenu();
     return m;
 };
 // Posição: abaixo do botão, borda direita alinhada com a dele e sempre dentro da janela; se abaixo
@@ -3308,6 +3441,7 @@ const _tmAbrir = () => {
     if (_tmAberto) return;
     _tmConstruir();
     _tmMarcarAtual();
+    _perfMarcarMenu();
     _tmAberto = true;
     _tmAtualizarBotao();
     _tmPosicionar();
@@ -4835,8 +4969,11 @@ const _buildRowCard = x => {
 // para liberar o event loop entre fatias — elimina travamento em datasets grandes.
 // ────────────────────────────────────────────────────────────────────────────
 let _renderGen = 0;
-const CHUNK_FIRST = 80;  // primeira fatia — renderizada de forma síncrona para resposta imediata
-const CHUNK_REST  = 120; // fatias seguintes — agendadas via _sched
+// Modo leve (v3.10.0): fatias menores — o navegador volta a responder entre elas
+// mais vezes, sem "congelar" a tela de um aparelho fraco num relatório grande.
+const _modoLeve = () => document.documentElement.getAttribute("data-perf") === "leve";
+const _chunkFirst = () => _modoLeve() ? 40 : 80;  // primeira fatia — síncrona, resposta imediata
+const _chunkRest  = () => _modoLeve() ? 50 : 120; // fatias seguintes — agendadas via _sched
 
 // Scheduler: setTimeout(0) libera o event loop entre fatias (melhor que RAF para datasets grandes).
 // Em Chrome 94+ usa scheduler.postTask com prioridade "background" para ainda mais eficiência.
@@ -4896,6 +5033,7 @@ const renderTabela = () => {
     let soma = 0, idx = 0;
     let hTb = "", hCards = "";
     // Fase 1 síncrona: varre todo o array até encontrar CHUNK_FIRST matches (sem limite artificial)
+    const CHUNK_FIRST = _chunkFirst(), CHUNK_REST = _chunkRest();
     while (idx < total_itens && filtradas.length < CHUNK_FIRST) {
         const x = dados[idx];
         if (passaFiltroFast(x, idx, ctx)) {
