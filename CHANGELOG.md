@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.16.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.17.0 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.17.0 — 2026-10-22 23:00
+
+**Celular: visual compacto.**
+
+- Seguindo o modelo enviado: badges do topo empilhados na largura toda (texto à esquerda), botões do topo centralizados, título da tabela justificado, cartões de venda mais densos (padding e fontes menores — número, total, dados e itens), com os dados da venda cabendo numa linha, e barra de baixo mais baixa (botões de 40 px).
+- No computador nada muda.
 
 ### 3.16.1 — 2026-10-22 22:45
 

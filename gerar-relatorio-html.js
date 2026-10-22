@@ -1,15 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.16.1
+ * @version 3.17.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.16.1 - 2026-10-22 22:45 - Celular: selo "↻ auto" e títulos do painel.
- *     - O selo "↻ auto" fica oculto no celular (cobria vendas e cartões); a atualização
- *       automática continua ligada. No PC nada muda.
- *     - Painel detalhado no celular: o texto extra do título ("pico 16h", "clique para
- *       filtrar"…) vai inteiro para a linha de baixo, em vez de virar "p..".
+ *   3.17.0 - 2026-10-22 23:00 - Celular: visual compacto.
+ *     - No modelo enviado: badges do topo empilhados na largura toda, botões do topo
+ *       centralizados, título da tabela justificado, cartões de venda mais densos (fontes
+ *       menores, dados numa linha só) e barra de baixo mais baixa. No PC nada muda.
  */
 
 (function() {
@@ -17,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.16.1";
+    const SCRIPT_VERSION = "3.17.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3101,6 +3100,30 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .tableTop .btns { display: none; }
   .tableTitle { font-size: 20px; line-height: 1.25; }
   .mobileBar { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+  /* Visual compacto (v3.17.0) — no modelo enviado pelo usuário: badges empilhados na
+     largura toda, botões do topo centralizados, título justificado, cartões de venda
+     mais densos (fontes menores, uma linha de dados) e barra de baixo mais baixa. */
+  .top { padding: 14px 16px; gap: 12px; }
+  .top .left { align-items: flex-start; }
+  .top .badges { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 5px; }
+  .top .badge, .top.badgesCompactos .badge { justify-content: flex-start; text-align: left; border-radius: 6px; font-size: 10px; letter-spacing: 0.03em; padding: 5px 10px; }
+  .top .right { justify-content: center; gap: 8px; row-gap: 8px; }
+  .tableTop { padding: 16px 18px; gap: 4px; }
+  .tableTitle { font-size: 15px; line-height: 1.3; text-align: justify; text-align-last: left; }
+  .cards { padding: 14px 14px calc(96px + env(safe-area-inset-bottom, 0px)); }
+  .cardRow { padding: 14px 16px; margin-bottom: 12px; border-radius: var(--radius-md); }
+  .cardHead { margin-bottom: 8px; }
+  .cardNum { font-size: 11px; }
+  .cardTotal { font-size: 15px; }
+  .cardMeta { font-size: 11px; margin-bottom: 3px; }
+  .cardPay { font-size: 10px; margin-bottom: 6px; }
+  .cardRow .itensMiniHead { margin-bottom: 8px; padding-bottom: 6px; }
+  .cardRow .itensMiniHead .sub { font-size: 9px; padding: 2px 7px; }
+  .cardRow .itensChips { gap: 5px; }
+  .cardRow .itensChip { font-size: 10.5px; padding: 3px 8px 3px 3px; }
+  .cardRow .itensQtd { font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-right: 6px; }
+  .mobileBar { padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); gap: 10px; }
+  .mobileBar .btn { height: 40px; font-size: 12px; border-radius: var(--radius-md); }
   /* Selo "↻ auto" (indicador da atualização automática, que continua ligada): no
      celular não há canto livre — ficava por cima das vendas e dos cartões. */
   #__srv_badge { display: none !important; }
