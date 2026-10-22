@@ -1,14 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.13.0
+ * @version 3.13.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.13.0 - 2026-10-22 20:30 - Novo tema "Brasa Noturna".
- *     - Painel grafite sobre fundo azul-noite com brasas laranja nas bordas, cards com
- *       reflexo quente no canto, títulos em caixa alta, abas sublinhadas em laranja e, no
- *       painel detalhado, linhas/barras/anéis laranja com brilho (brilho desligado no Leve).
+ *   3.13.1 - 2026-10-22 21:00 - Chips de itens sem corte.
+ *     - .tdItemsWrap sem overflow/max-height: o chip que sobe e cresce ao passar o mouse
+ *       (modo Completo) não fica mais cortado, e nenhum chip some quando a venda tem
+ *       itens + "+N mais" + desconto + duplicata (a linha cresce para caber).
  */
 
 (function() {
@@ -16,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.13.0";
+    const SCRIPT_VERSION = "3.13.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2974,7 +2974,7 @@ thead th:nth-child(5), tbody td:nth-child(5) { width: 108px; text-align: center;
 thead th:nth-child(6), tbody td:nth-child(6) { width: 15%; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 thead th:nth-child(7), tbody td:nth-child(7) { width: auto; text-align: center; padding-left: 8px; }
 thead tr { user-select: none; }
-.tdItemsWrap { display: flex; flex-wrap: wrap; gap: 6px; max-height: 172px; overflow: hidden; }
+.tdItemsWrap { display: flex; flex-wrap: wrap; gap: 6px; }
 .tdItemChip { display: block; align-items: center; background: var(--chip-bg); border: 1px solid var(--border-focus); padding: 6px 12px; border-radius: 99px; font-size: 12px; font-weight: 500; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; transition: var(--transition-fast); width: 100%; text-align: center; }
 .tdItemMais { color: var(--accent); border-color: var(--accent-bg); font-weight: 700; background: var(--accent-bg); }
 tbody tr:hover .tdItemChip { border-color: var(--text-muted); color: var(--text-main); background: var(--chip-bg-hover); }
