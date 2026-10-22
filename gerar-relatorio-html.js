@@ -1,21 +1,29 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.10.0
+ * @version 3.11.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.10.0 - 2026-10-22 17:00 - Modo leve para aparelhos fracos; tela de celular sem corte.
- *     - Modo leve automático para computadores, notebooks e celulares fracos: sem animações
- *       de entrada, desfoque, sombras pesadas, brilho de texto nem fundo fixo; transições de
- *       80 ms; tabela desenhada em fatias menores. O visual do tema continua o mesmo.
- *     - Detecção: hardware informado pelo navegador (memória/núcleos, celular com pouca
- *       memória), economia de dados, "reduzir movimento" do sistema e um teste rápido de
- *       processamento após o carregamento (mediana de 3 rodadas > 14 ms; PC atual ≈ 4 ms).
- *       O resultado fica salvo por 7 dias: a página já abre leve, sem trocar no meio.
- *     - Menu Tema → "Desempenho": Automático (padrão) / Completo / Leve, com o motivo.
- *     - Celular: a área da tabela passava da tela (botões alargavam a coluna) e cortava
- *       o valor das vendas. Coluna limitada em minmax(0, 1fr).
+ *   3.11.0 - 2026-10-22 18:00 - Visualização detalhada: painel com gráficos.
+ *     - Menu Tema → "Visualização": Simplificada (como antes, só a tabela) ou Detalhada —
+ *       painel acima da tabela no estilo dos painéis profissionais: cartões de indicadores
+ *       (faturamento com minigráfico, ticket médio e maior venda, anéis de Gerencial/NFC-e/
+ *       NF-e, vendedor destaque), gráfico combinado (área = faturamento, barras = nº de
+ *       vendas, por hora ou por dia no período, com o pico marcado), rosca por tipo,
+ *       ranking de vendedores, formas de pagamento e produtos mais vendidos.
+ *     - Segue os filtros da tela (vendedor, tipo e busca). Clique no ranking filtra o
+ *       vendedor; clique num tipo (cartão ou legenda) filtra o tipo. Tooltips nos pontos,
+ *       barras e fatias.
+ *     - Gráficos em SVG feitos no próprio relatório (sem biblioteca externa — funciona sem
+ *       internet), com a paleta de cada tema; animação só na primeira montagem e nenhuma no
+ *       modo leve. No celular, 2 colunas.
+ *     - Tema HUD Ciano com desenho próprio (estilo painel de controle): anéis grossos de
+ *       porcentagem, barras sólidas com linhas-guia verticais, linha tracejada do faturamento
+ *       acumulado com marcadores vazados, tabela por hora com faixas e vendedores em anéis
+ *       com a porcentagem numa caixa. Trocar o tema redesenha o painel na hora.
+ *     - Botão SVG de minimizar/restaurar em cada painel e "Minimizar painel"/"Restaurar
+ *       todos" no topo; fica salvo no navegador.
  */
 
 (function() {
@@ -23,7 +31,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.10.0";
+    const SCRIPT_VERSION = "3.11.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2286,6 +2294,8 @@
         } catch (e) { return false; }
       };
       window.__perfDecidir();
+      // VISUALIZAÇÃO (v3.11.0): "simplificada" (padrão) ou "detalhada" — antes do 1º desenho.
+      try { document.documentElement.setAttribute("data-vis", localStorage.getItem("fdb_vis") === "detalhada" ? "detalhada" : "simplificada"); } catch (e) { document.documentElement.setAttribute("data-vis", "simplificada"); }
     </script>
 <style>
 :root {
@@ -2548,6 +2558,108 @@ html[data-theme="ambar"] tbody tr:hover { background: rgba(242, 148, 98, 0.06); 
 @keyframes scaleIn { 0% { opacity: 0; transform: scale(0.96); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes reveal { 0% { opacity: 0; transform: translateY(-3px) scale(0.96); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
 .reveal { animation: reveal 0.32s var(--easing) both; }
+/* ── PAINEL DETALHADO (v3.11.0) ─────────────────────────────────────────────
+   Menu Tema → Visualização: "Simplificada" (só a tabela) ou "Detalhada"
+   (indicadores + gráficos SVG acima da tabela). Gráficos 100% locais, sem
+   biblioteca externa; cores = paleta --dsh-1..6 de cada tema. */
+:root, [data-theme="ultra-dark"] { --dsh-1: #0ea5e9; --dsh-2: #22c55e; --dsh-3: #f59e0b; --dsh-4: #a855f7; --dsh-5: #f43f5e; --dsh-6: #14b8a6; }
+[data-theme="light"]     { --dsh-1: #2563eb; --dsh-2: #16a34a; --dsh-3: #d97706; --dsh-4: #7c3aed; --dsh-5: #dc2626; --dsh-6: #0d9488; }
+[data-theme="hud"]       { --dsh-1: #22d3ee; --dsh-2: #38bdf8; --dsh-3: #a5f3fc; --dsh-4: #0ea5e9; --dsh-5: #67e8f9; --dsh-6: #7dd3fc; }
+[data-theme="indigo"]    { --dsh-1: #22d3ee; --dsh-2: #2dd4bf; --dsh-3: #60a5fa; --dsh-4: #a78bfa; --dsh-5: #f472b6; --dsh-6: #34d399; }
+[data-theme="executivo"] { --dsh-1: #f97316; --dsh-2: #3b82f6; --dsh-3: #22d3ee; --dsh-4: #f59e0b; --dsh-5: #94a3b8; --dsh-6: #22c55e; }
+[data-theme="ambar"]     { --dsh-1: #f29462; --dsh-2: #fbbf24; --dsh-3: #fb7185; --dsh-4: #d6c4b5; --dsh-5: #fdba74; --dsh-6: #a3e635; }
+.dash { display: none; }
+html[data-vis="detalhada"] .content { overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+html[data-vis="detalhada"] .dash { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; flex: none; }
+html[data-vis="detalhada"] .tableWrap { height: min(78vh, 900px); min-height: 420px; flex: none; }
+.dshCard { min-width: 0; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; position: relative; overflow: hidden; }
+.dshKpi { grid-column: span 1; min-height: 112px; }
+.dshW2 { grid-column: span 2; } .dshW3 { grid-column: span 3; } .dshW4 { grid-column: span 4; } .dshW6 { grid-column: span 6; }
+.dshTit { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.dshTit .dshExtra { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; text-transform: none; color: var(--accent); white-space: nowrap; }
+.dshVal { font-size: clamp(15px, 1.25vw, 22px); font-weight: 800; color: var(--text-main); font-family: 'JetBrains Mono', Consolas, monospace; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dshSub { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dshSub b { color: var(--text-main); font-weight: 700; }
+.dshKpiLin { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.dshKpiLin > div { min-width: 0; }
+.dshRing { flex: none; }
+.dshRing .dshRingTxt { font: 800 11px 'Inter', sans-serif; fill: var(--text-main); }
+.dshKpiLin .dshSub { white-space: normal; line-height: 1.35; }
+.dshSpark { width: 100%; height: 34px; display: block; margin-top: auto; }
+.dshSvg { width: 100%; height: auto; display: block; overflow: visible; }
+.dshSvg text { font-family: 'Inter', sans-serif; font-size: 10px; fill: var(--text-muted); }
+.dshSvg .dshGrade { stroke: var(--line-soft); stroke-width: 1; }
+.dshSvg [data-tip] { cursor: pointer; }
+.dshPico rect { fill: var(--accent); } .dshPico text { fill: var(--on-accent); font-weight: 800; }
+.dshLeg { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.dshLegIt { display: grid; grid-template-columns: 10px minmax(56px, 1fr) auto auto; gap: 8px; align-items: center; font-size: 12px; color: var(--text-main); cursor: default; }
+.dshLegIt[data-tipo] { cursor: pointer; }
+.dshLegIt .dshDot { width: 10px; height: 10px; border-radius: 50%; }
+.dshLegIt .dshNome { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dshLegIt .dshV { font-family: 'JetBrains Mono', Consolas, monospace; font-weight: 700; white-space: nowrap; }
+.dshLegIt .dshP { color: var(--text-muted); font-weight: 700; width: 38px; text-align: right; }
+.dshRosca { display: flex; align-items: center; justify-content: center; gap: 14px 16px; min-width: 0; flex-wrap: wrap; }
+.dshRosca svg { flex: none; width: 128px; height: 128px; }
+.dshRosca .dshLeg { flex: 1 1 200px; }
+.dshRosca .dshRoscaV { font: 800 13px 'JetBrains Mono', Consolas, monospace; fill: var(--text-main); }
+.dshRosca .dshRoscaS { font: 700 9px 'Inter', sans-serif; fill: var(--text-muted); letter-spacing: 0.08em; }
+.dshBarras { display: flex; flex-direction: column; gap: 9px; }
+.dshBarra { display: grid; grid-template-columns: minmax(70px, 34%) minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 12px; }
+.dshBarra.dshClic { cursor: pointer; }
+.dshBarra .dshNome { color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dshBarra .dshTrilho { height: 10px; border-radius: 99px; background: var(--line-soft); overflow: hidden; }
+.dshBarra .dshEnch { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--dsh-2)); transform-origin: left; }
+.dshBarra .dshV { font-family: 'JetBrains Mono', Consolas, monospace; font-weight: 700; color: var(--text-main); white-space: nowrap; text-align: right; min-width: 92px; }
+.dshBarra .dshV small { color: var(--text-muted); font-weight: 600; margin-left: 4px; }
+.dshBarra.dshSel .dshNome { color: var(--accent); font-weight: 700; }
+.dshTopo { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 30px; }
+.dshTopoTit { font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); margin-right: auto; }
+.dshTopoInfo { font-size: 11px; color: var(--text-muted); }
+.dshTopoBtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-main); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
+.dshTopoBtn:hover { border-color: var(--accent); color: var(--accent); }
+.dshMinBtn { margin-left: auto; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; color: var(--text-muted); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+.dshMinBtn:hover { color: var(--accent); border-color: var(--accent); }
+.dshTit { align-items: center; }
+.dshTit .dshExtra { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dshTit .dshExtra + .dshMinBtn { margin-left: 8px; }
+.dshCard.dshMin { min-height: 0; padding-top: 10px; padding-bottom: 10px; align-self: start; }
+.dshCard.dshMin > :not(.dshTit) { display: none !important; }
+.dash.dshTudoMin > .dshCard { display: none; }
+.dshVazio { font-size: 12px; color: var(--text-muted); padding: 18px 0; text-align: center; }
+@keyframes dshCresceY { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes dshCresceX { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes dshSurge { from { opacity: 0; } to { opacity: 1; } }
+.dash.dshAnim .dshCol { transform-box: fill-box; transform-origin: bottom; animation: dshCresceY 0.7s var(--easing) both; }
+.dash.dshAnim .dshEnch { animation: dshCresceX 0.7s var(--easing) both; }
+.dash.dshAnim .dshArea, .dash.dshAnim .dshLinha, .dash.dshAnim .dshArco { animation: dshSurge 0.8s var(--easing) both; }
+.hudAneisLin { display: flex; justify-content: space-around; align-items: flex-start; gap: 10px; flex-wrap: wrap; padding: 6px 0 2px; }
+.hudAnelIt { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 96px; cursor: default; }
+.hudAnelIt[data-tipo] { cursor: pointer; }
+.hudAnel .hudAnelTxt { font: 300 17px 'Inter', sans-serif; fill: #e6f6ff; }
+.hudAnelNome { font-size: 14px; font-weight: 300; color: var(--accent); letter-spacing: 0.02em; }
+.hudAnelV { font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', Consolas, monospace; max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hudGrande { font: 300 30px 'Inter', sans-serif; color: #e6f6ff; letter-spacing: 0.01em; text-shadow: 0 0 14px rgba(34, 211, 238, 0.35); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hudLinhaTxt { font-size: 12px; color: var(--text-muted); } .hudLinhaTxt b { color: #e6f6ff; font-weight: 600; }
+.dshSvg .hudMini { font-size: 9px; fill: rgba(219, 234, 254, 0.6); } .dshSvg .hudEixo { font-size: 11px; fill: #dbeafe; }
+.hudTab { display: flex; flex-direction: column; border: 1px solid rgba(219, 234, 254, 0.3); }
+.hudTabLin { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; padding: 9px 12px; font-size: 12px; color: #dbeafe; align-items: center; }
+.hudTabLin:nth-child(odd) { background: rgba(56, 120, 160, 0.28); }
+.hudTabLin b { font-weight: 300; color: rgba(186, 230, 253, 0.85); font-family: 'JetBrains Mono', Consolas, monospace; }
+.hudVends { display: flex; flex-wrap: wrap; justify-content: space-around; gap: 14px 10px; }
+.hudVend.dshBarra { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 104px; grid-template-columns: none; }
+.hudCaixa { border: 1px solid rgba(219, 234, 254, 0.75); padding: 2px 8px; font: 300 15px 'Inter', sans-serif; color: #e6f6ff; }
+.hudVend .hudAnel .hudAnelTxt { font-size: 14px; }
+.hudVendNome { font-size: 13px; font-weight: 300; color: var(--accent); max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hudVendV { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', Consolas, monospace; }
+.hudVend.dshSel .hudVendNome { font-weight: 700; text-decoration: underline; }
+html[data-theme="hud"] .dshCard { background: linear-gradient(180deg, rgba(14, 34, 58, 0.78), rgba(6, 15, 28, 0.9)); border-color: rgba(56, 189, 248, 0.38); }
+html[data-theme="hud"] .dshTit { color: var(--accent); }
+html[data-theme="hud"] .dshCard::before { content: ""; position: absolute; top: -1px; left: -1px; width: 14px; height: 14px; border: solid var(--accent); border-width: 2px 0 0 2px; opacity: 0.85; }
+html[data-theme="indigo"] .dshCard { background: linear-gradient(180deg, #2a2880 0%, #23216d 100%); border-color: rgba(170, 176, 255, 0.14); }
+html[data-theme="executivo"] .dshTit { color: #c4ccd8; }
+html[data-theme="ambar"] .dshCard { background: linear-gradient(155deg, rgba(255, 170, 120, 0.12) 0%, rgba(34, 25, 20, 0.88) 38%, rgba(18, 13, 10, 0.94) 100%); border-color: rgba(255, 180, 140, 0.2); }
+@media (max-width: 1280px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dshW4, .dshW6 { grid-column: span 3; } .dshW2 { grid-column: span 3; } }
+@media (max-width: 760px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .dshW2, .dshW3, .dshW4, .dshW6 { grid-column: span 2; } .dshVal { font-size: 18px; } .dshRosca svg { width: 120px; height: 120px; } }
 /* MODO LEVE (v3.10.0) — aparelhos fracos (automático) ou escolhido no menu Tema.
    Mantém o visual do tema, mas tira o que pesa para GPU/CPU fracas: animações de
    entrada, desfoque (backdrop-filter — o efeito mais caro de compor), sombras
@@ -2930,6 +3042,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 <div class="sbResumo" id="vendResumo"><div class="sb-head"><div class="sb-title">Total por vendedor</div></div><div class="sbResumoBody"></div></div>
 </div>
 <div class="content">
+<div class="dash" id="dash" aria-label="Painel detalhado"></div>
 <div class="tableWrap">
 <div class="tableTop">
 <div class="tableTitle" id="sub">Todos os vendedores</div>
@@ -3265,6 +3378,7 @@ const _temaAtual = () => {
     return _temaPorId(a) ? a : TEMA_PADRAO;
 };
 const _salvarTema = (t) => {
+    setTimeout(() => { try { if (typeof _dshAgendar === "function") { _dshPrimeira = true; _dshAgendar(); } } catch (e) {} }, 0);
     try { localStorage.setItem("fdb_theme", t); } catch(e) {}
     try { document.cookie = "fdb_theme=" + t + ";path=/;max-age=31536000;SameSite=Strict"; } catch(e) {}
     document.documentElement.setAttribute("data-theme", t);
@@ -3334,7 +3448,7 @@ const _perfMarcarMenu = () => {
     const m = document.getElementById("tmMenu");
     if (!m) return;
     const pref = _perfPref();
-    m.querySelectorAll(".tmPerfOp").forEach(b => b.setAttribute("aria-checked", b.getAttribute("data-perf") === pref ? "true" : "false"));
+    m.querySelectorAll(".tmPerfOp:not(.tmVisOp)").forEach(b => b.setAttribute("aria-checked", b.getAttribute("data-perf") === pref ? "true" : "false"));
     const est = m.querySelector(".tmPerfEstado");
     if (est) est.textContent = _perfEstadoTxt();
 };
@@ -3385,6 +3499,13 @@ const _tmConstruir = () => {
     m.id = "tmMenu"; m.className = "tmMenu";
     m.innerHTML = '<div class="tmHead"><span class="tmTitulo">Tema</span><span class="tmAtual"></span></div>'
         + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>'
+        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Visualização</span></div>'
+        +   '<div class="tmPerfOps" role="radiogroup" aria-label="Visualização">'
+        +     '<button type="button" class="tmPerfOp tmVisOp" role="radio" data-vis="simplificada">Simplificada</button>'
+        +     '<button type="button" class="tmPerfOp tmVisOp" role="radio" data-vis="detalhada">Detalhada</button>'
+        +   '</div>'
+        +   '<div class="tmPerfDica">Detalhada: indicadores e gráficos (faturamento por hora, tipos, vendedores, pagamentos e produtos) acima da tabela, seguindo os filtros.</div>'
+        + '</div>'
         + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Desempenho</span><span class="tmAtual tmPerfEstado"></span></div>'
         +   '<div class="tmPerfOps" role="radiogroup" aria-label="Desempenho">'
         +     '<button type="button" class="tmPerfOp" role="radio" data-perf="auto">Automático</button>'
@@ -3395,6 +3516,8 @@ const _tmConstruir = () => {
         + '</div>';
     m.addEventListener("click", (e) => {
         const alvo = e.target;
+        const ov = alvo && alvo.closest ? alvo.closest(".tmVisOp") : null;
+        if (ov && m.contains(ov)) { _visEscolher(ov.getAttribute("data-vis")); return; }
         const op = alvo && alvo.closest ? alvo.closest(".tmPerfOp") : null;
         if (op && m.contains(op)) { _perfEscolher(op.getAttribute("data-perf")); return; }
         const c = alvo && alvo.closest ? alvo.closest(".tmCard") : null;
@@ -3406,6 +3529,7 @@ const _tmConstruir = () => {
     _tmMenu = m;
     _tmMarcarAtual();
     _perfMarcarMenu();
+    _visMarcarMenu();
     return m;
 };
 // Posição: abaixo do botão, borda direita alinhada com a dele e sempre dentro da janela; se abaixo
@@ -3442,6 +3566,7 @@ const _tmAbrir = () => {
     _tmConstruir();
     _tmMarcarAtual();
     _perfMarcarMenu();
+    _visMarcarMenu();
     _tmAberto = true;
     _tmAtualizarBotao();
     _tmPosicionar();
@@ -5021,6 +5146,7 @@ const renderTabela = () => {
     if (bv) bv.setAttribute("data-tip", vendAtual ? "Filtrado: " + vendAtual : "Filtrar por vendedor");
 
     const gen = ++_renderGen; // cancela renders anteriores pendentes
+    try { _dshAgendar(); } catch (e) {} // painel detalhado acompanha os mesmos filtros
 
     // ── Filtra de forma não-bloqueante: fatias de CHUNK_FIRST ────────────────
     // Para datasets pequenos (<= 2×CHUNK_FIRST) faz tudo de uma vez (síncrono).
@@ -5143,6 +5269,435 @@ const renderResumoVend=()=>{
         h+='<div class="rv" data-tip="Gerencial: '+esc(fmt(g))+' · NFC-e: '+esc(fmt(n))+'"><div class="n">'+esc(nome)+':</div><div class="v">'+esc(fmt(t))+'</div></div>';
     }
     body.innerHTML=h;
+};
+// ── PAINEL DETALHADO (v3.11.0) ───────────────────────────────────────────────
+// Indicadores e gráficos SVG feitos aqui mesmo (sem biblioteca externa — o
+// relatório funciona sem internet). Acompanham os filtros da tela (vendedor,
+// tipo e busca): usam exatamente as vendas que a tabela mostra. Só são
+// montados com a visualização "Detalhada" ligada (menu Tema → Visualização).
+const _dshVisivel = () => document.documentElement.getAttribute("data-vis") === "detalhada";
+const _dshNum = v => { const n = Number(String(v == null ? "" : v).replace(",", ".")); return Number.isFinite(n) ? n : 0; };
+const _dshPct = (v, t) => t > 0 ? v / t * 100 : 0;
+const _dshPctTxt = p => (p >= 10 || p === 0 ? Math.round(p) : Math.round(p * 10) / 10).toString().replace(".", ",") + "%";
+const _dshCompacto = v => {
+    const a = Math.abs(v);
+    if (a >= 1e6) return "R$ " + (v / 1e6).toFixed(1).replace(".", ",") + " mi";
+    if (a >= 1e4) return "R$ " + Math.round(v / 1e3) + " mil";
+    if (a >= 1e3) return "R$ " + (v / 1e3).toFixed(1).replace(".", ",") + " mil";
+    return "R$ " + Math.round(v);
+};
+const _DSH_TIPOS = [
+    { modelo: 99, nome: "Gerencial", radio: "gerencial", cor: "var(--dsh-1)" },
+    { modelo: 65, nome: "NFC-e",     radio: "nfce",      cor: "var(--dsh-2)" },
+    { modelo: 55, nome: "NF-e",      radio: "nfe",       cor: "var(--dsh-3)" }
+];
+const _DSH_CORES = ["var(--dsh-1)", "var(--dsh-2)", "var(--dsh-3)", "var(--dsh-4)", "var(--dsh-5)", "var(--dsh-6)"];
+
+// Anel de porcentagem (KPI).
+const _dshAnel = (pct, cor, tam) => {
+    const t = tam || 58, r = t / 2 - 4, c = 2 * Math.PI * r, p = Math.max(0, Math.min(100, pct));
+    return '<svg class="dshRing" width="' + t + '" height="' + t + '" viewBox="0 0 ' + t + ' ' + t + '" aria-hidden="true">'
+        + '<circle cx="' + t / 2 + '" cy="' + t / 2 + '" r="' + r + '" fill="none" stroke="var(--line-soft)" stroke-width="6"/>'
+        + '<circle class="dshArco" cx="' + t / 2 + '" cy="' + t / 2 + '" r="' + r + '" fill="none" stroke="' + cor + '" stroke-width="6" stroke-linecap="round"'
+        + ' stroke-dasharray="' + (c * p / 100).toFixed(2) + ' ' + c.toFixed(2) + '" transform="rotate(-90 ' + t / 2 + ' ' + t / 2 + ')"/>'
+        + '<text class="dshRingTxt" x="50%" y="50%" text-anchor="middle" dominant-baseline="central">' + esc(_dshPctTxt(p)) + '</text></svg>';
+};
+
+// Curva suave (Catmull-Rom → Bézier) por uma lista de pontos.
+const _dshCurva = (pts, yMin, yMax) => {
+    const lim = (y) => (yMin === undefined ? y : Math.max(yMin, Math.min(yMax, y)));
+    if (!pts.length) return "";
+    if (pts.length === 1) return "M" + pts[0][0] + "," + pts[0][1];
+    let d = "M" + pts[0][0].toFixed(1) + "," + pts[0][1].toFixed(1);
+    for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+        const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = lim(p1[1] + (p2[1] - p0[1]) / 6);
+        const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = lim(p2[1] - (p3[1] - p1[1]) / 6);
+        d += " C" + c1x.toFixed(1) + "," + c1y.toFixed(1) + " " + c2x.toFixed(1) + "," + c2y.toFixed(1) + " " + p2[0].toFixed(1) + "," + p2[1].toFixed(1);
+    }
+    return d;
+};
+
+// Minigráfico (KPI de faturamento).
+const _dshSpark = (vals) => {
+    if (vals.length < 2) return "";
+    const W = 200, H = 34, mx = Math.max(...vals, 1);
+    const pts = vals.map((v, i) => [i * W / (vals.length - 1), H - 3 - (v / mx) * (H - 8)]);
+    const linha = _dshCurva(pts, 2, H - 3);
+    return '<svg class="dshSpark" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">'
+        + '<defs><linearGradient id="dshSpG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".35"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>'
+        + '<path class="dshArea" d="' + linha + ' L' + W + ',' + H + ' L0,' + H + ' Z" fill="url(#dshSpG)"/>'
+        + '<path class="dshLinha" d="' + linha + '" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>';
+};
+
+// Gráfico combinado: barras = quantidade de vendas, área/linha = faturamento.
+const _dshCombo = (bk) => {
+    if (!bk.length) return '<div class="dshVazio">Sem horários para montar o gráfico.</div>';
+    const W = 760, H = 250, mL = 54, mR = 34, mT = 30, mB = 26, iw = W - mL - mR, ih = H - mT - mB;
+    const maxV = Math.max(...bk.map(b => b.valor), 1), maxQ = Math.max(...bk.map(b => b.qtd), 1);
+    const passo = iw / bk.length, bw = Math.max(4, Math.min(28, passo * 0.5));
+    let g = "";
+    for (let k = 0; k <= 4; k++) {
+        const y = mT + ih - ih * k / 4;
+        g += '<line class="dshGrade" x1="' + mL + '" x2="' + (W - mR) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'
+            + '<text x="' + (mL - 6) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(_dshCompacto(maxV * k / 4)) + '</text>'
+            + '<text x="' + (W - mR + 6) + '" y="' + (y + 3).toFixed(1) + '">' + Math.round(maxQ * k / 4) + '</text>';
+    }
+    let barras = "", rotulos = "";
+    const salto = Math.ceil(bk.length / 14);
+    const pts = bk.map((b, i) => {
+        const cx = mL + passo * i + passo / 2;
+        const bh = ih * b.qtd / maxQ;
+        if (b.qtd > 0) barras += '<rect class="dshCol" x="' + (cx - bw / 2).toFixed(1) + '" y="' + (mT + ih - bh).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="3" fill="var(--dsh-2)" fill-opacity=".38" style="animation-delay:' + (i * 25) + 'ms" data-tip="' + esc(b.rot + ": " + b.qtd + " venda(s) · " + fmt(b.valor)) + '"/>';
+        if (i % salto === 0) rotulos += '<text x="' + cx.toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(b.rot) + '</text>';
+        return [cx, mT + ih - ih * b.valor / maxV];
+    });
+    const linha = _dshCurva(pts, mT, mT + ih);
+    let pontos = "";
+    let iPico = 0; bk.forEach((b, i) => { if (b.valor > bk[iPico].valor) iPico = i; });
+    pts.forEach((p, i) => { pontos += '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + (i === iPico ? 5 : 3) + '" fill="var(--bg-panel)" stroke="var(--accent)" stroke-width="2" data-tip="' + esc(bk[i].rot + ": " + fmt(bk[i].valor) + " em " + bk[i].qtd + " venda(s)") + '"/>'; });
+    const pp = pts[iPico], txtPico = "Pico " + _dshCompacto(bk[iPico].valor);
+    const lw = txtPico.length * 6.2 + 14, lx = Math.max(mL, Math.min(W - mR - lw, pp[0] - lw / 2)), ly = Math.max(2, pp[1] - 30);
+    return '<svg class="dshSvg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Faturamento e quantidade de vendas">'
+        + '<defs><linearGradient id="dshArG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".38"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>'
+        + g + barras
+        + '<path class="dshArea" d="' + linha + ' L' + pts[pts.length - 1][0].toFixed(1) + ',' + (mT + ih) + ' L' + pts[0][0].toFixed(1) + ',' + (mT + ih) + ' Z" fill="url(#dshArG)"/>'
+        + '<path class="dshLinha" d="' + linha + '" fill="none" stroke="var(--accent)" stroke-width="2.5"/>'
+        + pontos + rotulos
+        + (bk[iPico].valor > 0 ? '<g class="dshPico"><rect x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" width="' + lw.toFixed(1) + '" height="18" rx="4"/><text x="' + (lx + lw / 2).toFixed(1) + '" y="' + (ly + 12.5).toFixed(1) + '" text-anchor="middle">' + esc(txtPico) + '</text></g>' : '')
+        + '</svg>';
+};
+
+// Rosca com legenda (tipos e formas de pagamento).
+const _dshRosca = (segs, centroV, centroS) => {
+    const tot = segs.reduce((a, s) => a + s.valor, 0);
+    if (!(tot > 0)) return '<div class="dshVazio">Sem valores no filtro atual.</div>';
+    const T = 150, r = 56, c = 2 * Math.PI * r;
+    let acc = 0, arcos = "";
+    segs.forEach((s) => {
+        const f = s.valor / tot;
+        if (f <= 0) return;
+        const vis = Math.max(0, c * f - (segs.length > 1 ? 2 : 0));
+        arcos += '<circle class="dshArco" cx="' + T / 2 + '" cy="' + T / 2 + '" r="' + r + '" fill="none" stroke="' + s.cor + '" stroke-width="18"'
+            + ' stroke-dasharray="' + vis.toFixed(2) + ' ' + c.toFixed(2) + '" stroke-dashoffset="' + (-c * acc).toFixed(2) + '" transform="rotate(-90 ' + T / 2 + ' ' + T / 2 + ')"'
+            + ' data-tip="' + esc(s.nome + ": " + fmt(s.valor) + " (" + _dshPctTxt(f * 100) + ")") + '"/>';
+        acc += f;
+    });
+    let leg = "";
+    segs.forEach(s => {
+        leg += '<div class="dshLegIt"' + (s.tipo ? ' data-tipo="' + esc(s.tipo) + '" data-tip="Filtrar a tabela por ' + esc(s.nome) + '"' : '') + '>'
+            + '<span class="dshDot" style="background:' + s.cor + '"></span><span class="dshNome">' + esc(s.nome) + '</span>'
+            + '<span class="dshV">' + esc(fmt(s.valor)) + '</span><span class="dshP">' + esc(_dshPctTxt(_dshPct(s.valor, tot))) + '</span></div>';
+    });
+    return '<div class="dshRosca"><svg viewBox="0 0 ' + T + ' ' + T + '" aria-hidden="true">'
+        + '<circle cx="' + T / 2 + '" cy="' + T / 2 + '" r="' + r + '" fill="none" stroke="var(--line-soft)" stroke-width="18"/>' + arcos
+        + '<text class="dshRoscaV" x="50%" y="47%" text-anchor="middle">' + esc(centroV) + '</text>'
+        + '<text class="dshRoscaS" x="50%" y="60%" text-anchor="middle">' + esc(centroS) + '</text></svg>'
+        + '<div class="dshLeg">' + leg + '</div></div>';
+};
+
+// Barras horizontais (ranking de vendedores, produtos).
+const _dshBarras = (itens, opc) => {
+    if (!itens.length) return '<div class="dshVazio">' + esc((opc && opc.vazio) || "Sem dados no filtro atual.") + '</div>';
+    const mx = Math.max(...itens.map(i => i.valor), 1);
+    return '<div class="dshBarras">' + itens.map((it, k) =>
+        '<div class="dshBarra' + (it.vend !== undefined ? ' dshClic' : '') + (it.sel ? ' dshSel' : '') + '"' + (it.vend !== undefined ? ' data-vend="' + esc(it.vend) + '"' : '') + ' data-tip="' + esc(it.tip || it.nome) + '">'
+        + '<span class="dshNome">' + esc(it.nome) + '</span>'
+        + '<span class="dshTrilho"><span class="dshEnch" style="display:block;width:' + Math.max(2, it.valor / mx * 100).toFixed(1) + '%;animation-delay:' + (k * 40) + 'ms;' + (it.cor ? 'background:' + it.cor : '') + '"></span></span>'
+        + '<span class="dshV">' + esc(it.txt) + (it.extra ? '<small>' + esc(it.extra) + '</small>' : '') + '</span></div>'
+    ).join("") + '</div>';
+};
+
+// Agrega as vendas do filtro atual.
+const _dshDados = () => {
+    const rows = DADOS.vendas.filter((x, i) => passaFiltro(x, i));
+    const r = { rows, total: 0, qtd: rows.length, tipos: new Map(), vend: new Map(), formas: new Map(), prod: new Map(), dias: new Set(), maior: null };
+    for (const x of rows) {
+        const v = _dshNum(x.total);
+        r.total += v;
+        const m = Number(x.modelo || 0);
+        const t = r.tipos.get(m) || { valor: 0, qtd: 0 }; t.valor += v; t.qtd++; r.tipos.set(m, t);
+        const nv = String(x.vendedor || "").trim() || "(sem vendedor)";
+        const vv = r.vend.get(nv) || { valor: 0, qtd: 0 }; vv.valor += v; vv.qtd++; r.vend.set(nv, vv);
+        if (!r.maior || v > _dshNum(r.maior.total)) r.maior = x;
+        if (x._dtKey) r.dias.add(x._dtKey);
+        const fv = x.formasValores && typeof x.formasValores === "object" ? Object.entries(x.formasValores).filter(e => _dshNum(e[1]) > 0) : [];
+        if (fv.length) { for (const [f, val] of fv) { const nf = String(f || "").trim().toUpperCase() || "OUTRAS"; r.formas.set(nf, (r.formas.get(nf) || 0) + _dshNum(val)); } }
+        else if (v > 0) r.formas.set("NÃO IDENTIFICADA", (r.formas.get("NÃO IDENTIFICADA") || 0) + v);
+        for (const it of (Array.isArray(x.itensDetalhe) ? x.itensDetalhe : [])) {
+            if (!it || it.cancelado) continue;
+            const d = String(it.desc || "").trim(); const tv = it.total === null || it.total === undefined ? null : _dshNum(it.total);
+            if (!d || (tv !== null && tv < 0) || /\bDESCONTO\b|\bACR[EÉ]SCIMO\b/i.test(d)) continue;
+            const p = r.prod.get(d) || { valor: 0, qtd: 0, temValor: false };
+            p.qtd += _dshNum(it.qtd) || 1; if (tv !== null) { p.valor += tv; p.temValor = true; }
+            r.prod.set(d, p);
+        }
+    }
+    // Faturamento/quantidade por hora (um dia) ou por dia (período).
+    const bk = [];
+    if (r.dias.size > 1) {
+        const mp = new Map();
+        for (const x of rows) { const k = x._dtKey || "?"; const b = mp.get(k) || { valor: 0, qtd: 0 }; b.valor += _dshNum(x.total); b.qtd++; mp.set(k, b); }
+        [...mp.keys()].filter(k => k !== "?").sort().forEach(k => { const p = k.split("-"); bk.push({ rot: (p[2] || "") + "/" + (p[1] || ""), valor: mp.get(k).valor, qtd: mp.get(k).qtd }); });
+        r.porDia = true;
+    } else {
+        const hs = new Array(24).fill(null).map(() => ({ valor: 0, qtd: 0 }));
+        let hMin = 24, hMax = -1;
+        for (const x of rows) {
+            const m = String(x.hora || "").match(/^(\d{1,2}):/); if (!m) continue;
+            const h = Math.min(23, parseInt(m[1], 10)); hs[h].valor += _dshNum(x.total); hs[h].qtd++;
+            hMin = Math.min(hMin, h); hMax = Math.max(hMax, h);
+        }
+        for (let h = hMin; h <= hMax; h++) bk.push({ rot: String(h).padStart(2, "0") + "h", valor: hs[h].valor, qtd: hs[h].qtd });
+    }
+    r.bk = bk;
+    return r;
+};
+
+// ── Painel no estilo HUD (tema "HUD Ciano") — v3.11.0 ───────────────────────
+// Mesmos dados, desenho próprio inspirado em painéis de controle futuristas:
+// anéis grossos de porcentagem, barras sólidas com linhas-guia verticais, linha
+// tracejada com marcadores vazados, tabela de estatísticas com faixas e
+// vendedores em anéis com a porcentagem numa caixa.
+const _hudAnel = (pct, tam, rot) => {
+    const t = tam || 104, r = t / 2 - 8, c = 2 * Math.PI * r, p = Math.max(0, Math.min(100, pct));
+    return '<svg class="hudAnel" width="' + t + '" height="' + t + '" viewBox="0 0 ' + t + ' ' + t + '" aria-hidden="true">'
+        + '<circle cx="' + t / 2 + '" cy="' + t / 2 + '" r="' + r + '" fill="none" stroke="#dbeafe" stroke-opacity=".88" stroke-width="7"/>'
+        + '<circle class="dshArco" cx="' + t / 2 + '" cy="' + t / 2 + '" r="' + r + '" fill="none" stroke="var(--accent)" stroke-width="9"'
+        + ' stroke-dasharray="' + (c * p / 100).toFixed(2) + ' ' + c.toFixed(2) + '" transform="rotate(-90 ' + t / 2 + ' ' + t / 2 + ')"/>'
+        + '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="hudAnelTxt">' + esc(rot || _dshPctTxt(p)) + '</text></svg>';
+};
+const _hudBarras = (bk) => {
+    if (!bk.length) return '<div class="dshVazio">Sem horários para montar o gráfico.</div>';
+    const W = 760, H = 240, mL = 16, mR = 34, mT = 14, mB = 26, iw = W - mL - mR, ih = H - mT - mB;
+    const maxQ = Math.max(...bk.map(b => b.qtd), 1), passo = iw / bk.length, bw = Math.max(6, Math.min(56, passo * 0.62));
+    let g = "";
+    for (let k = 0; k <= 3; k++) {
+        const y = mT + ih - ih * k / 3;
+        g += '<line x1="' + mL + '" x2="' + (W - mR) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '" stroke="rgba(219,234,254,.14)"/>'
+            + '<text x="' + (W - mR + 6) + '" y="' + (y + 3).toFixed(1) + '" class="hudMini">' + Math.round(maxQ * k / 3) + '</text>';
+    }
+    let corpo = "";
+    const salto = Math.ceil(bk.length / 14);
+    bk.forEach((b, i) => {
+        const cx = mL + passo * i + passo / 2, bh = ih * b.qtd / maxQ;
+        corpo += '<line x1="' + cx.toFixed(1) + '" x2="' + cx.toFixed(1) + '" y1="' + mT + '" y2="' + (mT + ih) + '" stroke="rgba(219,234,254,.28)"/>';
+        if (b.qtd > 0) corpo += '<rect class="dshCol" x="' + (cx - bw / 2).toFixed(1) + '" y="' + (mT + ih - bh).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" fill="var(--accent)" style="animation-delay:' + (i * 30) + 'ms" data-tip="' + esc(b.rot + ": " + b.qtd + " venda(s) · " + fmt(b.valor)) + '"/>';
+        if (i % salto === 0) corpo += '<text x="' + cx.toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" class="hudEixo">' + esc(b.rot) + '</text>';
+    });
+    return '<svg class="dshSvg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Vendas por hora">' + g + corpo
+        + '<line x1="' + mL + '" x2="' + (W - mR) + '" y1="' + (mT + ih) + '" y2="' + (mT + ih) + '" stroke="rgba(219,234,254,.55)"/></svg>';
+};
+const _hudLinha = (bk) => {
+    if (bk.length < 2) return '<div class="dshVazio">Poucos horários para a linha.</div>';
+    const W = 520, H = 230, mL = 44, mR = 14, mT = 18, mB = 26, iw = W - mL - mR, ih = H - mT - mB;
+    let acc = 0; const acum = bk.map(b => (acc += b.valor));
+    const mx = Math.max(acc, 1);
+    let g = "";
+    for (let k = 1; k <= 10; k++) {
+        if (k % 2) continue;
+        const y = mT + ih - ih * k / 10;
+        g += '<text x="' + (mL - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end" class="hudMini">' + (k * 10) + '%</text>';
+    }
+    const pts = acum.map((v, i) => [mL + iw * i / (bk.length - 1), mT + ih - ih * v / mx]);
+    let marc = "";
+    const salto = Math.ceil(bk.length / 8);
+    pts.forEach((p, i) => {
+        if (i % salto === 0 || i === pts.length - 1) {
+            marc += '<line x1="' + p[0].toFixed(1) + '" x2="' + p[0].toFixed(1) + '" y1="' + mT + '" y2="' + (mT + ih) + '" stroke="rgba(219,234,254,.22)" stroke-dasharray="3 4"/>'
+                + '<text x="' + p[0].toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" class="hudEixo">' + esc(bk[i].rot) + '</text>';
+        }
+        marc += '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="4.5" fill="#0a1626" stroke="#dbeafe" stroke-width="1.6" data-tip="' + esc("Até " + bk[i].rot + ": " + fmt(acum[i]) + " (" + _dshPctTxt(_dshPct(acum[i], mx)) + " do dia)") + '"/>';
+    });
+    return '<svg class="dshSvg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Faturamento acumulado">'
+        + '<line x1="' + mL + '" x2="' + mL + '" y1="' + (mT - 6) + '" y2="' + (mT + ih) + '" stroke="rgba(219,234,254,.55)"/>'
+        + '<line x1="' + mL + '" x2="' + (W - mR) + '" y1="' + (mT + ih) + '" y2="' + (mT + ih) + '" stroke="rgba(219,234,254,.55)"/>'
+        + g + '<path class="dshLinha" d="' + pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ") + '" fill="none" stroke="#9cc6e8" stroke-width="2.6" stroke-dasharray="14 7" stroke-linecap="round"/>' + marc + '</svg>';
+};
+const _hudRender = (d, el) => {
+    const tot = d.total, ticket = d.qtd ? tot / d.qtd : 0;
+    const vendArr = [...d.vend.entries()].map(([nome, o]) => ({ nome, ...o })).sort((a, b) => b.valor - a.valor);
+    const top = vendArr[0];
+    let h = "";
+    // Anéis de participação + resumo
+    h += '<div class="dshCard dshW4 hudAneis"><div class="dshTit">Participação no faturamento</div><div class="hudAneisLin">';
+    for (const tp of _DSH_TIPOS) {
+        const o = d.tipos.get(tp.modelo) || { valor: 0, qtd: 0 };
+        h += '<div class="hudAnelIt" data-tipo="' + tp.radio + '" data-tip="' + esc(tp.nome + ": " + fmt(o.valor) + " em " + o.qtd + " venda(s) — clique para filtrar") + '">' + _hudAnel(_dshPct(o.valor, tot)) + '<div class="hudAnelNome">' + tp.nome + '</div><div class="hudAnelV">' + esc(fmt(o.valor)) + '</div></div>';
+    }
+    h += '<div class="hudAnelIt" data-tip="' + esc(top ? top.nome + ": " + fmt(top.valor) : "") + '">' + _hudAnel(top ? _dshPct(top.valor, tot) : 0) + '<div class="hudAnelNome">Destaque</div><div class="hudAnelV">' + esc(top ? top.nome : "—") + '</div></div>';
+    h += '</div></div>';
+    h += '<div class="dshCard dshW2 hudResumo"><div class="dshTit">Estatísticas do filtro</div>'
+        + '<div class="hudGrande">' + esc(fmt(tot)) + '</div><div class="hudLinhaTxt">' + d.qtd + ' venda(s) · ticket médio <b>' + esc(fmt(ticket)) + '</b></div>'
+        + (d.maior ? '<div class="hudLinhaTxt">Maior venda <b>' + esc(fmt(_dshNum(d.maior.total))) + '</b> · ' + esc(_tipoLabel(d.maior) + " " + (d.maior.numero || "")) + '</div>' : '')
+        + _dshSpark(d.bk.map(b => b.valor)) + '</div>';
+    // Barras sólidas + tabela por hora
+    h += '<div class="dshCard dshW4"><div class="dshTit">' + (d.porDia ? "Vendas por dia" : "Vendas por hora") + '<span class="dshExtra">nº de vendas</span></div>' + _hudBarras(d.bk) + '</div>';
+    const linhasTab = d.bk.filter(b => b.qtd > 0).slice(-8).reverse();
+    h += '<div class="dshCard dshW2"><div class="dshTit">' + (d.porDia ? "Por dia" : "Por hora") + '<span class="dshExtra">mais recentes</span></div>'
+        + (linhasTab.length ? '<div class="hudTab">' + linhasTab.map(b => '<div class="hudTabLin"><span>' + esc(b.rot) + '</span><span>' + b.qtd + ' venda(s)</span><b>' + esc(fmt(b.valor)) + '</b></div>').join("") + '</div>' : '<div class="dshVazio">Sem vendas.</div>') + '</div>';
+    // Linha acumulada + rosca de pagamentos + vendedores
+    h += '<div class="dshCard dshW3"><div class="dshTit">Faturamento acumulado<span class="dshExtra">% do total ao longo do ' + (d.porDia ? "período" : "dia") + '</span></div>' + _hudLinha(d.bk) + '</div>';
+    const formas = [...d.formas.entries()].sort((a, b) => b[1] - a[1]);
+    const segs = formas.slice(0, 5).map(([n, v], i) => ({ nome: n.charAt(0) + n.slice(1).toLowerCase(), valor: v, cor: ["#22d3ee", "#7dd3fc", "#bae6fd", "#0ea5e9", "#e0f2fe"][i] }));
+    if (formas.length > 5) segs.push({ nome: "Outras", valor: formas.slice(5).reduce((a, f) => a + f[1], 0), cor: "#38bdf8" });
+    h += '<div class="dshCard dshW3 hudPag"><div class="dshTit">Formas de pagamento</div>' + _dshRosca(segs, _dshCompacto(formas.reduce((a, f) => a + f[1], 0)), "PAGO") + '</div>';
+    h += '<div class="dshCard dshW6"><div class="dshTit">Vendedores<span class="dshExtra">clique para filtrar</span></div><div class="hudVends">'
+        + (vendArr.length ? vendArr.slice(0, 8).map(v => '<div class="hudVend dshBarra' + (v.nome !== "(sem vendedor)" ? ' dshClic' : '') + (vendAtual && v.nome === vendAtual ? ' dshSel' : '') + '" data-vend="' + esc(v.nome === "(sem vendedor)" ? "" : v.nome) + '" data-tip="' + esc(v.nome + ": " + fmt(v.valor) + " em " + v.qtd + " venda(s)") + '">'
+            + '<span class="hudCaixa">' + esc(_dshPctTxt(_dshPct(v.valor, tot))) + '</span>' + _hudAnel(_dshPct(v.valor, tot), 74, String(v.qtd)) + '<span class="hudVendNome">' + esc(v.nome) + '</span><span class="hudVendV">' + esc(fmt(v.valor)) + '</span></div>').join("") : '<div class="dshVazio">Sem vendedores.</div>')
+        + '</div></div>';
+    el.innerHTML = h;
+};
+// ── Minimizar / restaurar painéis (v3.11.0) ─────────────────────────────────
+// Botão SVG no título de cada painel; barra no topo com "minimizar tudo". Estado
+// salvo no navegador (por título do painel) — sobrevive às atualizações.
+const LS_DASH_MIN = "fdb_dash_min", LS_DASH_TUDO = "fdb_dash_tudo";
+const _SVG_MIN = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+const _SVG_REST = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="4" y1="9" x2="20" y2="9"/></svg>';
+const _dshMinLer = () => { try { const a = JSON.parse(localStorage.getItem(LS_DASH_MIN) || "[]"); return Array.isArray(a) ? a.filter(x => typeof x === "string").slice(0, 60) : []; } catch (e) { return []; } };
+const _dshMinSalvar = (a) => { try { localStorage.setItem(LS_DASH_MIN, JSON.stringify(a.slice(0, 60))); } catch (e) {} };
+const _dshTudoMin = () => { try { return localStorage.getItem(LS_DASH_TUDO) === "1"; } catch (e) { return false; } };
+const _dshChave = (card) => {
+    const t = card.querySelector(".dshTit");
+    const txt = t ? (t.childNodes[0] && t.childNodes[0].nodeType === 3 ? t.childNodes[0].nodeValue : t.textContent) : "";
+    return rmAcento(String(txt || "").trim().toLowerCase()).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "painel";
+};
+const _dshBotao = (min, rotulo) => '<button type="button" class="dshMinBtn" aria-pressed="' + (min ? "true" : "false") + '" data-tip="' + (min ? "Restaurar " : "Minimizar ") + esc(rotulo) + '" aria-label="' + (min ? "Restaurar " : "Minimizar ") + esc(rotulo) + '">' + (min ? _SVG_REST : _SVG_MIN) + '</button>';
+const _dshDecorar = (el) => {
+    const mins = _dshMinLer();
+    const tudo = _dshTudoMin();
+    el.classList.toggle("dshTudoMin", tudo);
+    el.querySelectorAll(".dshCard").forEach(card => {
+        const k = _dshChave(card);
+        card.setAttribute("data-k", k);
+        const min = mins.indexOf(k) >= 0;
+        card.classList.toggle("dshMin", min);
+        const tit = card.querySelector(".dshTit");
+        if (tit && !tit.querySelector(".dshMinBtn")) tit.insertAdjacentHTML("beforeend", _dshBotao(min, "painel"));
+    });
+    const qtdMin = el.querySelectorAll(".dshCard.dshMin").length;
+    el.insertAdjacentHTML("afterbegin", '<div class="dshTopo"><span class="dshTopoTit">Painel detalhado</span>'
+        + (qtdMin && !tudo ? '<span class="dshTopoInfo">' + qtdMin + ' painel(is) minimizado(s)</span>' : '')
+        + '<button type="button" class="dshTopoBtn" data-acao="' + (tudo ? "restaurar-tudo" : "minimizar-tudo") + '">' + (tudo ? _SVG_REST + "Restaurar painel" : _SVG_MIN + "Minimizar painel") + '</button>'
+        + (qtdMin && !tudo ? '<button type="button" class="dshTopoBtn" data-acao="restaurar-cards">' + _SVG_REST + 'Restaurar todos</button>' : '')
+        + '</div>');
+};
+const _dshMinAlternar = (card) => {
+    const k = card.getAttribute("data-k"); if (!k) return;
+    const mins = _dshMinLer(); const i = mins.indexOf(k);
+    if (i >= 0) mins.splice(i, 1); else mins.push(k);
+    _dshMinSalvar(mins);
+    _dshRender();
+};
+document.addEventListener("click", (e) => {
+    const alvo = e.target && e.target.closest ? e.target : null;
+    if (!alvo || !alvo.closest("#dash")) return;
+    const bMin = alvo.closest(".dshMinBtn");
+    if (bMin) { e.stopPropagation(); const card = bMin.closest(".dshCard"); if (card) _dshMinAlternar(card); return; }
+    const bTopo = alvo.closest(".dshTopoBtn");
+    if (bTopo) {
+        e.stopPropagation();
+        const ac = bTopo.getAttribute("data-acao");
+        if (ac === "minimizar-tudo") { try { localStorage.setItem(LS_DASH_TUDO, "1"); } catch (er) {} }
+        else if (ac === "restaurar-tudo") { try { localStorage.removeItem(LS_DASH_TUDO); } catch (er) {} }
+        else if (ac === "restaurar-cards") _dshMinSalvar([]);
+        _dshRender();
+    }
+}, true);
+let _dshTimer = 0, _dshPrimeira = true;
+const _dshRender = () => {
+    const el = document.getElementById("dash");
+    if (!el || !_dshVisivel()) return;
+    let d;
+    try { d = _dshDados(); } catch (e) { el.innerHTML = '<div class="dshCard dshW6"><div class="dshVazio">Não foi possível montar o painel: ' + esc(e.message) + '</div></div>'; return; }
+    if (document.documentElement.getAttribute("data-theme") === "hud") {
+        el.classList.toggle("dshAnim", _dshPrimeira);
+        _hudRender(d, el);
+        _dshDecorar(el);
+        _dshPrimeira = false;
+        return;
+    }
+    const tot = d.total;
+    const ticket = d.qtd ? tot / d.qtd : 0;
+    const vendArr = [...d.vend.entries()].map(([nome, o]) => ({ nome, ...o })).sort((a, b) => b.valor - a.valor);
+    const top = vendArr[0];
+    const pico = d.bk.reduce((a, b) => (!a || b.valor > a.valor ? b : a), null);
+    let h = "";
+    // KPIs
+    h += '<div class="dshCard dshKpi"><div class="dshTit">Faturamento' + (pico && pico.valor > 0 ? '<span class="dshExtra">pico ' + esc(pico.rot) + '</span>' : '') + '</div>'
+        + '<div class="dshVal" data-tip="' + esc(fmt(tot)) + '">' + esc(fmt(tot)) + '</div><div class="dshSub"><b>' + d.qtd + '</b> venda(s)</div>' + _dshSpark(d.bk.map(b => b.valor)) + '</div>';
+    h += '<div class="dshCard dshKpi"><div class="dshTit">Ticket médio</div><div class="dshVal">' + esc(fmt(ticket)) + '</div>'
+        + (d.maior ? '<div class="dshSub" data-tip="Maior venda: ' + esc(_tipoLabel(d.maior) + " " + (d.maior.numero || "") + " · " + (d.maior.vendedor || "")) + '">Maior: <b>' + esc(fmt(_dshNum(d.maior.total))) + '</b> · ' + esc(String(d.maior.numero || "")) + '</div>' : '<div class="dshSub">—</div>') + '</div>';
+    for (const tp of _DSH_TIPOS) {
+        const o = d.tipos.get(tp.modelo) || { valor: 0, qtd: 0 };
+        h += '<div class="dshCard dshKpi" data-tipo="' + tp.radio + '" data-tip="Filtrar a tabela por ' + tp.nome + '" style="cursor:pointer"><div class="dshTit">' + tp.nome + '</div>'
+            + '<div class="dshVal">' + esc(fmt(o.valor)) + '</div>'
+            + '<div class="dshKpiLin">' + _dshAnel(_dshPct(o.valor, tot), tp.cor, 46) + '<div class="dshSub"><b>' + o.qtd + '</b> venda(s)<br>do total do filtro</div></div></div>';
+    }
+    h += '<div class="dshCard dshKpi"><div class="dshTit">Destaque</div>'
+        + (top ? '<div class="dshVal" style="font-size:clamp(13px,1.05vw,17px)" data-tip="' + esc(top.nome) + '">' + esc(top.nome) + '</div>'
+            + '<div class="dshKpiLin">' + _dshAnel(_dshPct(top.valor, tot), "var(--dsh-4)", 46) + '<div class="dshSub"><b>' + esc(fmt(top.valor)) + '</b><br>' + top.qtd + ' venda(s)</div></div>' : '<div class="dshSub">—</div>') + '</div>';
+    // Gráfico combinado + rosca por tipo
+    h += '<div class="dshCard dshW4"><div class="dshTit">' + (d.porDia ? "Faturamento e vendas por dia" : "Faturamento e vendas por hora")
+        + '<span class="dshExtra">área: faturamento · barras: nº de vendas</span></div>' + _dshCombo(d.bk) + '</div>';
+    h += '<div class="dshCard dshW2"><div class="dshTit">Participação por tipo</div>'
+        + _dshRosca(_DSH_TIPOS.map(tp => ({ nome: tp.nome, valor: (d.tipos.get(tp.modelo) || { valor: 0 }).valor, cor: tp.cor, tipo: tp.radio })).filter(s => s.valor > 0), _dshCompacto(tot), "TOTAL") + '</div>';
+    // Ranking, formas, produtos
+    h += '<div class="dshCard dshW2"><div class="dshTit">Ranking de vendedores<span class="dshExtra">clique para filtrar</span></div>'
+        + _dshBarras(vendArr.slice(0, 8).map(v => ({ nome: v.nome, valor: v.valor, txt: fmt(v.valor), extra: _dshPctTxt(_dshPct(v.valor, tot)), vend: v.nome === "(sem vendedor)" ? "" : v.nome, sel: vendAtual && v.nome === vendAtual, tip: v.nome + ": " + fmt(v.valor) + " em " + v.qtd + " venda(s)" }))) + '</div>';
+    const formas = [...d.formas.entries()].sort((a, b) => b[1] - a[1]);
+    const formasSeg = formas.slice(0, 5).map(([n, v], i) => ({ nome: n.charAt(0) + n.slice(1).toLowerCase(), valor: v, cor: _DSH_CORES[i] }));
+    if (formas.length > 5) formasSeg.push({ nome: "Outras", valor: formas.slice(5).reduce((a, f) => a + f[1], 0), cor: "var(--dsh-6)" });
+    const totFormas = formas.reduce((a, f) => a + f[1], 0);
+    h += '<div class="dshCard dshW2"><div class="dshTit">Formas de pagamento</div>' + _dshRosca(formasSeg, _dshCompacto(totFormas), "PAGO") + '</div>';
+    const prods = [...d.prod.entries()].map(([nome, o]) => ({ nome, ...o })).sort((a, b) => (b.temValor || a.temValor ? b.valor - a.valor : 0) || b.qtd - a.qtd).slice(0, 8);
+    const qtdTxt = q => (Math.round(q * 100) / 100).toString().replace(".", ",");
+    h += '<div class="dshCard dshW2"><div class="dshTit">Produtos mais vendidos</div>'
+        + _dshBarras(prods.map((p, i) => ({ nome: p.nome, valor: p.temValor ? p.valor : p.qtd, txt: p.temValor ? fmt(p.valor) : qtdTxt(p.qtd) + " un.", extra: p.temValor ? qtdTxt(p.qtd) + " un." : "", cor: "linear-gradient(90deg, var(--dsh-2), var(--dsh-1))", tip: p.nome + ": " + qtdTxt(p.qtd) + " un." + (p.temValor ? " · " + fmt(p.valor) : "") })), { vazio: "Sem detalhe de itens nas vendas do filtro." }) + '</div>';
+    el.classList.toggle("dshAnim", _dshPrimeira);
+    el.innerHTML = h;
+    _dshDecorar(el);
+    _dshPrimeira = false;
+};
+const _dshAgendar = () => {
+    if (!_dshVisivel()) return;
+    clearTimeout(_dshTimer);
+    _dshTimer = setTimeout(() => { try { _dshRender(); } catch (e) {} }, 60);
+};
+// Cliques: vendedor do ranking filtra a tabela; tipo (KPI/legenda) marca o filtro de tipo.
+document.addEventListener("click", (e) => {
+    const alvo = e.target && e.target.closest ? e.target : null;
+    if (!alvo || !alvo.closest("#dash")) return;
+    const bv = alvo.closest(".dshBarra[data-vend]");
+    if (bv) {
+        const nome = bv.getAttribute("data-vend") || "";
+        vendAtual = vendAtual === nome ? "" : nome;
+        _invalidarCtxCache(); calcSomaSel(); renderTabela(); atualizarSelecaoVendedores();
+        return;
+    }
+    const bt = alvo.closest("[data-tipo]");
+    if (bt) {
+        const tp = bt.getAttribute("data-tipo");
+        const rb = document.querySelector('input[name="tipoBusca"][value="' + (tipoBusca === tp ? "todos" : tp) + '"]');
+        if (rb) { rb.checked = true; rb.dispatchEvent(new Event("change", { bubbles: true })); }
+    }
+});
+// Visualização (menu Tema): "simplificada" (padrão) ou "detalhada".
+const _visPref = () => document.documentElement.getAttribute("data-vis") === "detalhada" ? "detalhada" : "simplificada";
+const _visEscolher = (v) => {
+    const val = v === "detalhada" ? "detalhada" : "simplificada";
+    try { localStorage.setItem("fdb_vis", val); } catch (e) {}
+    document.documentElement.setAttribute("data-vis", val);
+    if (val === "detalhada") { _dshPrimeira = true; _dshRender(); }
+    else { const el = document.getElementById("dash"); if (el) el.innerHTML = ""; }
+    try { _visMarcarMenu(); } catch (e) {}
+    try { window.dispatchEvent(new Event("resize")); } catch (e) {}
+    try { toast("Visualização", val === "detalhada" ? "Detalhada — painel com gráficos acima da tabela." : "Simplificada — só a tabela."); } catch (e) {}
+};
+const _visMarcarMenu = () => {
+    const m = document.getElementById("tmMenu"); if (!m) return;
+    const v = _visPref();
+    m.querySelectorAll(".tmVisOp").forEach(b => b.setAttribute("aria-checked", b.getAttribute("data-vis") === v ? "true" : "false"));
 };
 const renderTudo=()=>{
     renderTabela();

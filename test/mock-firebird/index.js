@@ -101,6 +101,14 @@ function query(sql, params, cb) {
                     DATA: hojeUTC(), PED: String(r.pedido), CX: "1", DESCRICAO: r.desc, QUANTIDADE: r.qtd || 1,
                     VENDEDOR_ALT: null, HORA_ALT: "", TOTAL_ITEM: r.total === undefined ? null : r.total
                 })));
+            // PAGAMENT da geração: estado.pagGer = [{ numero, forma: "03 PIX", valor }] (separado
+            // de estado.pag, que é só do fast-poll, para não mudar os testes antigos).
+            if (/from pagament p\s+where p\.data between/i.test(s))
+                return cb(null, (st.pagGer || []).map(r => {
+                    const f = String(r.forma || "01 DINHEIRO");
+                    return { DATA: hojeUTC(), PEDIDO: String(r.numero), VENDEDOR: r.vendedor || null, VALOR: r.valor === undefined ? 10 : r.valor,
+                        FORMA_PREF: f.slice(0, 2), FORMA_NOME: /^\d{2} /.test(f) ? f.slice(3).trim() : f };
+                }));
             if (/from nfce n where n.data between/i.test(s)) {
                 registrar("GERACAO");
                 // Coluna sem charset (NONE) com bytes Windows-1252, como no SmallSoft:
