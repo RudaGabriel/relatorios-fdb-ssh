@@ -1,15 +1,16 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.14.0
+ * @version 3.15.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.14.0 - 2026-10-22 21:30 - Menu Tema auto-ajustável.
- *     - O menu (#tmMenu) mede o espaço da janela e, se não couber, se compacta em níveis
- *       (mais colunas, prévias mais baixas, sem as dicas, espaços menores; no último, alarga
- *       para os temas ficarem numa linha) — sem rolagem nas resoluções comuns de desktop.
- *       Reajusta ao redimensionar a janela.
+ *   3.15.0 - 2026-10-22 22:00 - Celular: página rola inteira.
+ *     - Até 680 px de largura a página rola inteira (antes topo e cabeçalho ficavam presos
+ *       e as vendas rolavam numa faixa estreita). Fileira de botões do cabeçalho da tabela
+ *       oculta (as mesmas ações estão em "Mais"). Fim da lista e selo "↻ auto" acima da
+ *       barra de baixo; barra respeita a área do gesto do iPhone; com uma janela aberta o
+ *       fundo não rola. No PC nada muda.
  */
 
 (function() {
@@ -17,7 +18,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.14.0";
+    const SCRIPT_VERSION = "3.15.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3084,6 +3085,26 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .mobileBar { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: var(--top-bg); backdrop-filter: blur(12px); padding: 16px 20px 24px 20px; gap: 12px; border-top: 1px solid var(--border); z-index: 50; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
   .mobileBar .btn { flex: 1; height: 48px; font-weight: 600; border-radius: var(--radius-lg); }
   .ov.sheet { align-items: flex-end; padding: 12px; } .ov.sheet .modal { border-radius: 24px 24px 12px 12px; padding: 24px; animation: fadeSlideUp 0.26s var(--easing) forwards;} .badges .badgeHora { display: none; }
+}
+/* ── CELULAR (v3.15.0) ──────────────────────────────────────────────────────
+   No celular a página rola INTEIRA (no PC continua o layout fixo com a tabela
+   rolando por dentro): antes o topo e o cabeçalho ficavam presos e as vendas
+   rolavam numa faixa estreita entre eles e a barra de baixo. A fileira de
+   botões do cabeçalho da tabela some (as mesmas ações estão em "Mais", na barra
+   de baixo); o fim da lista e o selo "↻ auto" ficam acima da barra; a barra
+   respeita a área do gesto do iPhone. */
+@media (max-width: 680px) {
+  html, body { height: auto; min-height: 100%; overflow-x: hidden; overflow-y: auto; }
+  .app { height: auto; max-height: none; min-height: 100vh; overflow: visible; display: block; }
+  .main, .content, html[data-vis="detalhada"] .content { min-height: 0; overflow: visible; }
+  .tableWrap, html[data-vis="detalhada"] .tableWrap { height: auto; min-height: 0; overflow: visible; }
+  .cards { overflow: visible; padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px)); }
+  .tableTop .btns { display: none; }
+  .tableTitle { font-size: 20px; line-height: 1.25; }
+  .mobileBar { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+  #__srv_badge { bottom: calc(100px + env(safe-area-inset-bottom, 0px)) !important; }
+  /* Janela aberta (venda, ajuda, duplicatas…): o fundo não rola junto. */
+  html:has(.ov.on), html:has(.ov.on) body { overflow: hidden; }
 }
 /* ── Tooltip customizado ─────────────────────────────────────── */
 #__tip {
