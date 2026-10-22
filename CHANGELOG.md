@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.10.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.11.0 |
 | [`api.ps1`](#apips1) | 1.6.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,16 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.11.0 — 2026-10-22 18:00
+
+**Visualização detalhada: painel com gráficos.**
+
+- Menu Tema → "Visualização": Simplificada (como antes, só a tabela) ou Detalhada — painel acima da tabela no estilo dos painéis profissionais: cartões de indicadores (faturamento com minigráfico, ticket médio e maior venda, anéis de Gerencial/NFC-e/NF-e, vendedor destaque), gráfico combinado (área = faturamento, barras = nº de vendas, por hora ou por dia no período, com o pico marcado), rosca por tipo, ranking de vendedores, formas de pagamento e produtos mais vendidos.
+- Segue os filtros da tela (vendedor, tipo e busca). Clique no ranking filtra o vendedor; clique num tipo (cartão ou legenda) filtra o tipo. Tooltips nos pontos, barras e fatias.
+- Gráficos em SVG feitos no próprio relatório (sem biblioteca externa — funciona sem internet), com a paleta de cada tema; animação só na primeira montagem e nenhuma no modo leve. No celular, 2 colunas.
+- Tema HUD Ciano com desenho próprio (estilo painel de controle): anéis grossos de porcentagem, barras sólidas com linhas-guia verticais, linha tracejada do faturamento acumulado com marcadores vazados, tabela por hora com faixas e vendedores em anéis com a porcentagem numa caixa. Trocar o tema redesenha o painel na hora.
+- Botão SVG de minimizar/restaurar em cada painel e "Minimizar painel"/"Restaurar todos" no topo; fica salvo no navegador.
 
 ### 3.10.0 — 2026-10-22 17:00
 

@@ -188,6 +188,16 @@ test("gerador: aviso de possível duplicidade ignora gerencial e NFC-e de vended
     assert.ok(!dItens.autoteste.achados.some(a => a.codigo === "POSSIVEL_DUPLICIDADE"), "itens diferentes: não é duplicidade");
 });
 
+test("gerador: visualização detalhada (painel com gráficos) e modo leve vêm no relatório", () => {
+    const html = gerar(montarPasta({}, { nfce: [{ numero: "500", hora: "10:00:00", modelo: 65, total: 30 }], pagGer: [{ numero: "500", forma: "03 PIX", valor: 30 }] }));
+    assert.match(html, /<div class="dash" id="dash"/, "contêiner do painel");
+    assert.match(html, /class="tmPerfOp tmVisOp"[^>]*data-vis="detalhada"/, "opção Detalhada no menu Tema");
+    assert.match(html, /localStorage\.getItem\("fdb_vis"\)/, "visualização decidida no <head>");
+    assert.match(html, /window\.__perfDecidir/, "modo leve decidido no <head>");
+    const dados = JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+    assert.ok(dados.vendas[0].formasValores && dados.vendas[0].formasValores.PIX === 30, "forma de pagamento chega ao painel");
+});
+
 test("padrão de fábrica: config.json do repositório sem dados de loja e sem proibidos embutidos", () => {
     const cfg = JSON.parse(fs.readFileSync(path.join(RAIZ_PROJETO, "config.json"), "utf8"));
     assert.strictEqual(cfg.appName, "Relatorios");
