@@ -9,23 +9,23 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 - Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
-@version 1.6.0
+@version 1.7.0
 @author Ruda Gabriel
 @changelog
   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-  1.6.0 - 2026-10-22 16:00 - Controle remoto.
-    - Novos: temas, tema (troca o tema das telas abertas), aviso (mensagem em
-      todas as telas), recarregar-abas, info (versoes, maquina, banco, memoria),
-      log (ultimas linhas do relatorio.log com filtro e cores), programas e
-      abrir-programa (abre na maquina do servidor um programa da lista
-      "programas" do config.json de la'). Menu: opcoes 29 a 36.
+  1.7.0 - 2026-10-22 20:30 - Ajuda e "cancelar e voltar".
+    - Menu: H (ou help, ajuda, ?) lista todos os comandos novamente; Enter vazio
+      so pede a opcao de novo. Modo direto: -Endpoint help.
+    - Opcoes 30 (tema) e 36 (abrir-programa): item "0. Cancelar e voltar ao
+      menu" (0 ou Enter voltam). Na 36, confirmacao S/N antes de abrir o
+      programa na maquina do servidor.
 #>
 [CmdletBinding()]
 param(
     [string]$ConfigPath = "$PSScriptRoot\config.json",
     [ValidateSet("status","db-status","sse-clients","proibidos","config","salvar-fdb","abrir-picker","navigate-hoje","navigate-config","navigate-fdb","navigate-periodo","upload-favicon","restart","pronto","log-error","sse-test",
                  "meu-ip","encerrar","foco","modal-config","modal-periodo","atualizar","itens-venda","abrir-navegador","abrir-periodo",
-                 "temas","tema","aviso","recarregar-abas","info","log","programas","abrir-programa","menu")]
+                 "temas","tema","aviso","recarregar-abas","info","log","programas","abrir-programa","menu","help")]
     [string]$Endpoint = "menu",
     [object]$Payload,
     [string]$MaquinaIP = $null
@@ -637,7 +637,9 @@ function Mostrar-Menu {
     Write-Host "34. log              | Ultimas linhas do relatorio.log (com filtro)"
     Write-Host "35. programas        | Programas que o servidor pode abrir"
     Write-Host "36. abrir-programa   | Abrir um programa na maquina do servidor"
-    Write-Host "`n 0. Sair"
+    Write-Host ""
+    Write-Host " H. help (ou ajuda, ?) | Listar todos os comandos novamente"
+    Write-Host " 0. Sair"
     Write-Host "================================================================`n" -ForegroundColor Cyan
 }
 
@@ -649,8 +651,12 @@ if ($Endpoint -eq "menu") {
     # Rotulo "menu": dentro de um switch, um "continue" simples age sobre o
     # SWITCH (nao sobre o laco) e a execucao seguia para Executar-Endpoint.
     :menu while ($true) {
-        $escolha = Read-Host "Selecione a operacao"
+        $escolha = ([string](Read-Host "Selecione a operacao (H = listar comandos)")).Trim()
         if ($escolha -eq "0") { exit }
+        if ($escolha -eq "") { continue }
+        # Ajuda: mostra a lista completa de comandos de novo (Clear-Host nao: o
+        # resultado da operacao anterior continua visivel subindo a tela).
+        if ($escolha -match '^(h|help|ajuda|\?|menu|lista)$') { Mostrar-Menu; continue }
 
         if ($escolha -eq "19") {
             $novoIp = Read-Host "Novo IP do servidor"
@@ -729,8 +735,9 @@ if ($Endpoint -eq "menu") {
                     $lt = @((Executar-Endpoint -Ep "temas").temas)
                     if ($lt.Count -eq 0) { Write-Warning "O servidor nao informou os temas."; continue menu }
                     for ($i = 0; $i -lt $lt.Count; $i++) { Write-Host (" {0}. {1} ({2})" -f ($i + 1), $lt[$i].nome, $lt[$i].id) }
-                    $esc = (Read-Host "Numero ou id do tema").Trim()
-                    if (-not $esc) { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue menu }
+                    Write-Host " 0. Cancelar e voltar ao menu" -ForegroundColor DarkGray
+                    $esc = ([string](Read-Host "Numero ou id do tema (0 ou Enter = voltar)")).Trim()
+                    if (-not $esc -or $esc -eq "0") { Write-Host "[AVISO] Cancelado - de volta ao menu." -ForegroundColor Yellow; continue menu }
                     $num = 0
                     if ([int]::TryParse($esc, [ref]$num) -and $num -ge 1 -and $num -le $lt.Count) { $dados = $lt[$num - 1].id } else { $dados = $esc }
                 }
@@ -757,10 +764,15 @@ if ($Endpoint -eq "menu") {
                         $st = if ($lp[$i].existe) { "" } else { "  [arquivo nao encontrado]" }
                         Write-Host (" {0}. {1}{2}" -f ($i + 1), $lp[$i].nome, $st)
                     }
+                    Write-Host " 0. Cancelar e voltar ao menu" -ForegroundColor DarkGray
                     Write-Host " (Para incluir programas: lista 'programas' no config.json da maquina do servidor)" -ForegroundColor DarkGray
-                    $escP = (Read-Host "Numero do programa").Trim()
+                    $escP = ([string](Read-Host "Numero do programa (0 ou Enter = voltar)")).Trim()
+                    if (-not $escP -or $escP -eq "0") { Write-Host "[AVISO] Cancelado - de volta ao menu." -ForegroundColor Yellow; continue menu }
                     $numP = 0
-                    if (-not ([int]::TryParse($escP, [ref]$numP)) -or $numP -lt 1 -or $numP -gt $lp.Count) { Write-Host "[AVISO] Cancelado." -ForegroundColor Yellow; continue menu }
+                    if (-not ([int]::TryParse($escP, [ref]$numP)) -or $numP -lt 1 -or $numP -gt $lp.Count) { Write-Host "[AVISO] Opcao invalida - de volta ao menu." -ForegroundColor Yellow; continue menu }
+                    # Confirmacao: o programa abre na tela da maquina do SERVIDOR.
+                    $confP = ([string](Read-Host ("Abrir '{0}' na maquina do servidor? S = abrir | N ou Enter = cancelar e voltar" -f $lp[$numP - 1].nome))).Trim()
+                    if ($confP -notmatch '^(s|sim)$') { Write-Host "[AVISO] Cancelado - de volta ao menu." -ForegroundColor Yellow; continue menu }
                     $dados = $lp[$numP - 1].nome
                 }
                 "28" {
@@ -781,6 +793,10 @@ if ($Endpoint -eq "menu") {
         Write-Host "`nPressione ENTER para continuar..."
         $null = Read-Host
     }
+} elseif ($Endpoint -eq "help") {
+    # Modo direto: .\api.ps1 -Endpoint help  -> lista os comandos e sai.
+    Mostrar-Menu
+    Write-Host "Uso direto: .\api.ps1 -Endpoint <nome> [-Payload <dados>]   (sem -Endpoint = menu interativo)" -ForegroundColor DarkGray
 } else {
     try {
         $resultado = Executar-Endpoint -Ep $Endpoint -Data $Payload

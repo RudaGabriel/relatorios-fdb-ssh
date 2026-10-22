@@ -8,8 +8,8 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.12.0 |
-| [`api.ps1`](#apips1) | 1.6.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.13.0 |
+| [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
@@ -182,6 +182,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.13.0 — 2026-10-22 20:30
+
+**Novo tema "Brasa Noturna".**
+
+- Painel grafite sobre fundo azul-noite com brasas laranja nas bordas, cards com reflexo quente no canto, títulos em caixa alta e abas sublinhadas em laranja.
+- No painel detalhado: linhas, barras e anéis laranja com brilho; barras do gráfico "acesas" por dentro e etiqueta do pico escura com borda clara. O brilho fica desligado no modo Leve.
 
 ### 3.12.0 — 2026-10-22 19:30
 
@@ -371,6 +378,14 @@ gerenciais do filtro [proibidos] são convertidas manualmente por fora do fluxo 
 ## `api.ps1`
 
 Cliente de linha de comando.
+
+### 1.7.0 — 2026-10-22 20:30
+
+**Ajuda e "cancelar e voltar".**
+
+- Menu: `H` (ou `help`, `ajuda`, `?`) lista todos os comandos novamente; Enter vazio só pede a opção de novo. Modo direto: `.\api.ps1 -Endpoint help`.
+- Opções 30 (tema) e 36 (abrir-programa): item "0. Cancelar e voltar ao menu" (0 ou Enter voltam ao menu).
+- Na 36, confirmação S/N antes de abrir o programa na máquina do servidor; qualquer outra resposta cancela.
 
 ### 1.6.0 — 2026-10-22 16:00
 
