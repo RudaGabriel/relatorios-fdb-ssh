@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.15.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.16.0 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,14 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.16.0 — 2026-10-22 22:30
+
+**Celular: barra de baixo e janelas.**
+
+- Barra de baixo: o botão "+ Itens" virou **Vendas**, que rola até a lista de vendas do dia; o botão **Copiar** abre um mini modal com todas as opções de cópia (tudo, tudo + itens, sem dinheiro, só gerencial). O "Mais" fica com proibidos, vendedores, ajuda e limpar filtros.
+- Janelas no celular: cabeçalho compacto com "Fechar" ao lado do título e campos empilhados (rótulo em cima, campo na largura toda) — Configurações e Gerar por período não passam mais da borda nem rolam para o lado.
+- Em qualquer tela, a coluna de valores das linhas de rótulo/valor (`.kv`) pode encolher (`minmax(0, 1fr)`), em vez de empurrar a janela para fora.
 
 ### 3.15.0 — 2026-10-22 22:00
 
