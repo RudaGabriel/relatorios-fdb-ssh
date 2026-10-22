@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.16.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.16.1 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.16.1 — 2026-10-22 22:45
+
+**Celular: selo "↻ auto" e títulos do painel.**
+
+- O selo "↻ auto" fica oculto no celular — não havia canto livre e ele cobria as vendas e os cartões. A atualização automática continua ligada; no computador o selo continua aparecendo.
+- Painel detalhado no celular: o texto extra do título ("pico 16h", "clique para filtrar"…) vai inteiro para a linha de baixo, em vez de ser cortado ("p.."); o botão de minimizar fica no canto.
 
 ### 3.16.0 — 2026-10-22 22:30
 
