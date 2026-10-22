@@ -1,17 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.12.0
+ * @version 3.13.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.12.0 - 2026-10-22 19:30 - Movimento no modo Completo.
- *     - Desempenho "Completo": entrada animada do topo, barra lateral, tabela e linhas (em
- *       cascata), modais com efeito "pop", botões/chips/itens com transição de mola, onda ao
- *       clicar, valores em R$ que "contam" até o número novo, painel detalhado redesenhando
- *       arcos/linhas ao trocar filtro e transição suave de cores ao trocar o tema.
- *     - Escolher "Completo" manualmente vale mesmo com "reduzir movimento" do sistema; no
- *       modo Leve (ou automático em aparelho fraco) nada disso roda.
+ *   3.13.0 - 2026-10-22 20:30 - Novo tema "Brasa Noturna".
+ *     - Painel grafite sobre fundo azul-noite com brasas laranja nas bordas, cards com
+ *       reflexo quente no canto, títulos em caixa alta, abas sublinhadas em laranja e, no
+ *       painel detalhado, linhas/barras/anéis laranja com brilho (brilho desligado no Leve).
  */
 
 (function() {
@@ -19,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.12.0";
+    const SCRIPT_VERSION = "3.13.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -32,7 +29,8 @@
         { id: "hud",        nome: "HUD Ciano",   grupo: "estilo" },
         { id: "indigo",     nome: "Índigo Neon", grupo: "estilo" },
         { id: "executivo",  nome: "Executivo",   grupo: "estilo" },
-        { id: "ambar",      nome: "Âmbar Vidro", grupo: "estilo" }
+        { id: "ambar",      nome: "Âmbar Vidro", grupo: "estilo" },
+        { id: "brasa",      nome: "Brasa Noturna", grupo: "estilo" }
     ];
     const TEMAS_LEGADOS_CLAROS = ["solarized-light", "paper", "mint", "lavender", "sky"];
     // ===== SOMENTE LEITURA (v2.14.0) ============================================
@@ -2542,6 +2540,54 @@ html[data-theme="ambar"] .radioBusca .radio:has(input:checked) span { color: var
 html[data-theme="ambar"] tbody tr:hover { background: rgba(242, 148, 98, 0.06); }
 .tmPrev[data-theme="ambar"] { background: radial-gradient(70% 70% at 0% 0%, rgba(214, 112, 56, 0.45), transparent 70%), radial-gradient(70% 70% at 100% 100%, rgba(214, 112, 56, 0.4), transparent 70%), #0b0907; border-radius: 14px; }
 .tmPrev[data-theme="ambar"] .tmPSide { background: rgba(34, 25, 20, 0.7); }
+/* Brasa Noturna — painel grafite emoldurado sobre fundo azul-noite com brasas
+   laranja nas bordas, cards com reflexo quente no canto, títulos em caixa alta,
+   abas sublinhadas e gráficos laranja com brilho (barras "acesas" por dentro). */
+[data-theme="brasa"] {
+  --bg-app: #070a16; --bg-panel: #18171b; --bg-hover: rgba(240, 132, 74, 0.08);
+  --border: rgba(255, 255, 255, 0.1); --border-focus: rgba(255, 255, 255, 0.22);
+  --text-main: #f4f1ee; --text-muted: #a9a4a1;
+  --accent: #f0844a; --accent-hover: #ff9a5c; --accent-bg: rgba(240, 132, 74, 0.14); --on-accent: #1d0d05;
+  --danger: #f87171; --success: #4ade80;
+  --top-bg: rgba(22, 21, 25, 0.86); --top-blur: blur(10px);
+  --th-bg: rgba(24, 23, 27, 0.98); --mhead-bg: rgba(24, 23, 27, 0.98); --ov-bg: rgba(3, 4, 10, 0.78);
+  --chip-bg: rgba(255, 255, 255, 0.04); --chip-bg-hover: rgba(255, 255, 255, 0.08);
+  --scroll-thumb: rgba(255, 255, 255, 0.16); --scroll-thumb-hover: rgba(240, 132, 74, 0.45);
+  --radius-sm: 8px; --radius-md: 12px; --radius-lg: 18px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35); --shadow-md: 0 10px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 30px 60px -18px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --st-ok: #4ade80; --st-warn: #fbbf24; --st-crit: #fca5a5; --st-info: #a9a4a1;
+  --line-soft: rgba(255, 255, 255, 0.07); --field-bg: rgba(255, 255, 255, 0.04); --field-border: rgba(255, 255, 255, 0.16);
+  --easing: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+html[data-theme="brasa"], html[data-theme="brasa"] body {
+  background:
+    radial-gradient(38% 50% at 0% 100%, rgba(226, 116, 58, 0.4), transparent 72%),
+    radial-gradient(38% 50% at 100% 100%, rgba(226, 116, 58, 0.34), transparent 72%),
+    radial-gradient(34% 42% at 100% 0%, rgba(226, 116, 58, 0.26), transparent 72%),
+    radial-gradient(34% 42% at 0% 0%, rgba(226, 116, 58, 0.22), transparent 72%),
+    #070a16 fixed;
+}
+html[data-theme="brasa"] .content { background: transparent; }
+html[data-theme="brasa"] .sidebar { background: rgba(20, 19, 23, 0.84); border-right-color: rgba(255, 255, 255, 0.08); }
+html[data-theme="brasa"] .top { border-bottom-color: rgba(255, 255, 255, 0.12); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+html[data-theme="brasa"] .tableWrap, html[data-theme="brasa"] .modal {
+  background: linear-gradient(165deg, rgba(34, 33, 37, 0.95) 0%, rgba(21, 20, 23, 0.96) 58%, rgba(46, 27, 16, 0.95) 100%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+html[data-theme="brasa"] .tableTitle { text-transform: uppercase; font-weight: 500; letter-spacing: 0.02em; }
+html[data-theme="brasa"] .sb-title, html[data-theme="brasa"] thead th { color: #d6d2cf; font-weight: 600; letter-spacing: 0.06em; }
+html[data-theme="brasa"] .badge, html[data-theme="brasa"] .btn, html[data-theme="brasa"] .input { background: rgba(28, 27, 31, 0.82); border-color: rgba(255, 255, 255, 0.14); }
+html[data-theme="brasa"] .btn:hover { border-color: rgba(240, 132, 74, 0.7); color: #fff; box-shadow: 0 0 16px rgba(240, 132, 74, 0.22); }
+html[data-theme="brasa"] .radioBusca { background: rgba(28, 27, 31, 0.82); border-color: rgba(255, 255, 255, 0.14); }
+html[data-theme="brasa"] .radioBusca .radio:has(input:checked) { background: transparent; box-shadow: inset 0 -2px 0 var(--accent); }
+html[data-theme="brasa"] .radioBusca .radio:has(input:checked) span { color: var(--accent); }
+html[data-theme="brasa"] .item.sel { background: linear-gradient(90deg, rgba(240, 132, 74, 0.16), rgba(240, 132, 74, 0.03)); border-color: rgba(240, 132, 74, 0.45); box-shadow: inset 3px 0 0 var(--accent), 0 0 18px rgba(240, 132, 74, 0.14); }
+html[data-theme="brasa"] .itensQtd { box-shadow: 0 0 8px rgba(240, 132, 74, 0.45); }
+html[data-theme="brasa"] tbody tr:hover { background: rgba(240, 132, 74, 0.06); }
+.tmPrev[data-theme="brasa"] { background: radial-gradient(60% 70% at 0% 100%, rgba(226, 116, 58, 0.5), transparent 70%), radial-gradient(60% 70% at 100% 100%, rgba(226, 116, 58, 0.4), transparent 70%), #070a16; border-radius: 12px; }
+.tmPrev[data-theme="brasa"] .tmPSide { background: rgba(24, 23, 27, 0.9); }
 @keyframes fadeSlideUp { 0% { opacity: 0; transform: translateY(14px); } 100% { opacity: 1; transform: translateY(0); } }
 @keyframes fadeIn { 0% { opacity: 0; } 100% { opacity: 1; } }
 @keyframes scaleIn { 0% { opacity: 0; transform: scale(0.96); } 100% { opacity: 1; transform: scale(1); } }
@@ -2557,6 +2603,7 @@ html[data-theme="ambar"] tbody tr:hover { background: rgba(242, 148, 98, 0.06); 
 [data-theme="indigo"]    { --dsh-1: #22d3ee; --dsh-2: #2dd4bf; --dsh-3: #60a5fa; --dsh-4: #a78bfa; --dsh-5: #f472b6; --dsh-6: #34d399; }
 [data-theme="executivo"] { --dsh-1: #f97316; --dsh-2: #3b82f6; --dsh-3: #22d3ee; --dsh-4: #f59e0b; --dsh-5: #94a3b8; --dsh-6: #22c55e; }
 [data-theme="ambar"]     { --dsh-1: #f29462; --dsh-2: #fbbf24; --dsh-3: #fb7185; --dsh-4: #d6c4b5; --dsh-5: #fdba74; --dsh-6: #a3e635; }
+[data-theme="brasa"]     { --dsh-1: #f0844a; --dsh-2: #f7d2b4; --dsh-3: #6b7080; --dsh-4: #fbbf24; --dsh-5: #a1a1aa; --dsh-6: #4ade80; }
 .dash { display: none; }
 html[data-vis="detalhada"] .content { overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 html[data-vis="detalhada"] .dash { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; flex: none; }
@@ -2647,6 +2694,18 @@ html[data-theme="hud"] .dshCard::before { content: ""; position: absolute; top: 
 html[data-theme="indigo"] .dshCard { background: linear-gradient(180deg, #2a2880 0%, #23216d 100%); border-color: rgba(170, 176, 255, 0.14); }
 html[data-theme="executivo"] .dshTit { color: #c4ccd8; }
 html[data-theme="ambar"] .dshCard { background: linear-gradient(155deg, rgba(255, 170, 120, 0.12) 0%, rgba(34, 25, 20, 0.88) 38%, rgba(18, 13, 10, 0.94) 100%); border-color: rgba(255, 180, 140, 0.2); }
+/* Brasa Noturna no painel: cards de indicador com brasa no canto, gráficos com brilho
+   (o brilho usa filtro — fica de fora no modo Leve). */
+html[data-theme="brasa"] .dshCard { background: linear-gradient(165deg, #222125 0%, #161518 58%, #22170f 100%); border-color: rgba(255, 255, 255, 0.12); }
+html[data-theme="brasa"] .dshKpi { background: radial-gradient(85% 75% at 100% 100%, rgba(232, 120, 60, 0.34), transparent 62%), linear-gradient(160deg, #252428 0%, #161518 62%); }
+html[data-theme="brasa"] .dshTit { color: #e7e3e0; font-weight: 600; }
+html[data-theme="brasa"] .dshSvg rect.dshCol { fill: rgba(240, 132, 74, 0.2); fill-opacity: 1; stroke: var(--accent); stroke-opacity: 0.9; stroke-width: 1.2; }
+html[data-theme="brasa"] .dshPico rect { fill: rgba(22, 21, 25, 0.94); stroke: rgba(255, 255, 255, 0.55); stroke-width: 1; }
+html[data-theme="brasa"] .dshPico text { fill: #f4f1ee; }
+html[data-theme="brasa"] .dshBarra .dshEnch { background: linear-gradient(90deg, #c2582a, var(--accent) 60%, #ffb27d); }
+html[data-theme="brasa"]:not([data-perf="leve"]) .dshLinha, html[data-theme="brasa"]:not([data-perf="leve"]) .dshArco[stroke="var(--accent)"], html[data-theme="brasa"]:not([data-perf="leve"]) .dshArco[stroke="var(--dsh-1)"] { filter: drop-shadow(0 0 5px rgba(240, 132, 74, 0.55)); }
+html[data-theme="brasa"]:not([data-perf="leve"]) .dshSvg rect.dshCol { filter: drop-shadow(0 0 6px rgba(240, 132, 74, 0.45)); }
+html[data-theme="brasa"]:not([data-perf="leve"]) .dshBarra .dshEnch { box-shadow: 0 0 10px rgba(240, 132, 74, 0.45); }
 @media (max-width: 1280px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dshW4, .dshW6 { grid-column: span 3; } .dshW2 { grid-column: span 3; } }
 @media (max-width: 760px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .dshW2, .dshW3, .dshW4, .dshW6 { grid-column: span 2; } .dshVal { font-size: 18px; } .dshRosca svg { width: 120px; height: 120px; } }
 /* ── MOVIMENTO (v3.12.0) — só no modo de desempenho "Completo" ─────────────

@@ -74,7 +74,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Aviso claro de servidor encerrado:** quando o servidor é encerrado ou a conexão cai por mais de 4 s, o relatório aberto mostra uma faixa no topo ("Servidor de relatórios encerrado", "Servidor reiniciando..." ou "Sem conexão com o servidor") e recarrega sozinho quando o servidor volta.
 
 ### Interface
-- **6 temas**: Escuro e Claro, mais 4 temas de estilo (HUD Ciano, Índigo Neon, Executivo e Âmbar Vidro), que mudam também cantos, bordas, brilho e fundo. Prévia no menu; a escolha fica salva no navegador e pode ser trocada à distância pelo `api.ps1`.
+- **7 temas**: Escuro e Claro, mais 5 temas de estilo (HUD Ciano, Índigo Neon, Executivo, Âmbar Vidro e Brasa Noturna), que mudam também cantos, bordas, brilho e fundo. Prévia no menu; a escolha fica salva no navegador e pode ser trocada à distância pelo `api.ps1`.
 - **Visualização detalhada** (*Tema → Visualização*): painel com indicadores e gráficos — faturamento e vendas por hora, participação por tipo, ranking de vendedores, formas de pagamento e produtos mais vendidos — acima da tabela, seguindo os filtros. A *Simplificada* mostra só a tabela.
 - **Modo leve automático** para computadores, notebooks e celulares fracos: sem animações, desfoque nem sombras pesadas, para não travar. Detecta sozinho (hardware, teste rápido de desempenho, economia de dados, "reduzir movimento"); também pode ser escolhido em *Tema → Desempenho*.
 - Tabela no computador e cartões no celular, com renderização em blocos para dias com muitas vendas.
@@ -286,7 +286,8 @@ Todas as rotas respondem na porta configurada (padrão `7734`).
 Cliente PowerShell para todas as rotas acima. Pode ser usado na própria máquina ou em outro computador da rede.
 
 ```powershell
-.\api.ps1                                   # menu interativo
+.\api.ps1                                   # menu interativo (H = listar comandos de novo)
+.\api.ps1 -Endpoint help                    # lista todos os comandos e sai
 .\api.ps1 -Endpoint status                  # vendas e total do dia
 .\api.ps1 -Endpoint db-status
 .\api.ps1 -Endpoint proibidos -Payload @("GRANEL","ENTREGA")
@@ -306,6 +307,7 @@ O cabeçalho do menu mostra o **nome e o IP desta máquina** (a que abriu o `api
 
 | Opção | O que faz |
 |---|---|
+| `H` / `help` / `ajuda` / `?` | No menu: lista todos os comandos novamente |
 | `meu-ip` | Nome, usuário e todos os IPv4 desta máquina |
 | `encerrar` | Desliga o servidor de forma ordenada (pede `SIM`); para ligar de novo, `restart` ou o atalho |
 | `foco` | Traz a aba do relatório para frente |
@@ -318,7 +320,7 @@ O cabeçalho do menu mostra o **nome e o IP desta máquina** (a que abriu o `api
 | `recarregar-abas` | Recarrega todas as telas abertas |
 | `info` | Versões do servidor e do gerador, Node.js, máquina, banco, memória e tempo ligado |
 | `log` | Últimas linhas do `relatorio.log` do servidor, com filtro e cores (erros em vermelho) |
-| `programas` / `abrir-programa` | Lista / abre um programa na máquina do servidor (só os da lista `programas` do `config.json` de lá) |
+| `programas` / `abrir-programa` | Lista / abre um programa na máquina do servidor (só os da lista `programas` do `config.json` de lá). No menu: `0` ou Enter cancela e volta; antes de abrir pede confirmação `S`/`N` |
 
 No `status`, o valor `-1` significa "ainda não lido do banco" (servidor recém-ligado ou banco fora do ar) — a resposta traz um campo `obs` explicando.
 
