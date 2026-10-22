@@ -1,16 +1,15 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.16.0
+ * @version 3.16.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.16.0 - 2026-10-22 22:30 - Celular: barra de baixo e janelas.
- *     - Barra de baixo: "+ Itens" virou "Vendas" (rola até a lista de vendas do dia) e
- *       "Copiar" abre um mini modal com todas as opções de cópia (o "Mais" fica com
- *       proibidos, vendedores, ajuda e limpar filtros).
- *     - Janelas no celular: cabeçalho compacto com "Fechar" ao lado do título e campos
- *       empilhados na largura toda — Configurações e Período não passam mais da borda.
+ *   3.16.1 - 2026-10-22 22:45 - Celular: selo "↻ auto" e títulos do painel.
+ *     - O selo "↻ auto" fica oculto no celular (cobria vendas e cartões); a atualização
+ *       automática continua ligada. No PC nada muda.
+ *     - Painel detalhado no celular: o texto extra do título ("pico 16h", "clique para
+ *       filtrar"…) vai inteiro para a linha de baixo, em vez de virar "p..".
  */
 
 (function() {
@@ -18,7 +17,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.16.0";
+    const SCRIPT_VERSION = "3.16.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3102,7 +3101,14 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .tableTop .btns { display: none; }
   .tableTitle { font-size: 20px; line-height: 1.25; }
   .mobileBar { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
-  #__srv_badge { bottom: calc(100px + env(safe-area-inset-bottom, 0px)) !important; }
+  /* Selo "↻ auto" (indicador da atualização automática, que continua ligada): no
+     celular não há canto livre — ficava por cima das vendas e dos cartões. */
+  #__srv_badge { display: none !important; }
+  /* Painel: o texto extra do título ("pico 16h", "clique para filtrar"…) vai para a
+     linha de baixo inteira, em vez de virar "p.."; o botão de minimizar fica no canto. */
+  .dshTit { flex-wrap: wrap; row-gap: 4px; }
+  .dshTit .dshExtra { order: 3; flex: 1 0 100%; margin-left: 0; white-space: normal; overflow: visible; }
+  .dshTit .dshMinBtn, .dshTit .dshExtra + .dshMinBtn { margin-left: auto; }
   /* Janelas (v3.16.0): cabeçalho compacto com "Fechar" ao lado do título, campos
      empilhados (rótulo em cima, campo embaixo, largura toda) — nada passa da borda. */
   .ov.sheet .modal { padding: 0; max-height: 88vh; max-height: 88dvh; }
