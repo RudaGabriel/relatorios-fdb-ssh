@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.15.6 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.8.7 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.9.0 |
 | [`api.ps1`](#apips1) | 1.5.1 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -171,6 +171,17 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.9.0 — 2026-10-22 15:00
+
+**Temas de estilo no lugar dos temas que só mudavam a cor.**
+
+- Saíram os 14 temas que só trocavam a cor. Ficam "Escuro" e "Claro" e entram 4 temas de ESTILO, que mudam também a forma (cantos, bordas, brilho, fundo, cards, tabela e lista de vendedores):
+  - **HUD Ciano** — painel futurista azul-marinho, linhas ciano com brilho, cantos retos.
+  - **Índigo Neon** — índigo arredondado, lateral mais clara, destaques em degradê e pílulas.
+  - **Executivo** — grafite corporativo denso, títulos em caixa alta, destaque laranja.
+  - **Âmbar Vidro** — vidro escuro com brilhos âmbar nos cantos e cards bem arredondados.
+- Quem usava um tema removido passa sozinho para "Claro" (se era um tema claro) ou "Escuro" (os demais), e a troca fica salva. Menu de temas em 3 colunas, com prévia de cada estilo.
 
 ### 3.8.7 — 2026-10-17 15:00
 

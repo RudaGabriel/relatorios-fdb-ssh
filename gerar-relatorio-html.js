@@ -1,25 +1,21 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.8.7
+ * @version 3.9.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.8.7 - 2026-10-17 15:00 - Rastro da escolha no painel Duplicatas; badge do total nunca estoura.
- *     - Painel Duplicatas: a opção escolhida fica preenchida com "✓" e "Escolha aplicada: …",
- *       o par pisca e um aviso confirma. Trocar a escolha de um par já decidido aplica na hora
- *       (a página recarrega e reabre o painel no par). Na tabela, a venda que ficou ganha o
- *       chip "Duplicata: <documento> oculta" (ou "também aparece"), com o porquê no tooltip;
- *       clicar no chip abre o painel com o par destacado.
- *     - Badge #bDiaBrk ainda estourava: a verificação só rodava quando a largura da barra
- *       mudava, e a fonte web chegando depois do carregamento alargava o texto sem novo
- *       ajuste. Agora o próprio CSS garante: sem espaço, os badges descem de linha e o total
- *       quebra por dentro em último caso. O ajuste por etapas (oculta hora, encolhe o botão
- *       de vendedor, compacta) também reage a mudança de conteúdo e ao fim do carregamento
- *       das fontes.
- *     - Filtros "NFC-e"/"NF-e" não quebram mais em duas linhas quando o espaço aperta, e a
- *       caixa de busca não some mais (sumia perto de 1100 px): tem largura mínima e, sem
- *       espaço, os botões descem para a linha de baixo.
+ *   3.9.0 - 2026-10-22 15:00 - Temas de estilo no lugar dos temas que só mudavam a cor.
+ *     - Saíram os 14 temas que só trocavam a cor. Ficam "Escuro" e "Claro" e entram 4 temas
+ *       de ESTILO, que mudam também a forma (cantos, bordas, brilho, fundo, cards, tabela e
+ *       lista de vendedores):
+ *         · HUD Ciano — painel futurista azul-marinho, linhas ciano com brilho, cantos retos.
+ *         · Índigo Neon — índigo arredondado, lateral mais clara, destaques em degradê e pílulas.
+ *         · Executivo — grafite corporativo denso, títulos em caixa alta, destaque laranja.
+ *         · Âmbar Vidro — vidro escuro com brilhos âmbar nos cantos e cards bem arredondados.
+ *     - Quem usava um tema removido passa sozinho para "Claro" (se era um tema claro) ou
+ *       "Escuro" (os demais), e a troca fica salva. Menu de temas em 3 colunas, com prévia
+ *       de cada estilo.
  */
 
 (function() {
@@ -27,28 +23,22 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.8.7";
-    // Lista-mestra dos temas de cores. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
-    // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>.
-    // Os 3 primeiros são os originais (ids NÃO podem mudar: há quem tenha a escolha salva no navegador).
+    const SCRIPT_VERSION = "3.9.0";
+    // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
+    // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
+    // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
+    // brilho, fundo, cards). "ultra-dark" e "light" mantêm o id: há quem tenha a escolha salva.
+    // v3.9.0: saíram os temas que só trocavam a cor; quem usava um deles cai no Escuro ou no Claro
+    // (TEMAS_LEGADOS_CLAROS decide qual).
     const TEMAS_RELATORIO = [
-        { id: "ultra-dark",      nome: "Ultra Dark",       grupo: "escuro" },
-        { id: "dark",            nome: "Dark Original",    grupo: "escuro" },
-        { id: "midnight",        nome: "Meia-noite",       grupo: "escuro" },
-        { id: "nord",            nome: "Nord",             grupo: "escuro" },
-        { id: "dracula",         nome: "Drácula",          grupo: "escuro" },
-        { id: "monokai",         nome: "Monokai",          grupo: "escuro" },
-        { id: "solarized-dark",  nome: "Solarized Escuro", grupo: "escuro" },
-        { id: "forest",          nome: "Floresta",         grupo: "escuro" },
-        { id: "ember",           nome: "Brasa",            grupo: "escuro" },
-        { id: "neon",            nome: "Neon",             grupo: "escuro" },
-        { id: "light",           nome: "Claro",            grupo: "claro" },
-        { id: "solarized-light", nome: "Solarized Claro",  grupo: "claro" },
-        { id: "paper",           nome: "Papel",            grupo: "claro" },
-        { id: "mint",            nome: "Menta",            grupo: "claro" },
-        { id: "lavender",        nome: "Lavanda",          grupo: "claro" },
-        { id: "sky",             nome: "Céu",              grupo: "claro" }
+        { id: "ultra-dark", nome: "Escuro",      grupo: "basico" },
+        { id: "light",      nome: "Claro",       grupo: "basico" },
+        { id: "hud",        nome: "HUD Ciano",   grupo: "estilo" },
+        { id: "indigo",     nome: "Índigo Neon", grupo: "estilo" },
+        { id: "executivo",  nome: "Executivo",   grupo: "estilo" },
+        { id: "ambar",      nome: "Âmbar Vidro", grupo: "estilo" }
     ];
+    const TEMAS_LEGADOS_CLAROS = ["solarized-light", "paper", "mint", "lavender", "sky"];
     // ===== SOMENTE LEITURA (v2.14.0) ============================================
     // O sistema NUNCA escreve no banco do Small Commerce. Duas travas, em toda
     // conexão aberta por este processo (bloco idêntico no servidor e no gerador):
@@ -2249,6 +2239,7 @@
 			// Lista de temas embutida no HTML (mesmo escape do dadosJSON: "<" vira \u003c).
 			const temasJSON = JSON.stringify(TEMAS_RELATORIO).replace(/</g, "\\u003c");
 			const temasIdsJSON = JSON.stringify(TEMAS_RELATORIO.map(t => t.id)).replace(/</g, "\\u003c");
+			const temasClarosJSON = JSON.stringify(TEMAS_LEGADOS_CLAROS).replace(/</g, "\\u003c");
 			const html = String.raw`<!doctype html><!-- gerar-relatorio-html.js v${SCRIPT_VERSION} --><html lang="pt-br" data-report-version="${SCRIPT_VERSION}"><head><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.png"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório ${escHtml(cfgAppName)} ${escHtml(dataBR)}</title>
 <script>
       (function(){
@@ -2257,13 +2248,21 @@
           var t = "";
           try { t = localStorage.getItem("fdb_theme") || ""; } catch (e1) {}
           if (!t) { try { t = (document.cookie.match(/(?:^|;\s*)fdb_theme=([^;]+)/) || [])[1] || ""; } catch (e2) {} }
-          if (TEMAS_VALIDOS.indexOf(t) < 0) t = "ultra-dark";
+          if (TEMAS_VALIDOS.indexOf(t) < 0) {
+            // Tema que saiu (v3.9.0): os claros viram "Claro", o resto "Escuro" — e a troca é salva.
+            var legado = t;
+            t = ${temasClarosJSON}.indexOf(legado) >= 0 ? "light" : "ultra-dark";
+            if (legado) {
+              try { localStorage.setItem("fdb_theme", t); } catch (e3) {}
+              try { document.cookie = "fdb_theme=" + t + ";path=/;max-age=31536000;SameSite=Strict"; } catch (e4) {}
+            }
+          }
           document.documentElement.setAttribute("data-theme", t);
         } catch(e){}
       })();
     </script>
 <style>
-:root, [data-theme="dark"] {
+:root {
   /* PERFORMANCE FIX (ajuste solicitado — foco em computadores mais fracos):
      --top-blur era 16-20px conforme o tema; backdrop-filter é uma das
      propriedades CSS mais pesadas de compor, e quanto maior o raio do
@@ -2345,244 +2344,179 @@
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: light;
 }
-/* ── TEMAS ADICIONAIS (v3.2.0) ─────────────────────────────────────────────
-   Cada bloco define o conjunto COMPLETO de variáveis (nada herdado do tema "dark" por
-   esquecimento). O mesmo seletor [data-theme="id"] também pinta a prévia do menu de temas —
-   por isso a prévia nunca destoa do tema real. Lista/ordem dos ids: TEMAS_RELATORIO (topo do arquivo). */
-[data-theme="midnight"] {
-  --bg-app: #0b1020; --bg-panel: #121936; --bg-hover: #1c2550;
-  --border: rgba(230, 233, 245, 0.1); --border-focus: rgba(230, 233, 245, 0.18);
-  --text-main: #e6e9f5; --text-muted: #a3acd0;
-  --accent: #818cf8; --accent-hover: #6366f1; --accent-bg: rgba(129, 140, 248, 0.14); --on-accent: #0b1020;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(18, 25, 54, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(18, 25, 54, 0.95); --mhead-bg: rgba(18, 25, 54, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(230, 233, 245, 0.04); --chip-bg-hover: rgba(230, 233, 245, 0.08);
-  --scroll-thumb: rgba(230, 233, 245, 0.18); --scroll-thumb-hover: rgba(230, 233, 245, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+/* ── TEMAS DE ESTILO (v3.9.0) ──────────────────────────────────────────────
+   Cada tema tem DUAS partes:
+   1. [data-theme="id"] { variáveis } — conjunto COMPLETO (nada herdado do :root por
+      esquecimento). O mesmo seletor pinta a prévia do menu de temas.
+   2. html[data-theme="id"] … — a FORMA: cantos, bordas, brilho, fundo da página, cards,
+      tabela, lista de vendedores. Prefixo "html" para nunca atingir a prévia do menu.
+   Lista/ordem dos ids: TEMAS_RELATORIO (topo do arquivo). */
+
+/* HUD Ciano — painel de controle futurista: azul-marinho profundo, linhas finas
+   ciano com brilho, cantos retos, títulos leves e espaçados. */
+[data-theme="hud"] {
+  --bg-app: #050b15; --bg-panel: #0a1626; --bg-hover: rgba(34, 211, 238, 0.08);
+  --border: rgba(56, 189, 248, 0.26); --border-focus: rgba(56, 189, 248, 0.55);
+  --text-main: #dcefff; --text-muted: #7fa6c9;
+  --accent: #22d3ee; --accent-hover: #06b6d4; --accent-bg: rgba(34, 211, 238, 0.12); --on-accent: #02121c;
+  --danger: #f43f5e; --success: #2dd4bf;
+  --top-bg: rgba(6, 16, 30, 0.82); --top-blur: blur(8px);
+  --th-bg: rgba(8, 20, 36, 0.97); --mhead-bg: rgba(8, 20, 36, 0.97); --ov-bg: rgba(1, 6, 14, 0.78);
+  --chip-bg: rgba(34, 211, 238, 0.04); --chip-bg-hover: rgba(34, 211, 238, 0.1);
+  --scroll-thumb: rgba(56, 189, 248, 0.3); --scroll-thumb-hover: rgba(56, 189, 248, 0.5);
+  --radius-sm: 2px; --radius-md: 3px; --radius-lg: 4px;
+  --shadow-sm: 0 0 0 1px rgba(56, 189, 248, 0.06);
+  --shadow-md: 0 0 14px rgba(34, 211, 238, 0.12);
+  --shadow-lg: 0 0 0 1px rgba(56, 189, 248, 0.12), 0 0 32px rgba(34, 211, 238, 0.1), 0 18px 40px rgba(0, 0, 0, 0.55);
+  --st-ok: #5eead4; --st-warn: #fbbf24; --st-crit: #fb7185; --st-info: #7fa6c9;
+  --line-soft: rgba(56, 189, 248, 0.1); --field-bg: rgba(34, 211, 238, 0.04); --field-border: rgba(56, 189, 248, 0.3);
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: dark;
 }
-[data-theme="nord"] {
-  --bg-app: #2e3440; --bg-panel: #3b4252; --bg-hover: #434c5e;
-  --border: rgba(236, 239, 244, 0.1); --border-focus: rgba(236, 239, 244, 0.18);
-  --text-main: #eceff4; --text-muted: #bcc5d6;
-  --accent: #88c0d0; --accent-hover: #81a1c1; --accent-bg: rgba(136, 192, 208, 0.14); --on-accent: #2e3440;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(59, 66, 82, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(59, 66, 82, 0.95); --mhead-bg: rgba(59, 66, 82, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(236, 239, 244, 0.04); --chip-bg-hover: rgba(236, 239, 244, 0.08);
-  --scroll-thumb: rgba(236, 239, 244, 0.18); --scroll-thumb-hover: rgba(236, 239, 244, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+html[data-theme="hud"], html[data-theme="hud"] body { background: radial-gradient(120% 80% at 50% -10%, #17365a 0%, #0a1729 42%, #040912 100%) fixed; }
+html[data-theme="hud"] .sidebar, html[data-theme="hud"] .content { background: transparent; }
+html[data-theme="hud"] .top { border-bottom-color: rgba(56, 189, 248, 0.35); box-shadow: 0 1px 0 rgba(34, 211, 238, 0.12), 0 8px 24px rgba(0, 0, 0, 0.35); }
+html[data-theme="hud"] .tableWrap { background: linear-gradient(180deg, rgba(14, 34, 58, 0.78), rgba(6, 15, 28, 0.9)); border-color: rgba(56, 189, 248, 0.38); position: relative; }
+html[data-theme="hud"] .tableWrap::before, html[data-theme="hud"] .tableWrap::after { content: ""; position: absolute; width: 18px; height: 18px; pointer-events: none; z-index: 3; border-color: var(--accent); border-style: solid; opacity: 0.85; }
+html[data-theme="hud"] .tableWrap::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+html[data-theme="hud"] .tableWrap::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+html[data-theme="hud"] .tableTitle { font-weight: 300; letter-spacing: 0.03em; color: #e6f6ff; text-shadow: 0 0 14px rgba(34, 211, 238, 0.35); }
+html[data-theme="hud"] .sb-title, html[data-theme="hud"] thead th { color: var(--accent); letter-spacing: 0.14em; }
+html[data-theme="hud"] .badge { background: rgba(6, 18, 32, 0.6); border-color: rgba(56, 189, 248, 0.35); color: #9cc6e8; border-radius: 2px; }
+html[data-theme="hud"] .btn { background: rgba(6, 18, 32, 0.55); border-color: rgba(56, 189, 248, 0.32); }
+html[data-theme="hud"] .btn:hover { border-color: var(--accent); color: #e6f6ff; box-shadow: 0 0 12px rgba(34, 211, 238, 0.28), inset 0 0 10px rgba(34, 211, 238, 0.08); }
+html[data-theme="hud"] .input { background: rgba(6, 18, 32, 0.55); border-color: rgba(56, 189, 248, 0.32); }
+html[data-theme="hud"] .radioBusca { border-radius: 3px; background: rgba(6, 18, 32, 0.55); border-color: rgba(56, 189, 248, 0.32); }
+html[data-theme="hud"] .radioBusca .radio { border-radius: 2px; }
+html[data-theme="hud"] .radioBusca .radio:has(input:checked) { background: rgba(34, 211, 238, 0.16); box-shadow: inset 0 -2px 0 var(--accent), 0 0 12px rgba(34, 211, 238, 0.2); }
+html[data-theme="hud"] .item.sel { background: rgba(34, 211, 238, 0.08); border-color: rgba(56, 189, 248, 0.4); box-shadow: inset 3px 0 0 var(--accent), 0 0 16px rgba(34, 211, 238, 0.12); }
+html[data-theme="hud"] .tdItemChip { border-radius: 2px; border-color: rgba(56, 189, 248, 0.28); }
+html[data-theme="hud"] .itensQtd { border-radius: 2px; box-shadow: 0 0 8px rgba(34, 211, 238, 0.4); }
+html[data-theme="hud"] tbody tr:hover { background: rgba(34, 211, 238, 0.06); }
+html[data-theme="hud"] .modal { border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.15), 0 0 40px rgba(34, 211, 238, 0.15), 0 30px 60px rgba(0, 0, 0, 0.6); }
+.tmPrev[data-theme="hud"] { background: radial-gradient(120% 90% at 50% 0%, #17365a, #050b15); border-radius: 2px; }
+
+/* Índigo Neon — painel arredondado em índigo/violeta, barra lateral mais clara,
+   destaques em degradê ciano→verde-água e botões em pílula. */
+[data-theme="indigo"] {
+  --bg-app: #1d1b57; --bg-panel: #27257a; --bg-hover: rgba(255, 255, 255, 0.07);
+  --border: rgba(170, 176, 255, 0.16); --border-focus: rgba(170, 176, 255, 0.34);
+  --text-main: #f1f2ff; --text-muted: #adb2ea;
+  --accent: #22d3ee; --accent-hover: #2dd4bf; --accent-bg: rgba(34, 211, 238, 0.14); --on-accent: #0c0b33;
+  --danger: #fb7185; --success: #2dd4bf;
+  --top-bg: rgba(43, 41, 125, 0.92); --top-blur: blur(8px);
+  --th-bg: rgba(39, 37, 122, 0.98); --mhead-bg: rgba(39, 37, 122, 0.98); --ov-bg: rgba(10, 8, 40, 0.72);
+  --chip-bg: rgba(255, 255, 255, 0.05); --chip-bg-hover: rgba(255, 255, 255, 0.1);
+  --scroll-thumb: rgba(170, 176, 255, 0.28); --scroll-thumb-hover: rgba(170, 176, 255, 0.45);
+  --radius-sm: 8px; --radius-md: 12px; --radius-lg: 20px;
+  --shadow-sm: 0 2px 6px rgba(8, 6, 40, 0.25); --shadow-md: 0 8px 20px rgba(8, 6, 40, 0.35);
+  --shadow-lg: 0 24px 50px -12px rgba(8, 6, 40, 0.7), 0 10px 20px -8px rgba(8, 6, 40, 0.45);
+  --st-ok: #5eead4; --st-warn: #fcd34d; --st-crit: #fda4af; --st-info: #adb2ea;
+  --line-soft: rgba(255, 255, 255, 0.07); --field-bg: rgba(255, 255, 255, 0.05); --field-border: rgba(170, 176, 255, 0.24);
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: dark;
 }
-[data-theme="dracula"] {
-  --bg-app: #21222c; --bg-panel: #282a36; --bg-hover: #363949;
-  --border: rgba(248, 248, 242, 0.1); --border-focus: rgba(248, 248, 242, 0.18);
-  --text-main: #f8f8f2; --text-muted: #a9b0d4;
-  --accent: #bd93f9; --accent-hover: #a97df0; --accent-bg: rgba(189, 147, 249, 0.14); --on-accent: #21222c;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(40, 42, 54, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(40, 42, 54, 0.95); --mhead-bg: rgba(40, 42, 54, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(248, 248, 242, 0.04); --chip-bg-hover: rgba(248, 248, 242, 0.08);
-  --scroll-thumb: rgba(248, 248, 242, 0.18); --scroll-thumb-hover: rgba(248, 248, 242, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+html[data-theme="indigo"], html[data-theme="indigo"] body { background: linear-gradient(160deg, #2a2884 0%, #1d1b57 55%, #17154a 100%) fixed; }
+html[data-theme="indigo"] .content { background: transparent; }
+html[data-theme="indigo"] .sidebar { background: linear-gradient(180deg, #4245b3 0%, #3739a0 100%); border-right-color: rgba(255, 255, 255, 0.08); }
+html[data-theme="indigo"] .sidebar .sb-title { color: #d6d9ff; }
+html[data-theme="indigo"] .sidebar .item .meta, html[data-theme="indigo"] .sidebar .rv .n { color: #d0d4ff; }
+html[data-theme="indigo"] .item.sel { background: linear-gradient(90deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.04)); border-color: rgba(255, 255, 255, 0.18); box-shadow: 0 8px 20px rgba(10, 8, 50, 0.3); }
+html[data-theme="indigo"] .tableWrap { background: linear-gradient(180deg, #2a2880 0%, #23216d 100%); border-color: rgba(170, 176, 255, 0.14); }
+html[data-theme="indigo"] .tableTitle { letter-spacing: 0; }
+html[data-theme="indigo"] .btn, html[data-theme="indigo"] .input, html[data-theme="indigo"] .badge { border-radius: 99px; }
+html[data-theme="indigo"] .btn { background: transparent; border-color: rgba(170, 176, 255, 0.45); }
+html[data-theme="indigo"] .btn:hover { background: rgba(34, 211, 238, 0.12); border-color: var(--accent); }
+html[data-theme="indigo"] .badge { background: rgba(255, 255, 255, 0.06); color: #d6d9ff; }
+html[data-theme="indigo"] .radioBusca .radio:has(input:checked) { background: linear-gradient(90deg, #2dd4bf, #22d3ee); }
+html[data-theme="indigo"] .radioBusca .radio:has(input:checked) span { color: #0c0b33; }
+html[data-theme="indigo"] .itensQtd { background: linear-gradient(90deg, #2dd4bf, #22d3ee); }
+html[data-theme="indigo"] tbody tr:hover { background: rgba(255, 255, 255, 0.06); }
+html[data-theme="indigo"] .modal { border-radius: 22px; }
+.tmPrev[data-theme="indigo"] { background: linear-gradient(160deg, #2a2884, #1d1b57); border-radius: 12px; }
+.tmPrev[data-theme="indigo"] .tmPSide { background: #4245b3; }
+.tmPrev[data-theme="indigo"] .tmPPill { background: linear-gradient(90deg, #2dd4bf, #22d3ee); }
+
+/* Executivo — painel corporativo denso: azul-grafite quase preto, cards retos com
+   borda discreta, títulos em caixa alta e destaque laranja sólido. */
+[data-theme="executivo"] {
+  --bg-app: #0a0f19; --bg-panel: #101826; --bg-hover: #162133;
+  --border: #1d2738; --border-focus: #2f3b52;
+  --text-main: #eef2f7; --text-muted: #8f9bb0;
+  --accent: #f97316; --accent-hover: #ea580c; --accent-bg: rgba(249, 115, 22, 0.12); --on-accent: #ffffff;
+  --danger: #ef4444; --success: #22c55e;
+  --top-bg: rgba(11, 17, 28, 0.94); --top-blur: blur(6px);
+  --th-bg: #131c2b; --mhead-bg: #131c2b; --ov-bg: rgba(2, 5, 12, 0.75);
+  --chip-bg: #0d1522; --chip-bg-hover: #142033;
+  --scroll-thumb: #2a3549; --scroll-thumb-hover: #3a4862;
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3); --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 36px -10px rgba(0, 0, 0, 0.75);
+  --st-ok: #4ade80; --st-warn: #fbbf24; --st-crit: #f87171; --st-info: #8f9bb0;
+  --line-soft: #172031; --field-bg: #0d1522; --field-border: #243047;
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: dark;
 }
-[data-theme="monokai"] {
-  --bg-app: #1c1d19; --bg-panel: #272822; --bg-hover: #3a3b30;
-  --border: rgba(248, 248, 242, 0.1); --border-focus: rgba(248, 248, 242, 0.18);
-  --text-main: #f8f8f2; --text-muted: #adab9a;
-  --accent: #a6e22e; --accent-hover: #8fc926; --accent-bg: rgba(166, 226, 46, 0.14); --on-accent: #1c1d19;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(39, 40, 34, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(39, 40, 34, 0.95); --mhead-bg: rgba(39, 40, 34, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(248, 248, 242, 0.04); --chip-bg-hover: rgba(248, 248, 242, 0.08);
-  --scroll-thumb: rgba(248, 248, 242, 0.18); --scroll-thumb-hover: rgba(248, 248, 242, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
+html[data-theme="executivo"] .sidebar { background: #0c121e; }
+html[data-theme="executivo"] .top { border-bottom-color: #1d2738; }
+html[data-theme="executivo"] .item.sel { background: var(--accent); border-color: var(--accent); box-shadow: 0 6px 18px rgba(249, 115, 22, 0.3); }
+html[data-theme="executivo"] .item.sel .nome, html[data-theme="executivo"] .item.sel .tot, html[data-theme="executivo"] .item.sel .meta, html[data-theme="executivo"] .item.sel .qtd { color: #fff; }
+html[data-theme="executivo"] .tableTitle { text-transform: uppercase; font-size: 17px; font-weight: 800; letter-spacing: 0.04em; }
+html[data-theme="executivo"] .sb-title, html[data-theme="executivo"] thead th { color: #9aa6ba; font-weight: 800; }
+html[data-theme="executivo"] thead th { background: #131c2b; }
+html[data-theme="executivo"] .badge { border-radius: 6px; background: #101826; color: #c4ccd8; }
+html[data-theme="executivo"] .radioBusca { border-radius: 8px; }
+html[data-theme="executivo"] .radioBusca .radio { border-radius: 6px; }
+html[data-theme="executivo"] .radioBusca .radio:has(input:checked) { background: var(--accent); }
+html[data-theme="executivo"] .radioBusca .radio:has(input:checked) span { color: #fff; }
+html[data-theme="executivo"] .btn:hover { border-color: var(--accent); color: #fff; }
+html[data-theme="executivo"] .tdItemChip { border-radius: 6px; }
+html[data-theme="executivo"] .itensQtd { border-radius: 4px; }
+html[data-theme="executivo"] tbody tr:hover { background: rgba(249, 115, 22, 0.06); }
+.tmPrev[data-theme="executivo"] { border-radius: 4px; }
+
+/* Âmbar Vidro — vidro escuro sobre fundo preto com brilhos âmbar nos cantos,
+   cards bem arredondados com reflexo quente e destaque laranja suave. */
+[data-theme="ambar"] {
+  --bg-app: #0b0907; --bg-panel: #1a1410; --bg-hover: rgba(255, 170, 120, 0.08);
+  --border: rgba(255, 180, 140, 0.16); --border-focus: rgba(255, 180, 140, 0.34);
+  --text-main: #f7efe8; --text-muted: #b9a89a;
+  --accent: #f29462; --accent-hover: #e8784a; --accent-bg: rgba(242, 148, 98, 0.14); --on-accent: #1d0f07;
+  --danger: #f87171; --success: #4ade80;
+  --top-bg: rgba(20, 15, 12, 0.5); --top-blur: blur(10px);
+  --th-bg: rgba(26, 19, 15, 0.97); --mhead-bg: rgba(26, 19, 15, 0.97); --ov-bg: rgba(5, 3, 2, 0.75);
+  --chip-bg: rgba(255, 190, 150, 0.05); --chip-bg-hover: rgba(255, 190, 150, 0.1);
+  --scroll-thumb: rgba(255, 180, 140, 0.25); --scroll-thumb-hover: rgba(255, 180, 140, 0.42);
+  --radius-sm: 8px; --radius-md: 14px; --radius-lg: 22px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3); --shadow-md: 0 8px 20px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 30px 60px -18px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 180, 140, 0.05);
+  --st-ok: #86efac; --st-warn: #fcd34d; --st-crit: #fca5a5; --st-info: #b9a89a;
+  --line-soft: rgba(255, 190, 150, 0.08); --field-bg: rgba(255, 190, 150, 0.04); --field-border: rgba(255, 180, 140, 0.22);
   --easing: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: dark;
 }
-[data-theme="solarized-dark"] {
-  --bg-app: #002b36; --bg-panel: #073642; --bg-hover: #0c4452;
-  --border: rgba(238, 232, 213, 0.1); --border-focus: rgba(238, 232, 213, 0.18);
-  --text-main: #eee8d5; --text-muted: #a3b5b5;
-  --accent: #3fb6ad; --accent-hover: #2aa198; --accent-bg: rgba(63, 182, 173, 0.14); --on-accent: #002b36;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(7, 54, 66, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(7, 54, 66, 0.95); --mhead-bg: rgba(7, 54, 66, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(238, 232, 213, 0.04); --chip-bg-hover: rgba(238, 232, 213, 0.08);
-  --scroll-thumb: rgba(238, 232, 213, 0.18); --scroll-thumb-hover: rgba(238, 232, 213, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: dark;
+html[data-theme="ambar"], html[data-theme="ambar"] body {
+  background:
+    radial-gradient(45% 60% at 0% 100%, rgba(222, 118, 60, 0.42), transparent 72%),
+    radial-gradient(50% 55% at 100% 0%, rgba(222, 118, 60, 0.38), transparent 72%),
+    radial-gradient(40% 45% at 100% 100%, rgba(222, 118, 60, 0.3), transparent 72%),
+    radial-gradient(30% 35% at 0% 0%, rgba(222, 118, 60, 0.16), transparent 72%),
+    #0b0907 fixed;
 }
-[data-theme="forest"] {
-  --bg-app: #0b130e; --bg-panel: #12201a; --bg-hover: #1b3026;
-  --border: rgba(228, 239, 232, 0.1); --border-focus: rgba(228, 239, 232, 0.18);
-  --text-main: #e4efe8; --text-muted: #9db6a8;
-  --accent: #34d399; --accent-hover: #10b981; --accent-bg: rgba(52, 211, 153, 0.14); --on-accent: #06130d;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(18, 32, 26, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(18, 32, 26, 0.95); --mhead-bg: rgba(18, 32, 26, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(228, 239, 232, 0.04); --chip-bg-hover: rgba(228, 239, 232, 0.08);
-  --scroll-thumb: rgba(228, 239, 232, 0.18); --scroll-thumb-hover: rgba(228, 239, 232, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: dark;
+html[data-theme="ambar"] .sidebar, html[data-theme="ambar"] .content { background: transparent; }
+html[data-theme="ambar"] .tableWrap, html[data-theme="ambar"] .item.sel, html[data-theme="ambar"] .modal {
+  background: linear-gradient(155deg, rgba(255, 170, 120, 0.12) 0%, rgba(34, 25, 20, 0.88) 38%, rgba(18, 13, 10, 0.94) 100%);
 }
-[data-theme="ember"] {
-  --bg-app: #120d0a; --bg-panel: #221811; --bg-hover: #33241b;
-  --border: rgba(245, 235, 228, 0.1); --border-focus: rgba(245, 235, 228, 0.18);
-  --text-main: #f5ebe4; --text-muted: #bba898;
-  --accent: #fb923c; --accent-hover: #f97316; --accent-bg: rgba(251, 146, 60, 0.14); --on-accent: #1a0e06;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(34, 24, 17, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(34, 24, 17, 0.95); --mhead-bg: rgba(34, 24, 17, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(245, 235, 228, 0.04); --chip-bg-hover: rgba(245, 235, 228, 0.08);
-  --scroll-thumb: rgba(245, 235, 228, 0.18); --scroll-thumb-hover: rgba(245, 235, 228, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: dark;
-}
-[data-theme="neon"] {
-  --bg-app: #07060d; --bg-panel: #15112b; --bg-hover: #221b44;
-  --border: rgba(243, 240, 255, 0.1); --border-focus: rgba(243, 240, 255, 0.18);
-  --text-main: #f3f0ff; --text-muted: #aea6cf;
-  --accent: #ff4ddb; --accent-hover: #e62ec3; --accent-bg: rgba(255, 77, 219, 0.14); --on-accent: #07060d;
-  --danger: #ef4444; --success: #10b981;
-  --top-bg: rgba(21, 17, 43, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(21, 17, 43, 0.95); --mhead-bg: rgba(21, 17, 43, 0.95); --ov-bg: rgba(0, 0, 0, 0.72);
-  --chip-bg: rgba(243, 240, 255, 0.04); --chip-bg-hover: rgba(243, 240, 255, 0.08);
-  --scroll-thumb: rgba(243, 240, 255, 0.18); --scroll-thumb-hover: rgba(243, 240, 255, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.8), 0 10px 15px -5px rgba(0,0,0,0.4);
-  --st-ok: #7ee787; --st-warn: #e3b341; --st-crit: #ff6b6b; --st-info: #8b949e;
-  --line-soft: rgba(255, 255, 255, 0.06); --field-bg: rgba(255, 255, 255, 0.03); --field-border: rgba(255, 255, 255, 0.10);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: dark;
-}
-[data-theme="solarized-light"] {
-  --bg-app: #eee8d5; --bg-panel: #fdf6e3; --bg-hover: #e4ddc6;
-  --border: rgba(7, 54, 66, 0.12); --border-focus: rgba(7, 54, 66, 0.22);
-  --text-main: #073642; --text-muted: #475f66;
-  --accent: #1a6699; --accent-hover: #13537d; --accent-bg: rgba(26, 102, 153, 0.1); --on-accent: #fdf6e3;
-  --danger: #b42318; --success: #4d7c0f;
-  --top-bg: rgba(253, 246, 227, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(253, 246, 227, 0.92); --mhead-bg: rgba(253, 246, 227, 0.92); --ov-bg: rgba(7, 54, 66, 0.38);
-  --chip-bg: rgba(7, 54, 66, 0.03); --chip-bg-hover: rgba(7, 54, 66, 0.06);
-  --scroll-thumb: rgba(7, 54, 66, 0.18); --scroll-thumb-hover: rgba(7, 54, 66, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
-  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
-  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: light;
-}
-[data-theme="paper"] {
-  --bg-app: #f1eadc; --bg-panel: #fbf8f1; --bg-hover: #e8dfcb;
-  --border: rgba(43, 33, 24, 0.12); --border-focus: rgba(43, 33, 24, 0.22);
-  --text-main: #2b2118; --text-muted: #6a5a49;
-  --accent: #a8470a; --accent-hover: #7c3306; --accent-bg: rgba(168, 71, 10, 0.1); --on-accent: #fff8ee;
-  --danger: #b91c1c; --success: #047857;
-  --top-bg: rgba(251, 248, 241, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(251, 248, 241, 0.92); --mhead-bg: rgba(251, 248, 241, 0.92); --ov-bg: rgba(43, 33, 24, 0.38);
-  --chip-bg: rgba(43, 33, 24, 0.03); --chip-bg-hover: rgba(43, 33, 24, 0.06);
-  --scroll-thumb: rgba(43, 33, 24, 0.18); --scroll-thumb-hover: rgba(43, 33, 24, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
-  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
-  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: light;
-}
-[data-theme="mint"] {
-  --bg-app: #ecf6f0; --bg-panel: #ffffff; --bg-hover: #ddeee4;
-  --border: rgba(15, 42, 32, 0.12); --border-focus: rgba(15, 42, 32, 0.22);
-  --text-main: #0f2a20; --text-muted: #4a6a5b;
-  --accent: #0f766e; --accent-hover: #115e59; --accent-bg: rgba(15, 118, 110, 0.1); --on-accent: #ffffff;
-  --danger: #b91c1c; --success: #047857;
-  --top-bg: rgba(255, 255, 255, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(255, 255, 255, 0.92); --mhead-bg: rgba(255, 255, 255, 0.92); --ov-bg: rgba(15, 42, 32, 0.38);
-  --chip-bg: rgba(15, 42, 32, 0.03); --chip-bg-hover: rgba(15, 42, 32, 0.06);
-  --scroll-thumb: rgba(15, 42, 32, 0.18); --scroll-thumb-hover: rgba(15, 42, 32, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
-  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
-  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: light;
-}
-[data-theme="lavender"] {
-  --bg-app: #f3f0fb; --bg-panel: #ffffff; --bg-hover: #e8e2f6;
-  --border: rgba(35, 25, 66, 0.12); --border-focus: rgba(35, 25, 66, 0.22);
-  --text-main: #231942; --text-muted: #5f5880;
-  --accent: #6d28d9; --accent-hover: #5b21b6; --accent-bg: rgba(109, 40, 217, 0.1); --on-accent: #ffffff;
-  --danger: #b91c1c; --success: #047857;
-  --top-bg: rgba(255, 255, 255, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(255, 255, 255, 0.92); --mhead-bg: rgba(255, 255, 255, 0.92); --ov-bg: rgba(35, 25, 66, 0.38);
-  --chip-bg: rgba(35, 25, 66, 0.03); --chip-bg-hover: rgba(35, 25, 66, 0.06);
-  --scroll-thumb: rgba(35, 25, 66, 0.18); --scroll-thumb-hover: rgba(35, 25, 66, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
-  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
-  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: light;
-}
-[data-theme="sky"] {
-  --bg-app: #ecf5fc; --bg-panel: #ffffff; --bg-hover: #dcebf8;
-  --border: rgba(12, 42, 69, 0.12); --border-focus: rgba(12, 42, 69, 0.22);
-  --text-main: #0c2a45; --text-muted: #45657f;
-  --accent: #0369a1; --accent-hover: #075985; --accent-bg: rgba(3, 105, 161, 0.1); --on-accent: #ffffff;
-  --danger: #b91c1c; --success: #047857;
-  --top-bg: rgba(255, 255, 255, 0.78); --top-blur: blur(10px);
-  --th-bg: rgba(255, 255, 255, 0.92); --mhead-bg: rgba(255, 255, 255, 0.92); --ov-bg: rgba(12, 42, 69, 0.38);
-  --chip-bg: rgba(12, 42, 69, 0.03); --chip-bg-hover: rgba(12, 42, 69, 0.06);
-  --scroll-thumb: rgba(12, 42, 69, 0.18); --scroll-thumb-hover: rgba(12, 42, 69, 0.3);
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 20px 40px -10px rgba(0,0,0,0.12), 0 10px 15px -5px rgba(0,0,0,0.05);
-  --st-ok: #15803d; --st-warn: #a16207; --st-crit: #b91c1c; --st-info: #57606a;
-  --line-soft: rgba(0, 0, 0, 0.08); --field-bg: rgba(0, 0, 0, 0.03); --field-border: rgba(0, 0, 0, 0.15);
-  --easing: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: light;
-}
+html[data-theme="ambar"] .tableWrap { border-color: rgba(255, 180, 140, 0.2); }
+html[data-theme="ambar"] .item.sel { border-color: rgba(242, 148, 98, 0.45); box-shadow: 0 0 22px rgba(242, 148, 98, 0.18); }
+html[data-theme="ambar"] .badge, html[data-theme="ambar"] .btn, html[data-theme="ambar"] .input { background: rgba(26, 19, 15, 0.6); }
+html[data-theme="ambar"] .btn:hover { border-color: rgba(242, 148, 98, 0.6); box-shadow: 0 0 16px rgba(242, 148, 98, 0.2); }
+html[data-theme="ambar"] .tableTitle { text-transform: uppercase; font-weight: 500; letter-spacing: 0.03em; }
+html[data-theme="ambar"] .radioBusca .radio:has(input:checked) { background: transparent; box-shadow: inset 0 -2px 0 var(--accent); }
+html[data-theme="ambar"] .radioBusca .radio:has(input:checked) span { color: var(--accent); }
+html[data-theme="ambar"] tbody tr:hover { background: rgba(242, 148, 98, 0.06); }
+.tmPrev[data-theme="ambar"] { background: radial-gradient(70% 70% at 0% 0%, rgba(214, 112, 56, 0.45), transparent 70%), radial-gradient(70% 70% at 100% 100%, rgba(214, 112, 56, 0.4), transparent 70%), #0b0907; border-radius: 14px; }
+.tmPrev[data-theme="ambar"] .tmPSide { background: rgba(34, 25, 20, 0.7); }
 @keyframes fadeSlideUp { 0% { opacity: 0; transform: translateY(14px); } 100% { opacity: 1; transform: translateY(0); } }
 @keyframes fadeIn { 0% { opacity: 0; } 100% { opacity: 1; } }
 @keyframes scaleIn { 0% { opacity: 0; transform: scale(0.96); } 100% { opacity: 1; transform: scale(1); } }
@@ -2881,7 +2815,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .tmTitulo { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
 .tmAtual { font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* Grade única (escuros primeiro, claros depois): 4 colunas = 4×4 com os 16 temas, sem sobra de linha. */
-.tmGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tmGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .tmCard { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; padding: 8px; font: inherit; text-align: left; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; transition: var(--transition-fast); }
 .tmCard:hover { border-color: var(--text-muted); transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .tmCard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -3263,6 +3197,7 @@ const _fetchJSON = (url, opts) => fetch(url, opts).then(r => {
 // e é a MESMA que valida o tema salvo no <head>. O CSS de cada id é o bloco [data-theme="id"].
 const TEMAS = (function(){ var t = ${temasJSON}; return Array.isArray(t) ? t : []; })();
 const TEMA_PADRAO = "ultra-dark";
+const TEMAS_LEGADOS_CLAROS = (function(){ var t = ${temasClarosJSON}; return Array.isArray(t) ? t : []; })();
 const _temaPorId = (id) => { for (let i = 0; i < TEMAS.length; i++) { if (TEMAS[i].id === id) return TEMAS[i]; } return null; };
 // Tema salvo: localStorage primeiro, cookie como reserva (o cookie vale para qualquer porta do mesmo
 // host; o localStorage não). try/catch em cada leitura: com armazenamento bloqueado o acesso LANÇA erro.
@@ -3270,7 +3205,8 @@ const _lerTemaSalvo = () => {
     let t = "";
     try { t = localStorage.getItem("fdb_theme") || ""; } catch(e) {}
     if (!t) { try { t = (document.cookie.match(/(?:^|;\s*)fdb_theme=([^;]+)/) || [])[1] || ""; } catch(e) {} }
-    return _temaPorId(t) ? t : TEMA_PADRAO;
+    if (_temaPorId(t)) return t;
+    return TEMAS_LEGADOS_CLAROS.indexOf(t) >= 0 ? "light" : TEMA_PADRAO;
 };
 // O que está NA TELA (atributo do <html>) é a verdade — não o que está salvo.
 const _temaAtual = () => {
@@ -3324,7 +3260,7 @@ const _tmConstruir = () => {
         + '</button>';
     const m = document.createElement("div");
     m.id = "tmMenu"; m.className = "tmMenu";
-    m.innerHTML = '<div class="tmHead"><span class="tmTitulo">Tema de cores</span><span class="tmAtual"></span></div>'
+    m.innerHTML = '<div class="tmHead"><span class="tmTitulo">Tema</span><span class="tmAtual"></span></div>'
         + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>';
     m.addEventListener("click", (e) => {
         const alvo = e.target;
