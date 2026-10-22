@@ -1,16 +1,16 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.15.0
+ * @version 3.16.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.15.0 - 2026-10-22 22:00 - Celular: página rola inteira.
- *     - Até 680 px de largura a página rola inteira (antes topo e cabeçalho ficavam presos
- *       e as vendas rolavam numa faixa estreita). Fileira de botões do cabeçalho da tabela
- *       oculta (as mesmas ações estão em "Mais"). Fim da lista e selo "↻ auto" acima da
- *       barra de baixo; barra respeita a área do gesto do iPhone; com uma janela aberta o
- *       fundo não rola. No PC nada muda.
+ *   3.16.0 - 2026-10-22 22:30 - Celular: barra de baixo e janelas.
+ *     - Barra de baixo: "+ Itens" virou "Vendas" (rola até a lista de vendas do dia) e
+ *       "Copiar" abre um mini modal com todas as opções de cópia (o "Mais" fica com
+ *       proibidos, vendedores, ajuda e limpar filtros).
+ *     - Janelas no celular: cabeçalho compacto com "Fechar" ao lado do título e campos
+ *       empilhados na largura toda — Configurações e Período não passam mais da borda.
  */
 
 (function() {
@@ -18,7 +18,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.15.0";
+    const SCRIPT_VERSION = "3.16.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3062,7 +3062,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 /* kvItens ocupa o espaço restante com scroll interno + footer fixo */
 .mbody .kvItens { overflow:hidden; display:flex; flex-direction:column; }
 .kvItens .v { overflow:hidden; min-height:0; display:flex; flex-direction:column; }
-.kv { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: flex-start; background: var(--bg-app); border: 1px solid var(--border); padding: 16px 20px; border-radius: var(--radius-md); transition: var(--transition-fast); }
+.kv { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 16px; align-items: flex-start; background: var(--bg-app); border: 1px solid var(--border); padding: 16px 20px; border-radius: var(--radius-md); transition: var(--transition-fast); }
 .kv:hover { border-color: var(--border-focus); background: var(--bg-hover); }
 .kv.kvSep { background: transparent; border-color: transparent; padding: 18px 20px 4px; }
 .kv.kvSep:hover { background: transparent; border-color: transparent; }
@@ -3103,6 +3103,18 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .tableTitle { font-size: 20px; line-height: 1.25; }
   .mobileBar { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
   #__srv_badge { bottom: calc(100px + env(safe-area-inset-bottom, 0px)) !important; }
+  /* Janelas (v3.16.0): cabeçalho compacto com "Fechar" ao lado do título, campos
+     empilhados (rótulo em cima, campo embaixo, largura toda) — nada passa da borda. */
+  .ov.sheet .modal { padding: 0; max-height: 88vh; max-height: 88dvh; }
+  .mhead { padding: 14px 16px; flex-wrap: nowrap; align-items: flex-start; }
+  .mhead > div:first-child { flex: 1 1 auto; min-width: 0; }
+  .mhead > .btn { flex: none; }
+  .mtitle { font-size: 18px; } .msub { font-size: 12px; }
+  .ov.sheet .mbody { padding: 12px; }
+  .kv:has(input, textarea, select), #ovConfig .kv { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px 14px; }
+  .kv .input, .kv textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+  .kv input[type="date"] { display: block; -webkit-appearance: none; appearance: none; min-height: 44px; text-align: left; }
+  .acoesBody .btnAcao { justify-content: flex-start; min-height: 46px; }
   /* Janela aberta (venda, ajuda, duplicatas…): o fundo não rola junto. */
   html:has(.ov.on), html:has(.ov.on) body { overflow: hidden; }
 }
@@ -3292,16 +3304,12 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 <div class="modal acoesModal" role="dialog" aria-modal="true">
 <div class="mhead">
 <div>
-<div class="mtitle">Ferramentas de cópia</div>
-<div class="msub">Copie dados das vendas filtradas para a área de transferência.</div>
+<div class="mtitle">Mais opções</div>
+<div class="msub">Proibidos, vendedores, ajuda e filtros.</div>
 </div>
 <div class="btn" id="acoesFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div>
 </div>
 <div class="mbody acoesBody">
-<button class="btn btnAcao" id="aCopiarTudo" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar tudo</button>
-<button class="btn btnAcao" id="aCopiarTudoItens" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><line x1="13" y1="14" x2="17" y2="14"/><line x1="13" y1="17" x2="17" y2="17"/></svg>Copiar tudo + itens</button>
-<button class="btn btnAcao" id="aCopiarSemDinheiro" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>Copiar sem dinheiro</button>
-<button class="btn btnAcao" id="aCopiarGerencial" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Copiar só gerencial</button>
 <button class="btn btnAcao" id="aProibidos" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>Editar lista de proibidos</button>
 <button class="btn btnAcao" id="aVendedores" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Filtrar por vendedor</button>
 <button class="btn btnAcao" id="aAjuda" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg>Ajuda — coringas de busca</button>
@@ -3309,9 +3317,26 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 </div>
 </div>
 </div>
+<div class="ov sheet" id="ovCopiar" aria-hidden="true">
+<div class="modal acoesModal" role="dialog" aria-modal="true" aria-label="Opções de cópia">
+<div class="mhead">
+<div>
+<div class="mtitle">Copiar</div>
+<div class="msub">Vendas filtradas para a área de transferência.</div>
+</div>
+<div class="btn" id="copiarFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div>
+</div>
+<div class="mbody acoesBody">
+<button class="btn btnAcao" id="aCopiarTudo" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar tudo</button>
+<button class="btn btnAcao" id="aCopiarTudoItens" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><line x1="13" y1="14" x2="17" y2="14"/><line x1="13" y1="17" x2="17" y2="17"/></svg>Copiar tudo + itens</button>
+<button class="btn btnAcao" id="aCopiarSemDinheiro" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>Copiar sem dinheiro</button>
+<button class="btn btnAcao" id="aCopiarGerencial" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Copiar só gerencial</button>
+</div>
+</div>
+</div>
 <div class="mobileBar" id="mobileBar">
 <button class="btn mbBtn" id="mbCopiar" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar</button>
-<button class="btn mbBtn" id="mbItens" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>+ Itens</button>
+<button class="btn mbBtn" id="mbVendas" type="button" aria-label="Ir para a lista de vendas do dia"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="18"/><polyline points="6 12 12 18 18 12"/><line x1="5" y1="21" x2="19" y2="21"/></svg>Vendas</button>
 <button class="btn mbBtn mbMais" id="mbMais" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>Mais</button>
 </div>
 <script id="dados" type="application/json">${dadosJSON}</script>
@@ -6205,6 +6230,15 @@ const abrirVendedores=()=>{
 const fecharVendedores=()=>{ const ov=qs("#ovVend"); if(ov){ov.classList.remove("on"); ov.setAttribute("aria-hidden","true");} vendFiltro=""; const q=qs("#vendQ"); if(q)q.value=""; };
 const abrirAcoes=()=>{ const ov=qs("#ovAcoes"); if(ov){ov.classList.add("on"); ov.setAttribute("aria-hidden","false");} };
 const fecharAcoes=()=>{ const ov=qs("#ovAcoes"); if(ov){ov.classList.remove("on"); ov.setAttribute("aria-hidden","true");} };
+// Mini modal "Copiar" (v3.16.0) — botão Copiar da barra do celular.
+const abrirCopiar=()=>{ const ov=qs("#ovCopiar"); if(ov){ov.classList.add("on"); ov.setAttribute("aria-hidden","false");} };
+const fecharCopiar=()=>{ const ov=qs("#ovCopiar"); if(ov){ov.classList.remove("on"); ov.setAttribute("aria-hidden","true");} };
+// Botão Vendas (v3.16.0): rola até o início da lista de vendas (suave, salvo no modo Leve).
+const irParaVendas=()=>{
+    const alvo=qs(".tableWrap")||qs("#cards"); if(!alvo)return;
+    const leve=document.documentElement.getAttribute("data-perf")==="leve";
+    try{ alvo.scrollIntoView({behavior:leve?"auto":"smooth",block:"start"}); }catch(e){ alvo.scrollIntoView(true); }
+};
 
 const abrirEditorProibidos=()=>{
     // BUG MÉDIO CORRIGIDO: faltava esta guarda (os outros 2 modais dinâmicos,
@@ -6423,16 +6457,18 @@ const clicar=sel=>{const el=qs(sel);if(el)el.dispatchEvent(new MouseEvent("click
 const acoes=qs("#acoes");if(acoes)acoes.addEventListener("click",function(){ __abrirModalConfig(); });
 const acoesFechar=qs("#acoesFechar");if(acoesFechar)acoesFechar.addEventListener("click",fecharAcoes);
 const ovA=qs("#ovAcoes");if(ovA)ovA.addEventListener("click",e=>{if(e.target===ovA)fecharAcoes();});
-const a1=qs("#aCopiarTudo");if(a1)a1.addEventListener("click",()=>{clicar("#copiarTudo");fecharAcoes();});
-const a2=qs("#aCopiarTudoItens");if(a2)a2.addEventListener("click",()=>{clicar("#copiarTudoItens");fecharAcoes();});
-const a3=qs("#aCopiarSemDinheiro");if(a3)a3.addEventListener("click",()=>{clicar("#copiarSemDinheiro");fecharAcoes();});
-const a4=qs("#aCopiarGerencial");if(a4)a4.addEventListener("click",()=>{clicar("#copiarGerencial");fecharAcoes();});
+const copiarFechar=qs("#copiarFechar");if(copiarFechar)copiarFechar.addEventListener("click",fecharCopiar);
+const ovC=qs("#ovCopiar");if(ovC)ovC.addEventListener("click",e=>{if(e.target===ovC)fecharCopiar();});
+const a1=qs("#aCopiarTudo");if(a1)a1.addEventListener("click",()=>{clicar("#copiarTudo");fecharCopiar();});
+const a2=qs("#aCopiarTudoItens");if(a2)a2.addEventListener("click",()=>{clicar("#copiarTudoItens");fecharCopiar();});
+const a3=qs("#aCopiarSemDinheiro");if(a3)a3.addEventListener("click",()=>{clicar("#copiarSemDinheiro");fecharCopiar();});
+const a4=qs("#aCopiarGerencial");if(a4)a4.addEventListener("click",()=>{clicar("#copiarGerencial");fecharCopiar();});
 const a5=qs("#aProibidos");if(a5)a5.addEventListener("click",()=>{clicar("#editarProibidos");fecharAcoes();});
 const a6=qs("#aVendedores");if(a6)a6.addEventListener("click",()=>{fecharAcoes();renderLista();abrirVendedores();});
 const a7=qs("#aAjuda");if(a7)a7.addEventListener("click",()=>{fecharAcoes();abrirAjuda();});
 const a8=qs("#aLimpar");if(a8)a8.addEventListener("click",()=>{_fnLimpar();fecharAcoes();});
-const mb1=qs("#mbCopiar");if(mb1)mb1.addEventListener("click",()=>{clicar("#copiarTudo");});
-const mb2=qs("#mbItens");if(mb2)mb2.addEventListener("click",()=>{clicar("#copiarTudoItens");});
+const mb1=qs("#mbCopiar");if(mb1)mb1.addEventListener("click",abrirCopiar);
+const mb2=qs("#mbVendas");if(mb2)mb2.addEventListener("click",irParaVendas);
 const mb3=qs("#mbMais");if(mb3)mb3.addEventListener("click",abrirAcoes);
 const vendQ=qs("#vendQ");if(vendQ)vendQ.addEventListener("input",e=>{vendFiltro=String(e.target.value||"");renderLista();});
 const btnVend=qs("#btnVend");if(btnVend)btnVend.addEventListener("click",()=>{renderLista();abrirVendedores();});
@@ -6447,6 +6483,7 @@ qs("#ov").addEventListener("click",e=>{if(e.target===qs("#ov"))fecharModal();});
 
 document.addEventListener("keydown",e=>{
     if(e.key==="Escape"){
+        const ovc=qs("#ovCopiar");if(ovc&&ovc.classList.contains("on")){fecharCopiar();return;}
         const ova=qs("#ovAcoes");if(ova&&ova.classList.contains("on")){fecharAcoes();return;}
         const ovv=qs("#ovVend");if(ovv&&ovv.classList.contains("on")){fecharVendedores();return;}
         fecharModal();
