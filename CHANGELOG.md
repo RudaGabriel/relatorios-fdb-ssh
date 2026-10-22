@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.14.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.15.0 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,15 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.15.0 — 2026-10-22 22:00
+
+**Celular: página rola inteira.**
+
+- Até 680 px de largura (celular), a página rola inteira — antes o topo e o cabeçalho da tabela ficavam presos e as vendas rolavam numa faixa estreita entre eles e a barra de baixo.
+- A fileira de botões do cabeçalho da tabela fica oculta no celular (cortada pela largura); as mesmas ações estão em "Mais", na barra de baixo.
+- O fim da lista e o selo "↻ auto" ficam acima da barra de baixo; a barra respeita a área do gesto do iPhone; com uma janela aberta (venda, ajuda, duplicatas), o fundo não rola.
+- No computador nada muda.
 
 ### 3.14.0 — 2026-10-22 21:30
 
