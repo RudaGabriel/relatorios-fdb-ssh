@@ -75,6 +75,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 
 ### Interface
 - **6 temas**: Escuro e Claro, mais 4 temas de estilo (HUD Ciano, Índigo Neon, Executivo e Âmbar Vidro), que mudam também cantos, bordas, brilho e fundo. Prévia no menu; a escolha fica salva no navegador e pode ser trocada à distância pelo `api.ps1`.
+- **Modo leve automático** para computadores, notebooks e celulares fracos: sem animações, desfoque nem sombras pesadas, para não travar. Detecta sozinho (hardware, teste rápido de desempenho, economia de dados, "reduzir movimento"); também pode ser escolhido em *Tema → Desempenho*.
 - Tabela no computador e cartões no celular, com renderização em blocos para dias com muitas vendas.
 - **Busca avançada** com coringas de valor, texto, campo e operadores lógicos (veja [abaixo](#busca-e-filtros-coringas)).
 - **Filtro de "proibidos"**: lista de produtos ou marcas que podem ser ocultados ou isolados com uma tecla.

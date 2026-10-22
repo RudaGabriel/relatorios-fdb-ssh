@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.9.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.10.0 |
 | [`api.ps1`](#apips1) | 1.6.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,15 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.10.0 — 2026-10-22 17:00
+
+**Modo leve para aparelhos fracos; tela de celular sem corte.**
+
+- Modo leve automático para computadores, notebooks e celulares fracos: sem animações de entrada, desfoque, sombras pesadas, brilho de texto nem fundo fixo; transições de 80 ms; tabela desenhada em fatias menores. O visual do tema continua o mesmo.
+- Detecção: hardware informado pelo navegador (memória/núcleos, celular com pouca memória), economia de dados, "reduzir movimento" do sistema e um teste rápido de processamento após o carregamento (mediana de 3 rodadas > 14 ms; PC atual ≈ 4 ms). O resultado fica salvo por 7 dias: a página já abre leve, sem trocar no meio.
+- Menu Tema → "Desempenho": Automático (padrão) / Completo / Leve, com o motivo.
+- Celular: a área da tabela passava da tela (botões alargavam a coluna) e cortava o valor das vendas. Coluna limitada em `minmax(0, 1fr)`.
 
 ### 3.9.1 — 2026-10-22 16:00
 
