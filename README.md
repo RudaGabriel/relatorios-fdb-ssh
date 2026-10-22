@@ -74,7 +74,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - **Aviso claro de servidor encerrado:** quando o servidor é encerrado ou a conexão cai por mais de 4 s, o relatório aberto mostra uma faixa no topo ("Servidor de relatórios encerrado", "Servidor reiniciando..." ou "Sem conexão com o servidor") e recarrega sozinho quando o servidor volta.
 
 ### Interface
-- **16 temas de cores** (10 escuros e 6 claros), com prévia no menu; a escolha fica salva no navegador.
+- **6 temas**: Escuro e Claro, mais 4 temas de estilo (HUD Ciano, Índigo Neon, Executivo e Âmbar Vidro), que mudam também cantos, bordas, brilho e fundo. Prévia no menu; a escolha fica salva no navegador e pode ser trocada à distância pelo `api.ps1`.
 - Tabela no computador e cartões no celular, com renderização em blocos para dias com muitas vendas.
 - **Busca avançada** com coringas de valor, texto, campo e operadores lógicos (veja [abaixo](#busca-e-filtros-coringas)).
 - **Filtro de "proibidos"**: lista de produtos ou marcas que podem ser ocultados ou isolados com uma tecla.
@@ -237,6 +237,7 @@ Os botões **Todos / Gerencial / NFC-e / NF-e**, ao lado da busca, restringem o 
 | `favicon` | `""` | Ícone personalizado (arquivo dentro da pasta do sistema) |
 | `proibidos` | `[]` | Lista de produtos/termos do filtro de proibidos |
 | `teclasPersonalizadas` | `[]` | Atalhos: `{ "tecla": "F2", "comando": "[-proibidos]>150", "acao": "" }` |
+| `programas` | `[]` | Programas que o `api.ps1` pode abrir na máquina do servidor: `{ "nome": "Small Commerce", "caminho": "C:\\Small\\Small.exe", "args": "" }`. Só editável neste arquivo, nesta máquina (a API não altera a lista). Já vêm sempre disponíveis: *Pasta do sistema* e *Log do servidor* |
 
 O arquivo `hora-fixada-cache.json` é criado e mantido pelo próprio sistema (não faz parte do pacote). Ele guarda os horários já corrigidos do dia e não precisa ser editado. O mesmo vale para `relatorio.log` e `favicon.png` (criado ao enviar um ícone).
 
@@ -264,6 +265,14 @@ Todas as rotas respondem na porta configurada (padrão `7734`).
 | `/api/upload-favicon` | POST | Envia um ícone PNG/ICO/JPEG (até 2 MB) |
 | `/api/navigate/hoje` · `/config` · `/selecionar-fdb` · `/periodo/INI/FIM` · `/hash/{config\|periodo}` · `/foco` | GET | Comandam as abas abertas via SSE |
 | `/api/sse-clients` | GET | Número de abas conectadas |
+| `/api/temas` | GET | Temas disponíveis (lidos do gerador) |
+| `/api/navigate/tema/ID` | GET | Troca o tema das abas abertas (fica salvo no navegador delas) |
+| `/api/navigate/aviso` | POST | Mostra um aviso nas abas abertas: `{ "msg": "texto", "segundos": 12 }` |
+| `/api/navigate/recarregar` | GET | Recarrega todas as abas abertas |
+| `/api/info` | GET | Versões, máquina, banco, memória e tempo ligado |
+| `/api/log?linhas=N&filtro=texto` | GET | Últimas linhas do `relatorio.log` (até 1000; apenas rede local) |
+| `/api/programas` | GET | Programas que podem ser abertos (lista do `config.json`) |
+| `/api/programas/abrir` | POST | Abre um programa da lista na máquina do servidor: `{ "nome": "..." }` (apenas rede local) |
 | `/api/restart` | GET | Reinicia o servidor (apenas rede local) |
 | `/api/encerrar[?reiniciar=1&origem=texto]` | GET | Encerramento ordenado: registra no log, avisa as abas abertas e sai (apenas rede local) |
 | `/api/log-error`, `/api/hora-usuario` | POST | Uso interno do navegador |
@@ -285,6 +294,10 @@ Cliente PowerShell para todas as rotas acima. Pode ser usado na própria máquin
 .\api.ps1 -Endpoint itens-venda -Payload @("2026-10-07","000123")
 .\api.ps1 -Endpoint abrir-periodo -Payload @("2026-10-01","2026-10-05")
 .\api.ps1 -Endpoint encerrar -Payload SIM   # desliga o servidor
+.\api.ps1 -Endpoint tema -Payload hud       # troca o tema das telas abertas
+.\api.ps1 -Endpoint aviso -Payload "Fechamento às 18h"
+.\api.ps1 -Endpoint log -Payload @{ linhas = 100; filtro = "ERRO" }
+.\api.ps1 -Endpoint abrir-programa -Payload "Pasta do sistema"
 ```
 
 O cabeçalho do menu mostra o **nome e o IP desta máquina** (a que abriu o `api.ps1`) — o IP da placa de rede usada para chegar ao servidor — e avisa quando ela é a própria máquina do servidor.
@@ -298,6 +311,12 @@ O cabeçalho do menu mostra o **nome e o IP desta máquina** (a que abriu o `api
 | `atualizar` | Força uma nova geração do relatório de hoje |
 | `itens-venda` | Itens de uma venda (data + número do cupom/pedido) |
 | `abrir-navegador` / `abrir-periodo` | Abre o relatório (de hoje / de um período) no navegador **desta** máquina |
+| `temas` / `tema` | Lista os temas / troca o tema das telas abertas (fica salvo no navegador delas) |
+| `aviso` | Mostra uma mensagem em todas as telas abertas (3 a 120 s) |
+| `recarregar-abas` | Recarrega todas as telas abertas |
+| `info` | Versões do servidor e do gerador, Node.js, máquina, banco, memória e tempo ligado |
+| `log` | Últimas linhas do `relatorio.log` do servidor, com filtro e cores (erros em vermelho) |
+| `programas` / `abrir-programa` | Lista / abre um programa na máquina do servidor (só os da lista `programas` do `config.json` de lá) |
 
 No `status`, o valor `-1` significa "ainda não lido do banco" (servidor recém-ligado ou banco fora do ar) — a resposta traz um campo `obs` explicando.
 
@@ -352,7 +371,8 @@ Arquivos que o sistema grava ficam **só na pasta dele** (`config.json`, `relato
 - Proteção contra **XSS**: todo JSON embutido em `<script>` é escapado, e textos do usuário são escapados no HTML.
 - Validação de todas as entradas da API: listas, datas de calendário, tamanhos máximos e caminhos de ícone restritos à pasta do sistema.
 - Registro de erros do navegador **sem quebras de linha forjáveis** no log.
-- Reinício remoto aceito só da rede local. As demais rotas são abertas à rede da loja, por design.
+- Reinício remoto, leitura do log e abertura de programas aceitos só da rede local. As demais rotas são abertas à rede da loja, por design.
+- Abrir programas: pela rede só se escolhe **um nome** da lista `programas` do `config.json` da máquina do servidor — nunca um caminho ou comando livre; a lista não pode ser alterada pela API.
 - Gravação **atômica** (arquivo temporário + renomear) de `config.json`, do cache de horas e dos relatórios: um desligamento no meio da gravação nunca corrompe os arquivos.
 - O instalador do Node.js confere o **SHA-256** oficial (ou a assinatura digital) antes de executar.
 

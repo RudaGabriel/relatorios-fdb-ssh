@@ -448,6 +448,62 @@ test("servidor: validações das rotas HTTP", { timeout: 60000 }, async () => {
     } finally { srv.parar(); }
 });
 
+test("servidor: controle remoto — temas, tema e aviso nas abas, info, log e programas", { timeout: 60000 }, async () => {
+    const marca = path.join(os.tmpdir(), "prog-aberto-" + process.pid + "-" + Date.now() + ".txt");
+    const dir = montarPasta({ programas: [
+        { nome: "Teste Node", caminho: process.execPath, args: ["-e", "require('fs').writeFileSync(" + JSON.stringify(marca) + ",'ok')"] },
+        { nome: "Inexistente", caminho: "/caminho/que/nao/existe.exe" }
+    ] });
+    const srv = await iniciarServidor(dir);
+    const ctrl = new AbortController();
+    try {
+        const post = (rota, corpo) => fetch(srv.base + rota, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+        // Temas vêm do próprio gerador (fonte única).
+        const t = await (await fetch(srv.base + "/api/temas")).json();
+        assert.ok(t.temas.some(x => x.id === "hud") && t.temas.some(x => x.id === "light"), "lista de temas lida do gerador");
+        assert.strictEqual((await fetch(srv.base + "/api/navigate/tema/nao-existe")).status, 400);
+
+        // Uma "aba" conectada por SSE recebe o tema e o aviso.
+        const sse = await fetch(srv.base + "/api/events", { signal: ctrl.signal });
+        const leitor = sse.body.getReader();
+        let recebido = "";
+        const ler = (async () => { try { for (;;) { const { value, done } = await leitor.read(); if (done) break; recebido += Buffer.from(value).toString("utf8"); } } catch (_) {} })();
+        await esperar(300);
+        const rt = await (await fetch(srv.base + "/api/navigate/tema/hud")).json();
+        assert.strictEqual(rt.ok, true); assert.ok(rt.clients >= 1);
+        assert.strictEqual((await post("/api/navigate/aviso", { msg: "" })).status, 400);
+        const ra = await (await post("/api/navigate/aviso", { msg: "Fechamento às 18h\n", segundos: 5 })).json();
+        assert.strictEqual(ra.ok, true);
+        for (let i = 0; i < 20 && !/"type":"aviso"/.test(recebido); i++) await esperar(100);
+        assert.match(recebido, /"type":"tema","id":"hud"/);
+        assert.match(recebido, /"type":"aviso","msg":"Fechamento às 18h","segundos":5/);
+
+        const info = await (await fetch(srv.base + "/api/info")).json();
+        assert.ok(info.ok && /^v\d+\.\d+\.\d+$/.test(info.servidor) && info.gerador && info.node);
+
+        await esperar(300);
+        const lg = await (await fetch(srv.base + "/api/log?linhas=5&filtro=aviso")).json();
+        assert.ok(lg.ok && lg.linhas.length >= 1 && lg.linhas.every(l => /aviso/i.test(l)));
+
+        // Programas: só os do config.json local (+ 2 fixos); pela rede, só pelo nome.
+        const pr = await (await fetch(srv.base + "/api/programas")).json();
+        const nomes = pr.programas.map(p => p.nome);
+        assert.ok(nomes.includes("Pasta do sistema") && nomes.includes("Log do servidor") && nomes.includes("Teste Node"));
+        assert.strictEqual(pr.programas.find(p => p.nome === "Inexistente").existe, false);
+        assert.strictEqual((await post("/api/programas/abrir", { nome: "Inexistente" })).status, 404);
+        assert.strictEqual((await post("/api/programas/abrir", { nome: "calc" })).status, 404);
+        const ab = await post("/api/programas/abrir", { nome: "teste node" });
+        assert.strictEqual(ab.status, 200);
+        for (let i = 0; i < 30 && !fs.existsSync(marca); i++) await esperar(100);
+        assert.ok(fs.existsSync(marca), "o programa da lista foi aberto");
+        // A lista não pode ser alterada pela rede (o /api/config ignora "programas").
+        await post("/api/config", { programas: [{ nome: "X", caminho: "/bin/sh" }] });
+        const cfgDisco = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8"));
+        assert.ok(!cfgDisco.programas.some(p => p.nome === "X"), "/api/config não pode cadastrar programas");
+        ctrl.abort(); await ler;
+    } finally { try { ctrl.abort(); } catch (_) {} try { fs.unlinkSync(marca); } catch (_) {} srv.parar(); }
+});
+
 test("servidor: encerramento ordenado registra no log, avisa as abas e sai com código 0", { timeout: 60000 }, async () => {
     const dir = montarPasta();
     const srv = await iniciarServidor(dir);

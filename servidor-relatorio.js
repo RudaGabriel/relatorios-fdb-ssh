@@ -2,17 +2,23 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.15.6
+ * @version 2.16.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.15.6 - 2026-10-16 19:30 - Acentos dos itens no modal de detalhes.
- *     - /api/itens-detalhe lê a DESCRICAO do ALTERACA como bytes (CHARACTER SET
- *       OCTETS) e decodifica no Node: UTF-8 válido como está, senão Windows-1252.
- *       Coluna sem charset (NONE) com acento chegava com o caractere U+FFFD.
- *       Firebird que recusar a conversão: a consulta é refeita do jeito antigo.
+ *   2.16.0 - 2026-10-22 16:00 - Controle remoto pelo api.ps1.
+ *     - /api/temas e /api/navigate/tema/ID: troca o tema das telas abertas (SSE "tema";
+ *       a página aplica e salva, como a escolha no menu). Lista lida do próprio gerador.
+ *     - /api/navigate/aviso (POST {msg, segundos}): aviso em destaque em todas as telas.
+ *     - /api/navigate/recarregar: recarrega todas as telas abertas.
+ *     - /api/info: versões, máquina, banco, memória, tempo ligado e abas conectadas.
+ *     - /api/log?linhas=N&filtro=texto: últimas linhas do relatorio.log (só rede local).
+ *     - /api/programas e /api/programas/abrir (POST {nome}): abre na máquina do servidor
+ *       um programa da lista "programas" do config.json LOCAL (+ "Pasta do sistema" e
+ *       "Log do servidor"). Pela rede só se escolhe um nome — nunca caminho ou comando
+ *       livre — e a lista não pode ser alterada pela API. Só rede local.
  */
 
 
@@ -20,7 +26,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.15.6";
+const SERVER_VERSION = "2.16.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2170,6 +2176,27 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "if(d.type==='navigate'){var _u=String(d.url||'/');if(_u.charAt(0)!=='/'||_u.charAt(1)==='/')_u='/';window.location.assign(_u);}" +
             "if(d.type==='foco'){try{window.focus();}catch(_){}}" +
             "if(d.type==='encerrando'){_srvAvisoEncerrado(!!d.reiniciando);}" +
+            // tema (v2.16.0): troca o tema e salva, como a escolha no menu da página.
+            "if(d.type==='tema'&&d.id){try{if(typeof window.__aplicarTema==='function'){window.__aplicarTema(String(d.id),String(d.nome||''));}" +
+            "else{var _ti=String(d.id).replace(/[^a-z0-9-]/g,'');try{localStorage.setItem('fdb_theme',_ti);}catch(_){}" +
+            "try{document.cookie='fdb_theme='+_ti+';path=/;max-age=31536000;SameSite=Strict';}catch(_){}" +
+            "document.documentElement.setAttribute('data-theme',_ti);}}catch(_){}}" +
+            // aviso (v2.16.0): mensagem enviada pelo api.ps1 a todas as telas.
+            "if(d.type==='aviso'&&d.msg){try{" +
+            "var _aw=document.getElementById('__srv_aviso');if(_aw)_aw.parentNode.removeChild(_aw);" +
+            "_aw=document.createElement('div');_aw.id='__srv_aviso';_aw.setAttribute('role','alert');" +
+            "_aw.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;max-width:min(560px,92vw);" +
+            "padding:14px 44px 14px 18px;border-radius:12px;background:#0f172a;color:#f1f5f9;border:1px solid rgba(56,189,248,.55);" +
+            "box-shadow:0 10px 40px rgba(0,0,0,.6);font:600 14px Inter,Arial,sans-serif;line-height:1.45;word-break:break-word;opacity:1;transition:opacity .4s';" +
+            "var _at=document.createElement('div');_at.style.cssText='font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#38bdf8;margin-bottom:4px';_at.textContent='Aviso';_aw.appendChild(_at);" +
+            "var _am=document.createElement('div');_am.textContent=String(d.msg);_aw.appendChild(_am);" +
+            "var _ax=document.createElement('button');_ax.type='button';_ax.textContent='\u00d7';_ax.setAttribute('aria-label','Fechar');" +
+            "_ax.style.cssText='position:absolute;top:8px;right:10px;background:none;border:0;color:#94a3b8;font-size:20px;cursor:pointer';" +
+            "_ax.onclick=function(){try{_aw.parentNode.removeChild(_aw);}catch(_){}};_aw.appendChild(_ax);" +
+            "document.body.appendChild(_aw);" +
+            "var _as=Math.max(3,Math.min(120,Number(d.segundos)||12));" +
+            "setTimeout(function(){_aw.style.opacity='0';setTimeout(function(){try{_aw.parentNode&&_aw.parentNode.removeChild(_aw);}catch(_){}},450);},_as*1000);" +
+            "}catch(_){}}" +
             "if(d.type==='navigate-hash'&&d.hash){" +
             "if(typeof __abrirModalConfig==='function'&&d.hash==='config'){__abrirModalConfig();}" +
             "else if(typeof __abrirModalPeriodo==='function'&&d.hash==='periodo'){__abrirModalPeriodo();}" +
@@ -4127,6 +4154,87 @@ var _requisicaoDaRedeLocal = function(req) {
     return local || !_maquinaIP || BIND_ADDR !== "0.0.0.0";
 };
 
+
+// ── CONTROLE REMOTO (v2.16.0): temas e programas ───────────────────────────
+// Temas: lidos do TEMAS_RELATORIO do gerador (fonte única — o servidor nunca
+// oferece um id que a página não conheça). Reserva fixa se a leitura falhar.
+var _TEMAS_RESERVA = [{id:"ultra-dark",nome:"Escuro"},{id:"light",nome:"Claro"}];
+var _temasCache = null, _temasCacheMtime = 0;
+var _temasDoGerador = function() {
+    try {
+        var arq = path.join(__dirname, "gerar-relatorio-html.js");
+        var mt = fs.statSync(arq).mtimeMs;
+        if (_temasCache && mt === _temasCacheMtime) return _temasCache;
+        var txt = fs.readFileSync(arq, "utf8");
+        var ini = txt.indexOf("const TEMAS_RELATORIO = [");
+        var fim = ini >= 0 ? txt.indexOf("];", ini) : -1;
+        var lista = [];
+        if (ini >= 0 && fim > ini) {
+            var re = /\{\s*id:\s*"([a-z0-9-]+)",\s*nome:\s*"([^"]+)"/g, m;
+            var bloco = txt.slice(ini, fim);
+            while ((m = re.exec(bloco))) lista.push({ id: m[1], nome: m[2] });
+        }
+        _temasCache = lista.length ? lista : _TEMAS_RESERVA;
+        _temasCacheMtime = mt;
+        return _temasCache;
+    } catch (e) { return _TEMAS_RESERVA; }
+};
+
+// Programas: "programas" do config.json DESTA máquina (relido a cada pedido —
+// editar o arquivo vale na hora) + 2 fixos. Validação: nome até 60, caminho
+// até 260, args string ou lista; no máximo 30 itens.
+var _programasDisponiveis = function() {
+    var cfgPg = {};
+    try { cfgPg = JSON.parse(fs.readFileSync(CONFIG, "utf8").replace(/^﻿/, "")) || {}; } catch (e) { cfgPg = {}; }
+    var lista = [];
+    var ehWin = process.platform === "win32";
+    lista.push({ nome: "Pasta do sistema", caminho: ehWin ? "explorer.exe" : "xdg-open", args: [__dirname], fixo: true, existe: true });
+    lista.push({ nome: "Log do servidor", caminho: ehWin ? "notepad.exe" : "xdg-open", args: [LOG_PATH], fixo: true, existe: true });
+    var brutos = Array.isArray(cfgPg.programas) ? cfgPg.programas.slice(0, 30) : [];
+    brutos.forEach(function(p) {
+        if (!p || typeof p !== "object") return;
+        var nome = _textoSeguroLog(p.nome, 60);
+        var cam = String(p.caminho || "").trim();
+        if (!nome || !cam || cam.length > 260 || /[\x00-\x1F]/.test(cam)) return;
+        if (lista.some(function(x) { return x.nome.toLowerCase() === nome.toLowerCase(); })) return;
+        var args = Array.isArray(p.args) ? p.args.map(function(a) { return String(a); }).slice(0, 20)
+                 : (p.args ? [String(p.args)] : []);
+        var existe = false;
+        try { existe = fs.existsSync(cam); } catch (e) { existe = false; }
+        lista.push({ nome: nome, caminho: cam, args: args, existe: existe });
+    });
+    return lista;
+};
+
+// Abre desacoplado do servidor (fechar o servidor não fecha o programa).
+// .exe/.com: direto. Outros (.lnk, .bat, .url, documentos): via "start" do cmd.
+var _abrirPrograma = function(prog, cb) {
+    var feito = false;
+    var fim = function(err) { if (feito) return; feito = true; cb(err || null); };
+    try {
+        var ext = path.extname(prog.caminho).toLowerCase();
+        var direto = !(process.platform === "win32") || ext === ".exe" || ext === ".com" || prog.fixo;
+        var cwd;
+        try { if (path.isAbsolute(prog.caminho) && fs.existsSync(path.dirname(prog.caminho))) cwd = path.dirname(prog.caminho); } catch (e) {}
+        var filho;
+        if (direto) {
+            filho = spawn(prog.caminho, prog.args, { detached: true, stdio: "ignore", cwd: cwd });
+        } else {
+            // cmd interpreta " & | < > ^ % — recusados aqui (a lista vem só do
+            // config.json local, mas um erro de digitação não pode virar outro comando).
+            var _perigo = /["&|<>^%\r\n]/;
+            if (_perigo.test(prog.caminho) || prog.args.some(function(a) { return _perigo.test(a); })) {
+                return fim(new Error("caminho/argumentos com caractere não permitido (\" & | < > ^ %)"));
+            }
+            var linha = 'start "" "' + prog.caminho + '"' + prog.args.map(function(a) { return ' "' + a + '"'; }).join("");
+            filho = spawn("cmd.exe", ["/d", "/s", "/c", '"' + linha + '"'], { detached: true, stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true, cwd: cwd });
+        }
+        filho.on("error", function(e) { fim(e); });
+        filho.on("spawn", function() { try { filho.unref(); } catch (e) {} fim(null); });
+        setTimeout(function() { try { filho.unref(); } catch (e) {} fim(null); }, 3000);
+    } catch (e) { fim(e); }
+};
+
 var server=http.createServer(function(req,res){
     
     if(/^\/(favicon\.(ico|png)|apple-touch-icon\.png)/.test(req.url)){
@@ -5039,6 +5147,108 @@ var server=http.createServer(function(req,res){
         var navUrl = "/periodo?i="+mNav[1]+"&f="+mNav[2];
         var sentNav = broadcastSSE({type:"navigate", url:navUrl});
         sendJson({ok:true, clients:sentNav});return;
+    }
+
+    // ── CONTROLE REMOTO (v2.16.0) — usado pelo api.ps1 ─────────────────────
+    // Tema das abas abertas, aviso nas telas, recarregar abas, informações do
+    // servidor, log e programas. Nada disso toca no banco (somente leitura).
+
+    // /api/temas — temas disponíveis (lidos do próprio gerador: fonte única).
+    if(rota==="/api/temas" && req.method==="GET"){
+        sendJson({ok:true, temas:_temasDoGerador(), padrao:"ultra-dark"});return;
+    }
+    // /api/navigate/tema/<id> — troca o tema nas abas abertas (e fica salvo
+    // no navegador de cada uma, como se o usuário tivesse escolhido no menu).
+    var mTema = rota.match(/^\/api\/navigate\/tema\/([a-z0-9-]{1,40})$/);
+    if(mTema){
+        var _temas = _temasDoGerador();
+        var _tm = _temas.filter(function(t){ return t.id === mTema[1]; })[0];
+        if(!_tm){ sendJson({ok:false, erro:"Tema desconhecido: " + mTema[1] + ". Disponíveis: " + _temas.map(function(t){return t.id;}).join(", ")}, 400); return; }
+        var sentTema = broadcastSSE({type:"tema", id:_tm.id, nome:_tm.nome});
+        logTs("Tema das abas alterado remotamente para \"" + _tm.nome + "\" (" + sentTema + " aba(s)).");
+        sendJson({ok:true, tema:_tm, clients:sentTema, obs: sentTema ? undefined : "Nenhuma tela do relatório de hoje está aberta agora — nada foi alterado. Repita com o relatório aberto."});
+        return;
+    }
+    // /api/navigate/aviso (POST {msg}) — mostra um aviso em todas as abas abertas.
+    if(rota==="/api/navigate/aviso" && req.method==="POST"){
+        lerBodySeguro(req, function(errAv, corpoAv){
+            if (errAv) { sendJson({ok:false, erro:errAv.message}, 413); return; }
+            var pAv = null; try { pAv = JSON.parse(corpoAv); } catch(_) {}
+            var msgAv = _textoSeguroLog(pAv && pAv.msg, 300);
+            if (!msgAv) { sendJson({ok:false, erro:"Informe o texto do aviso em 'msg'."}, 400); return; }
+            var segAv = parseInt(pAv && pAv.segundos, 10);
+            segAv = (segAv >= 3 && segAv <= 120) ? segAv : 12;
+            var sentAv = broadcastSSE({type:"aviso", msg:msgAv, segundos:segAv});
+            logTs("Aviso enviado às telas (" + sentAv + " aba(s)): " + msgAv);
+            sendJson({ok:true, clients:sentAv});
+        });
+        return;
+    }
+    // /api/navigate/recarregar — recarrega todas as abas abertas.
+    if(rota==="/api/navigate/recarregar"){
+        var sentRel = broadcastSSE({type:"reload"});
+        sendJson({ok:true, clients:sentRel});return;
+    }
+    // /api/info — versões, máquina, banco e uso de memória.
+    if(rota==="/api/info" && req.method==="GET"){
+        var _mem = process.memoryUsage();
+        var _up = Math.round(process.uptime());
+        sendJson({
+            ok: true,
+            servidor: "v" + SERVER_VERSION, gerador: _versaoGerador(), node: process.version,
+            computador: os.hostname(), sistema: os.type() + " " + os.release() + " (" + os.arch() + ")",
+            ligadoHa: Math.floor(_up / 3600) + "h " + Math.floor((_up % 3600) / 60) + "min",
+            memoriaMB: Math.round(_mem.rss / 1048576),
+            pid: process.pid, porta: PORT, ip: _maquinaIP || "127.0.0.1",
+            banco: { host: FDB_HOST, caminho: FDB_PATH },
+            abasConectadas: sseClients.length,
+            pasta: __dirname
+        });
+        return;
+    }
+    // /api/log?linhas=N — últimas linhas do relatorio.log (máx. 1000). Só da rede local.
+    if(rota==="/api/log" && req.method==="GET"){
+        if (!_requisicaoDaRedeLocal(req)) { sendJson({ok:false, erro:"Disponível apenas a partir da rede local."}, 403); return; }
+        var nLog = parseInt(parsed.searchParams.get("linhas"), 10);
+        nLog = (nLog >= 1 && nLog <= 1000) ? nLog : 50;
+        var filtroLog = String(parsed.searchParams.get("filtro") || "").trim().slice(0, 60).toLowerCase();
+        fs.readFile(LOG_PATH, "utf8", function(errLog, txtLog){
+            if (errLog) { sendJson({ok:false, erro:"Não foi possível ler o relatorio.log: " + errLog.message}, 500); return; }
+            var linhasLog = String(txtLog || "").split(/\r?\n/).filter(function(l){ return l.trim(); });
+            if (filtroLog) linhasLog = linhasLog.filter(function(l){ return l.toLowerCase().indexOf(filtroLog) >= 0; });
+            sendJson({ok:true, total:linhasLog.length, linhas:linhasLog.slice(-nLog)});
+        });
+        return;
+    }
+    // /api/programas — programas que este servidor pode abrir. A LISTA SÓ É
+    // DEFINIDA no config.json desta máquina ("programas": [{nome, caminho,
+    // args}]) — pela rede só se escolhe um item dela pelo nome, nunca um
+    // caminho/comando livre. Mais 2 fixos: pasta do sistema e o log.
+    if(rota==="/api/programas" && req.method==="GET"){
+        sendJson({ok:true, programas:_programasDisponiveis().map(function(p){
+            return { nome:p.nome, caminho:p.caminho, existe:p.existe, fixo:!!p.fixo };
+        })});
+        return;
+    }
+    // /api/programas/abrir (POST {nome}) — abre na máquina do servidor, na
+    // sessão de quem está logado nela. Só da rede local.
+    if(rota==="/api/programas/abrir" && req.method==="POST"){
+        if (!_requisicaoDaRedeLocal(req)) { sendJson({ok:false, erro:"Disponível apenas a partir da rede local."}, 403); return; }
+        lerBodySeguro(req, function(errPg, corpoPg){
+            if (errPg) { sendJson({ok:false, erro:errPg.message}, 413); return; }
+            var pPg = null; try { pPg = JSON.parse(corpoPg); } catch(_) {}
+            var nomePg = String((pPg && pPg.nome) || "").trim().toLowerCase();
+            var progs = _programasDisponiveis();
+            var prog = progs.filter(function(p){ return p.nome.toLowerCase() === nomePg; })[0];
+            if (!prog) { sendJson({ok:false, erro:"Programa não está na lista. Disponíveis: " + progs.map(function(p){return p.nome;}).join(", ")}, 404); return; }
+            if (!prog.existe) { sendJson({ok:false, erro:"Arquivo não encontrado nesta máquina: " + prog.caminho}, 404); return; }
+            _abrirPrograma(prog, function(errAb){
+                if (errAb) { logTs("ERRO ao abrir programa \"" + prog.nome + "\": " + errAb.message); sendJson({ok:false, erro:"Falha ao abrir: " + errAb.message}, 500); return; }
+                logTs("Programa aberto remotamente: \"" + prog.nome + "\" (" + prog.caminho + ").");
+                sendJson({ok:true, msg:"Abrindo \"" + prog.nome + "\" na máquina do servidor."});
+            });
+        });
+        return;
     }
 
     // /api/upload-favicon POST
