@@ -1,29 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.11.0
+ * @version 3.12.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.11.0 - 2026-10-22 18:00 - Visualização detalhada: painel com gráficos.
- *     - Menu Tema → "Visualização": Simplificada (como antes, só a tabela) ou Detalhada —
- *       painel acima da tabela no estilo dos painéis profissionais: cartões de indicadores
- *       (faturamento com minigráfico, ticket médio e maior venda, anéis de Gerencial/NFC-e/
- *       NF-e, vendedor destaque), gráfico combinado (área = faturamento, barras = nº de
- *       vendas, por hora ou por dia no período, com o pico marcado), rosca por tipo,
- *       ranking de vendedores, formas de pagamento e produtos mais vendidos.
- *     - Segue os filtros da tela (vendedor, tipo e busca). Clique no ranking filtra o
- *       vendedor; clique num tipo (cartão ou legenda) filtra o tipo. Tooltips nos pontos,
- *       barras e fatias.
- *     - Gráficos em SVG feitos no próprio relatório (sem biblioteca externa — funciona sem
- *       internet), com a paleta de cada tema; animação só na primeira montagem e nenhuma no
- *       modo leve. No celular, 2 colunas.
- *     - Tema HUD Ciano com desenho próprio (estilo painel de controle): anéis grossos de
- *       porcentagem, barras sólidas com linhas-guia verticais, linha tracejada do faturamento
- *       acumulado com marcadores vazados, tabela por hora com faixas e vendedores em anéis
- *       com a porcentagem numa caixa. Trocar o tema redesenha o painel na hora.
- *     - Botão SVG de minimizar/restaurar em cada painel e "Minimizar painel"/"Restaurar
- *       todos" no topo; fica salvo no navegador.
+ *   3.12.0 - 2026-10-22 19:30 - Movimento no modo Completo.
+ *     - Desempenho "Completo": entrada animada do topo, barra lateral, tabela e linhas (em
+ *       cascata), modais com efeito "pop", botões/chips/itens com transição de mola, onda ao
+ *       clicar, valores em R$ que "contam" até o número novo, painel detalhado redesenhando
+ *       arcos/linhas ao trocar filtro e transição suave de cores ao trocar o tema.
+ *     - Escolher "Completo" manualmente vale mesmo com "reduzir movimento" do sistema; no
+ *       modo Leve (ou automático em aparelho fraco) nada disso roda.
  */
 
 (function() {
@@ -31,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.11.0";
+    const SCRIPT_VERSION = "3.12.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2289,6 +2277,7 @@
             else { try { if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) { leve = true; motivo = "sistema"; } } catch (e3) {} }
           }
           h.setAttribute("data-perf", leve ? "leve" : "completo");
+          h.setAttribute("data-perf-pref", pref === "leve" || pref === "completo" ? pref : "auto");
           if (motivo) h.setAttribute("data-perf-motivo", motivo); else h.removeAttribute("data-perf-motivo");
           return leve;
         } catch (e) { return false; }
@@ -2660,6 +2649,101 @@ html[data-theme="executivo"] .dshTit { color: #c4ccd8; }
 html[data-theme="ambar"] .dshCard { background: linear-gradient(155deg, rgba(255, 170, 120, 0.12) 0%, rgba(34, 25, 20, 0.88) 38%, rgba(18, 13, 10, 0.94) 100%); border-color: rgba(255, 180, 140, 0.2); }
 @media (max-width: 1280px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dshW4, .dshW6 { grid-column: span 3; } .dshW2 { grid-column: span 3; } }
 @media (max-width: 760px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .dshW2, .dshW3, .dshW4, .dshW6 { grid-column: span 2; } .dshVal { font-size: 18px; } .dshRosca svg { width: 120px; height: 120px; } }
+/* ── MOVIMENTO (v3.12.0) — só no modo de desempenho "Completo" ─────────────
+   Entrada da página em cascata, linhas da tabela e vendedores surgindo um a
+   um, painéis do modo detalhado subindo, gráficos se desenhando, números
+   contando, efeito de toque (ondinha) nos botões, troca de tema suave e
+   micro-interações com mola. Tudo com transform/opacity (baratos para a
+   placa de vídeo). No modo Leve nada disso existe. */
+@keyframes movDesce { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+@keyframes movDaEsq { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+@keyframes movSobe { from { opacity: 0; transform: translateY(16px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes movLinha { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@keyframes movPop { 0% { opacity: 0; transform: scale(0.9); } 60% { opacity: 1; transform: scale(1.03); } 100% { opacity: 1; transform: none; } }
+@keyframes movOnda { from { transform: translate(-50%, -50%) scale(0); opacity: 0.45; } to { transform: translate(-50%, -50%) scale(1); opacity: 0; } }
+@keyframes movBrilho { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@keyframes dshDesenha { from { stroke-dasharray: 0 2000; } }
+@keyframes dshRevela { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes dshAnelGira { from { stroke-dasharray: 0 2000; } }
+html[data-perf="completo"] {
+  --mola: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+/* Entrada da página */
+html[data-perf="completo"] .top { animation: movDesce 0.55s var(--easing) backwards; }
+html[data-perf="completo"] .top .badge { animation: movPop 0.5s var(--easing) backwards; }
+html[data-perf="completo"] .top .badge:nth-child(2) { animation-delay: 0.05s; }
+html[data-perf="completo"] .top .badge:nth-child(3) { animation-delay: 0.1s; }
+html[data-perf="completo"] .top .badge:nth-child(4) { animation-delay: 0.15s; }
+html[data-perf="completo"] .top .right > * { animation: movSobe 0.5s var(--easing) backwards; }
+html[data-perf="completo"] .top .right > *:nth-child(2) { animation-delay: 0.04s; }
+html[data-perf="completo"] .top .right > *:nth-child(3) { animation-delay: 0.08s; }
+html[data-perf="completo"] .top .right > *:nth-child(4) { animation-delay: 0.12s; }
+html[data-perf="completo"] .top .right > *:nth-child(5) { animation-delay: 0.16s; }
+html[data-perf="completo"] .top .right > *:nth-child(6) { animation-delay: 0.2s; }
+html[data-perf="completo"] .top .right > *:nth-child(n+7) { animation-delay: 0.24s; }
+html[data-perf="completo"] .sidebar { animation: movDaEsq 0.6s var(--easing) 0.08s backwards; }
+html[data-perf="completo"] .tableWrap { animation: movSobe 0.6s var(--easing) 0.12s backwards; }
+/* Vendedores e linhas surgindo em cascata (as 20 primeiras; o resto aparece direto) */
+html[data-perf="completo"] .list .item { animation: movLinha 0.45s var(--easing) backwards; }
+html[data-perf="completo"] tbody tr, html[data-perf="completo"] .cards .cardRow { animation: movLinha 0.42s var(--easing) backwards; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(2) { animation-delay: 0.02s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(3) { animation-delay: 0.04s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(4) { animation-delay: 0.06s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(5) { animation-delay: 0.08s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(6) { animation-delay: 0.1s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(7) { animation-delay: 0.12s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(8) { animation-delay: 0.14s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(9) { animation-delay: 0.16s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(10) { animation-delay: 0.18s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(11) { animation-delay: 0.2s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(12) { animation-delay: 0.22s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(13) { animation-delay: 0.24s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(14) { animation-delay: 0.26s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(15) { animation-delay: 0.28s; }
+html[data-perf="completo"] :is(.list .item, tbody tr, .cards .cardRow):nth-child(n+16) { animation-delay: 0.3s; }
+html[data-perf="completo"] :is(tbody tr, .cards .cardRow):nth-child(n+40) { animation: none; }
+/* Micro-interações com mola */
+html[data-perf="completo"] .btn, html[data-perf="completo"] .badge, html[data-perf="completo"] .tdItemChip, html[data-perf="completo"] .item, html[data-perf="completo"] .tmCard, html[data-perf="completo"] .tmPerfOp, html[data-perf="completo"] .dshMinBtn, html[data-perf="completo"] .dshTopoBtn {
+  transition: background 0.25s var(--easing), border-color 0.25s var(--easing), color 0.25s var(--easing), box-shadow 0.3s var(--easing), transform 0.35s var(--mola);
+}
+html[data-perf="completo"] .btn:active, html[data-perf="completo"] .tmPerfOp:active, html[data-perf="completo"] .dshTopoBtn:active { transform: scale(0.95); transition-duration: 0.08s; }
+html[data-perf="completo"] .item:hover { transform: translateX(4px); }
+html[data-perf="completo"] .item.sel { animation: movBrilho 0.7s var(--easing) 1; }
+html[data-perf="completo"] .tdItemChip:hover { transform: translateY(-1px) scale(1.02); }
+html[data-perf="completo"] .tmCard:hover { transform: translateY(-3px); }
+html[data-perf="completo"] .radioBusca .radio { transition: background 0.3s var(--easing), color 0.3s var(--easing), box-shadow 0.3s var(--easing), transform 0.35s var(--mola); }
+html[data-perf="completo"] .radioBusca .radio:has(input:checked) { animation: movPop 0.4s var(--easing) 1; }
+/* Onda de toque (criada pelo JS em botões/opções) */
+.movOnda { position: absolute; border-radius: 50%; pointer-events: none; background: currentColor; width: 240%; aspect-ratio: 1; animation: movOnda 0.6s var(--easing) forwards; }
+html[data-perf="completo"] :is(.btn, .tmPerfOp, .dshTopoBtn, .radioBusca .radio, .item) { position: relative; overflow: hidden; }
+/* Modais: entrada com mola e fundo com fade */
+html[data-perf="completo"] .ov.on .modal { animation: movPop 0.42s var(--easing) forwards; }
+html[data-perf="completo"] .tmMenu { transition: opacity 0.22s var(--easing), transform 0.35s var(--mola), visibility 0s linear 0.22s; }
+/* Painel detalhado: cartões sobem em cascata, gráficos se desenham */
+html[data-perf="completo"] .dash.dshAnim > .dshCard { animation: movSobe 0.55s var(--easing) backwards; }
+html[data-perf="completo"] .dash.dshAnim > .dshCard:nth-child(3) { animation-delay: 0.04s; }
+html[data-perf="completo"] .dash.dshAnim > .dshCard:nth-child(4) { animation-delay: 0.08s; }
+html[data-perf="completo"] .dash.dshAnim > .dshCard:nth-child(5) { animation-delay: 0.12s; }
+html[data-perf="completo"] .dash.dshAnim > .dshCard:nth-child(6) { animation-delay: 0.16s; }
+html[data-perf="completo"] .dash.dshAnim > .dshCard:nth-child(7) { animation-delay: 0.2s; }
+html[data-perf="completo"] .dash.dshAnim > .dshCard:nth-child(n+8) { animation-delay: 0.26s; }
+html[data-perf="completo"] .dash.dshAnim .dshArco { animation: dshDesenha 1.1s var(--easing) 0.25s backwards; }
+html[data-perf="completo"] .dash.dshAnim .dshLinha { animation: dshRevela 1.3s var(--easing) 0.3s backwards; }
+html[data-perf="completo"] .dash.dshAnim .dshArea { animation: dshRevela 1.3s var(--easing) 0.3s backwards; }
+html[data-perf="completo"] .dash.dshAnim .dshCol { animation-duration: 0.8s; animation-timing-function: var(--mola); }
+html[data-perf="completo"] .dshCard { transition: transform 0.35s var(--mola), box-shadow 0.3s var(--easing), border-color 0.3s var(--easing); }
+html[data-perf="completo"] .dshCard:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--border-focus); }
+html[data-perf="completo"] .dshSvg circle[data-tip], html[data-perf="completo"] .dshSvg rect[data-tip] { transition: transform 0.25s var(--mola), opacity 0.2s; transform-box: fill-box; transform-origin: center; }
+html[data-perf="completo"] .dshSvg circle[data-tip]:hover { transform: scale(1.6); }
+html[data-perf="completo"] .dshSvg rect.dshCol:hover { opacity: 0.75; }
+html[data-perf="completo"] .dshRosca .dshArco { transition: stroke-width 0.25s var(--mola); }
+html[data-perf="completo"] .dshRosca .dshArco:hover { stroke-width: 24; }
+html[data-perf="completo"] .dshBarra .dshEnch { transition: filter 0.2s; }
+html[data-perf="completo"] .dshBarra:hover .dshEnch { filter: brightness(1.25); }
+/* Troca de tema suave (classe ligada por ~0,6 s pelo JS) */
+html.movTema, html.movTema *, html.movTema *::before, html.movTema *::after {
+  transition: background-color 0.55s var(--easing), color 0.55s var(--easing), border-color 0.55s var(--easing), fill 0.55s var(--easing), stroke 0.55s var(--easing), box-shadow 0.55s var(--easing) !important;
+}
 /* MODO LEVE (v3.10.0) — aparelhos fracos (automático) ou escolhido no menu Tema.
    Mantém o visual do tema, mas tira o que pesa para GPU/CPU fracas: animações de
    entrada, desfoque (backdrop-filter — o efeito mais caro de compor), sombras
@@ -2689,7 +2773,7 @@ html[data-perf="leve"] .ov { background: rgba(0, 0, 0, 0.72); }
    ajustes de blur/propriedades acima; não muda nada para quem não ativou
    essa preferência. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  html:not([data-perf-pref="completo"]) *, html:not([data-perf-pref="completo"]) *::before, html:not([data-perf-pref="completo"]) *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
@@ -3378,6 +3462,7 @@ const _temaAtual = () => {
     return _temaPorId(a) ? a : TEMA_PADRAO;
 };
 const _salvarTema = (t) => {
+    try { if (typeof _movTrocaTema === "function") _movTrocaTema(); } catch (e) {}
     setTimeout(() => { try { if (typeof _dshAgendar === "function") { _dshPrimeira = true; _dshAgendar(); } } catch (e) {} }, 0);
     try { localStorage.setItem("fdb_theme", t); } catch(e) {}
     try { document.cookie = "fdb_theme=" + t + ";path=/;max-age=31536000;SameSite=Strict"; } catch(e) {}
@@ -5270,6 +5355,63 @@ const renderResumoVend=()=>{
     }
     body.innerHTML=h;
 };
+// ── MOVIMENTO (v3.12.0) — só no modo de desempenho "Completo" ───────────────
+const _movLigado = () => document.documentElement.getAttribute("data-perf") === "completo";
+// Onda de toque: nasce no ponto do clique e se espalha.
+document.addEventListener("pointerdown", (e) => {
+    if (!_movLigado() || e.button > 0) return;
+    const alvo = e.target && e.target.closest ? e.target.closest(".btn, .tmPerfOp, .dshTopoBtn, .radioBusca .radio, .item") : null;
+    if (!alvo) return;
+    try {
+        const r = alvo.getBoundingClientRect();
+        const o = document.createElement("span");
+        o.className = "movOnda";
+        o.style.left = (e.clientX - r.left) + "px";
+        o.style.top = (e.clientY - r.top) + "px";
+        o.style.width = Math.max(r.width, r.height) * 2.4 + "px";
+        alvo.appendChild(o);
+        setTimeout(() => { try { o.remove(); } catch (er) {} }, 650);
+    } catch (er) {}
+}, { passive: true });
+// Números contando até o valor (R$ e inteiros). Guarda o último valor de cada
+// elemento: ao mudar o filtro, o número desliza do valor antigo para o novo.
+const _movUltimos = new Map();
+const _movLerValor = (txt) => {
+    const t = String(txt || "").trim();
+    if (!/^R\$\s*-?[\d.]+,\d{2}$/.test(t)) return null;
+    return Number(t.replace(/[^\d,-]/g, "").replace(",", "."));
+};
+const _movContar = (el, chave) => {
+    const final = _movLerValor(el.textContent);
+    if (final === null || !Number.isFinite(final)) return;
+    const ini = _movUltimos.has(chave) ? _movUltimos.get(chave) : 0;
+    _movUltimos.set(chave, final);
+    if (!_movLigado() || Math.abs(final - ini) < 0.005) return;
+    const dur = 750, t0 = performance.now(), fim = el.textContent;
+    const passo = (agora) => {
+        if (!el.isConnected) return;
+        const p = Math.min(1, (agora - t0) / dur), k = 1 - Math.pow(1 - p, 3);
+        el.textContent = p >= 1 ? fim : fmt(ini + (final - ini) * k);
+        if (p < 1) requestAnimationFrame(passo);
+    };
+    requestAnimationFrame(passo);
+};
+const _movContarPainel = (el) => {
+    el.querySelectorAll(".dshVal, .hudGrande, .hudAnelV, .dshLegIt .dshV").forEach((v, i) => {
+        const card = v.closest(".dshCard");
+        _movContar(v, "dash:" + (card ? card.getAttribute("data-k") : "") + ":" + i);
+    });
+};
+// Total do topo conta na abertura.
+setTimeout(() => { try { const t = document.getElementById("tDiaSel"); if (t) _movContar(t, "topo"); } catch (e) {} }, 120);
+// Troca de tema com transição de cores.
+const _movTrocaTema = () => {
+    if (!_movLigado()) return;
+    const h = document.documentElement;
+    h.classList.add("movTema");
+    clearTimeout(_movTrocaTema._t);
+    _movTrocaTema._t = setTimeout(() => h.classList.remove("movTema"), 650);
+};
 // ── PAINEL DETALHADO (v3.11.0) ───────────────────────────────────────────────
 // Indicadores e gráficos SVG feitos aqui mesmo (sem biblioteca externa — o
 // relatório funciona sem internet). Acompanham os filtros da tela (vendedor,
@@ -5604,16 +5746,19 @@ document.addEventListener("click", (e) => {
         _dshRender();
     }
 }, true);
-let _dshTimer = 0, _dshPrimeira = true;
+let _dshTimer = 0, _dshPrimeira = true, _dshUltChave = "";
 const _dshRender = () => {
     const el = document.getElementById("dash");
     if (!el || !_dshVisivel()) return;
     let d;
     try { d = _dshDados(); } catch (e) { el.innerHTML = '<div class="dshCard dshW6"><div class="dshVazio">Não foi possível montar o painel: ' + esc(e.message) + '</div></div>'; return; }
+    const _chaveFiltro = vendAtual + "|" + tipoBusca;
+    if (_dshUltChave !== _chaveFiltro) { if (_dshUltChave && typeof _movLigado === "function" && _movLigado()) _dshPrimeira = true; _dshUltChave = _chaveFiltro; }
     if (document.documentElement.getAttribute("data-theme") === "hud") {
         el.classList.toggle("dshAnim", _dshPrimeira);
         _hudRender(d, el);
         _dshDecorar(el);
+        try { _movContarPainel(el); } catch (e) {}
         _dshPrimeira = false;
         return;
     }
@@ -5657,6 +5802,7 @@ const _dshRender = () => {
     el.classList.toggle("dshAnim", _dshPrimeira);
     el.innerHTML = h;
     _dshDecorar(el);
+    try { _movContarPainel(el); } catch (e) {}
     _dshPrimeira = false;
 };
 const _dshAgendar = () => {

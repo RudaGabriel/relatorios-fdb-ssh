@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.11.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.12.0 |
 | [`api.ps1`](#apips1) | 1.6.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.12.0 — 2026-10-22 19:30
+
+**Movimento no modo Completo.**
+
+- Desempenho "Completo": entrada animada do topo, barra lateral, tabela e linhas (em cascata), modais com efeito "pop", botões/chips/itens com transição de mola, onda ao clicar, valores em R$ que "contam" até o número novo, painel detalhado redesenhando arcos/linhas ao trocar filtro e transição suave de cores ao trocar o tema.
+- Escolher "Completo" manualmente vale mesmo com "reduzir movimento" do sistema; no modo Leve (ou automático em aparelho fraco) nada disso roda.
 
 ### 3.11.0 — 2026-10-22 18:00
 
