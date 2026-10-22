@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.13.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.13.1 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,12 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.13.1 — 2026-10-22 21:00
+
+**Chips de itens sem corte.**
+
+- A caixa dos chips de itens (`.tdItemsWrap`) não corta mais o conteúdo: o chip que sobe e cresce ao passar o mouse (modo Completo) aparece inteiro, e nenhum chip some quando a venda tem itens + "+N mais" + desconto + duplicata — a linha cresce para caber.
 
 ### 3.13.0 — 2026-10-22 20:30
 
