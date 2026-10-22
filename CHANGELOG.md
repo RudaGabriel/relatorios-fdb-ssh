@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.13.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.14.0 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.14.0 — 2026-10-22 21:30
+
+**Menu Tema auto-ajustável.**
+
+- O menu Tema (`#tmMenu`) mede o espaço disponível na janela e, se não couber, se compacta em níveis: mais colunas (2 linhas de temas), prévias mais baixas, sem as dicas, espaçamentos menores e, no último nível, alarga para todos os temas ficarem numa linha só. Reajusta ao redimensionar a janela.
+- Testado de 1920×1080 até 1100×420 sem rolagem; a rolagem interna fica só como último recurso em janelas ainda menores.
 
 ### 3.13.1 — 2026-10-22 21:00
 

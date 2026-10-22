@@ -1,14 +1,15 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.13.1
+ * @version 3.14.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.13.1 - 2026-10-22 21:00 - Chips de itens sem corte.
- *     - .tdItemsWrap sem overflow/max-height: o chip que sobe e cresce ao passar o mouse
- *       (modo Completo) não fica mais cortado, e nenhum chip some quando a venda tem
- *       itens + "+N mais" + desconto + duplicata (a linha cresce para caber).
+ *   3.14.0 - 2026-10-22 21:30 - Menu Tema auto-ajustável.
+ *     - O menu (#tmMenu) mede o espaço da janela e, se não couber, se compacta em níveis
+ *       (mais colunas, prévias mais baixas, sem as dicas, espaços menores; no último, alarga
+ *       para os temas ficarem numa linha) — sem rolagem nas resoluções comuns de desktop.
+ *       Reajusta ao redimensionar a janela.
  */
 
 (function() {
@@ -16,7 +17,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.13.1";
+    const SCRIPT_VERSION = "3.14.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3142,6 +3143,20 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .tmPerfOp:hover { border-color: var(--border-focus); }
 .tmPerfOp[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .tmPerfDica { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+/* Menu auto-ajustável (v3.14.0): se não couber na altura da janela, o JS (_tmAjustar) aplica
+   níveis de compactação — mais colunas, prévias mais baixas, sem as dicas, espaçamentos menores —
+   até caber sem rolagem. A rolagem interna fica só como último recurso. */
+.tmMenu[data-compacto] .tmGrid { grid-template-columns: repeat(var(--tm-cols, 4), minmax(0, 1fr)); gap: 8px; }
+.tmMenu[data-compacto] .tmPrev { height: 50px; }
+.tmMenu[data-compacto="2"] .tmPrev { height: 40px; }
+.tmMenu[data-compacto="2"] .tmPerfDica, .tmMenu[data-compacto="3"] .tmPerfDica, .tmMenu[data-compacto="4"] .tmPerfDica { display: none; }
+.tmMenu[data-compacto="3"], .tmMenu[data-compacto="4"] { padding: 10px 12px 12px; }
+.tmMenu[data-compacto="3"] .tmPrev, .tmMenu[data-compacto="4"] .tmPrev { height: 30px; }
+.tmMenu[data-compacto="3"] .tmPAa, .tmMenu[data-compacto="4"] .tmPAa { font-size: 11px; }
+.tmMenu[data-compacto="3"] .tmHead, .tmMenu[data-compacto="4"] .tmHead { margin-bottom: 8px; }
+.tmMenu[data-compacto="3"] .tmPerf, .tmMenu[data-compacto="4"] .tmPerf { margin-top: 8px; padding-top: 8px; }
+.tmMenu[data-compacto="3"] .tmPerfOp, .tmMenu[data-compacto="4"] .tmPerfOp { height: 28px; }
+.tmMenu[data-compacto="3"] .tmCard, .tmMenu[data-compacto="4"] .tmCard { padding: 6px; gap: 5px; }
 @media (max-width: 640px) { .tmGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 440px) { .tmGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tmMenu { padding: 12px 12px 14px; } }
 </style>
@@ -3704,6 +3719,43 @@ const _tmPosicionar = () => {
         _tmMenu.style.maxHeight = Math.max(160, acima) + "px";
         _tmMenu.style.transformOrigin = "bottom right";
     }
+    _tmAjustar(parseFloat(_tmMenu.style.maxHeight) || 0, larg);
+};
+// Auto-ajuste (v3.14.0): mede o conteúdo e, se passar da altura disponível, sobe o nível de
+// compactação (CSS .tmMenu[data-compacto]) até caber — sem rolagem. Colunas: no nível 1-3,
+// as necessárias para 2 linhas de temas; no 4, todos numa linha só (se a largura permitir).
+// Cada nível só é aplicado se as colunas couberem na largura (cartão de no mínimo ~92 px).
+const _tmAjustar = (disp, larg) => {
+    const m = _tmMenu; if (!m) return;
+    const grid = m.querySelector(".tmGrid");
+    const n = grid ? grid.children.length : 0;
+    m.removeAttribute("data-compacto");
+    m.style.removeProperty("--tm-cols");
+    if (!(disp > 0) || !n) return;
+    const cabe = () => m.scrollHeight <= disp + 1;
+    if (cabe()) return;
+    const util = Math.max(0, larg - 30);
+    const colsMax = Math.max(1, Math.floor((util + 8) / (92 + 8)));
+    const cols2Linhas = Math.min(colsMax, Math.max(3, Math.ceil(n / 2)));
+    const colsUmaLinha = Math.min(colsMax, n);
+    for (let nivel = 1; nivel <= 4; nivel++) {
+        m.setAttribute("data-compacto", String(nivel));
+        let cols = nivel === 4 ? colsUmaLinha : cols2Linhas;
+        if (nivel === 4 && cols < n) {
+            // Último nível: alarga o menu (mantendo a borda direita) para os temas caberem numa linha.
+            const vw = document.documentElement.clientWidth || window.innerWidth || 0;
+            const novaLarg = Math.min(Math.max(160, vw - 24), n * 100 + 22);
+            if (novaLarg > larg) {
+                const dir = (parseFloat(m.style.left) || 0) + larg;
+                m.style.width = novaLarg + "px";
+                m.style.left = Math.max(12, Math.min(dir - novaLarg, vw - novaLarg - 12)) + "px";
+                cols = Math.min(n, Math.max(1, Math.floor((novaLarg - 30 + 8) / 100)));
+            }
+        }
+        m.style.setProperty("--tm-cols", String(cols));
+        if (cabe()) return;
+    }
+    // Nem o nível 4 coube (janela muito baixa): fica no mais compacto, com rolagem interna.
 };
 const _tmAbrir = () => {
     if (_tmAberto) return;
