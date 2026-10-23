@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.17.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.19.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.20.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -192,6 +192,15 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.20.0 — 2026-10-23 21:30
+
+**Animações de saída (modo Completo).**
+
+- Antes só havia animações de entrada (menu Tema, avisos e dicas já tinham saída). Agora:
+  - **Janelas** (venda, ajuda, duplicatas, configurações, período, Copiar/Mais/Vendedores no celular): ao fechar, a caixa encolhe e esmaece; no celular, desce de volta. Antes só o fundo escurecido sumia e a caixa desaparecia de uma vez.
+  - **Lista de vendas e painel detalhado**: ao filtrar por vendedor, tipo ou busca, limpar filtros, minimizar/restaurar cartões ou trocar a visualização, o conteúdo antigo sai deslizando e esmaecendo enquanto o novo entra com a cascata. Usa a transição nativa do navegador (Chrome/Edge 111+, Safari 18+); sem ela, a troca acontece direto, como antes.
+- Modo Leve e recarregamento automático (venda nova) continuam sem animação.
 
 ### 3.19.0 — 2026-10-23 16:30
 

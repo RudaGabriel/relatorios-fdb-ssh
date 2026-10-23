@@ -1,15 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.19.0
+ * @version 3.20.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.19.0 - 2026-10-23 16:30 - Recarregamento automático sem piscar.
- *     - Venda nova/alterada → a tela recarrega sozinha: agora volta no mesmo ponto da lista
- *       (rolagem da página no celular, da tabela no PC), com a mesma busca, tipo e vendedor,
- *       e sem animações de entrada nem contagem de valores (antes a tela toda "piscava" e
- *       voltava ao topo, sem filtros). Precisa do servidor 2.17.0+.
+ *   3.20.0 - 2026-10-23 21:30 - Animações de saída (modo Completo).
+ *     - Janelas (venda, ajuda, duplicatas, configurações, período…): a caixa encolhe e
+ *       esmaece ao fechar; no celular, desce de volta. Antes só o fundo escurecido sumia.
+ *     - Lista de vendas e painel: ao filtrar (vendedor, tipo, busca), limpar, minimizar/
+ *       restaurar cartões ou trocar a visualização, o conteúdo antigo sai deslizando e
+ *       esmaecendo enquanto o novo entra (transição nativa do navegador; sem ela, troca
+ *       direto). Modo Leve e recarregamento automático continuam sem animação.
  */
 
 (function() {
@@ -17,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.19.0";
+    const SCRIPT_VERSION = "3.20.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2727,6 +2729,24 @@ html[data-theme="brasa"]:not([data-perf="leve"]) .dshSvg rect.dshCol { filter: d
 html[data-theme="brasa"]:not([data-perf="leve"]) .dshBarra .dshEnch { box-shadow: 0 0 10px rgba(240, 132, 74, 0.45); }
 @media (max-width: 1280px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dshW4, .dshW6 { grid-column: span 3; } .dshW2 { grid-column: span 3; } }
 @media (max-width: 760px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .dshW2, .dshW3, .dshW4, .dshW6 { grid-column: span 2; } .dshVal { font-size: 18px; } .dshRosca svg { width: 120px; height: 120px; } }
+/* SAÍDAS (v3.20.0) — só no modo Completo. Janelas: a caixa encolhe e esmaece (no
+   celular, desce) enquanto o fundo escurecido some. Lista de vendas e painel: na troca
+   (filtro, limpar, minimizar, visualização) o conteúdo antigo desliza e esmaece pela
+   transição nativa do navegador (_movTransicao); o resto da tela não se mexe. */
+@keyframes movSaiJanela { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(8px) scale(0.94); } }
+@keyframes movSaiBaixo { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(48px); } }
+@keyframes movVtSai { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(10px) scale(0.99); } }
+@keyframes movVtEntra { from { opacity: 0; } to { opacity: 1; } }
+html[data-perf="completo"] .ov:not(.on) .modal { animation: movSaiJanela 0.24s var(--easing) forwards; }
+html[data-perf="completo"] .ov { transition: opacity 0.26s var(--easing) 0.04s, visibility 0s linear 0.3s; }
+html[data-perf="completo"] .ov.on { transition: opacity 0.22s var(--easing), visibility 0s linear 0s; }
+@media (max-width: 680px) { html[data-perf="completo"] .ov.sheet:not(.on) .modal { animation: movSaiBaixo 0.26s var(--easing) forwards; } }
+html[data-perf="completo"] table, html[data-perf="completo"] #cards { view-transition-name: lista; }
+html[data-perf="completo"] #dash { view-transition-name: painel; }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+::view-transition-group(lista), ::view-transition-group(painel) { animation-duration: 0.3s; animation-timing-function: var(--easing, ease); }
+::view-transition-old(lista), ::view-transition-old(painel) { animation: movVtSai 0.22s var(--easing, ease) both; }
+::view-transition-new(lista), ::view-transition-new(painel) { animation: movVtEntra 0.28s var(--easing, ease) 0.08s both; }
 /* Recarregamento automático (v3.19.0): a tela nova aparece direto, sem animações nem
    transições de entrada (o atributo sai ~1,5 s depois; daí em diante tudo anima normal). */
 html[data-recarga] *, html[data-recarga] *::before, html[data-recarga] *::after { animation: none !important; transition: none !important; }
@@ -3430,7 +3450,9 @@ const DURACAO_FECHAR_OVERLAY_MS = 160;
 const _fecharOverlayAnimado = (el) => {
     if (!el) return;
     el.classList.remove("on");
-    setTimeout(() => { try { el.remove(); } catch(_) {} }, DURACAO_FECHAR_OVERLAY_MS);
+    // Modo Completo: a caixa encolhe antes de sumir (saída de 0,26 s, ver MOVIMENTO no CSS).
+    const completo = document.documentElement.getAttribute("data-perf") === "completo";
+    setTimeout(() => { try { el.remove(); } catch(_) {} }, completo ? 300 : DURACAO_FECHAR_OVERLAY_MS);
 };
 // Duração do toast (ms) — lida do config.json no momento da geração
 const __TOAST_DURACAO__ = ${cfgToastDuracao};
@@ -5569,7 +5591,7 @@ const renderLista=()=>{
         const add=(nome,qtd,total,sel,click)=>{
             const div=document.createElement("div");
             div.className="item"+(sel?" sel":"");
-            div.addEventListener("click",()=>{click();if(apos)apos(); atualizarSelecaoVendedores();});
+            div.addEventListener("click",()=>{_movTransicao(()=>{click();if(apos)apos(); atualizarSelecaoVendedores();});});
             div.innerHTML='<div class="nome">'+esc(nome)+'</div><div class="meta"><div class="qtd">Vendas: '+qtd+'</div><div class="tot">'+esc(fmt(total))+'</div></div>';
             root.appendChild(div);
         };
@@ -5601,6 +5623,18 @@ const renderResumoVend=()=>{
 };
 // ── MOVIMENTO (v3.12.0) — só no modo de desempenho "Completo" ───────────────
 const _movLigado = () => document.documentElement.getAttribute("data-perf") === "completo" && !document.documentElement.hasAttribute("data-recarga");
+// SAÍDA ANIMADA (v3.20.0): troca de conteúdo (filtro, limpar, painel) com o recurso
+// nativo de transição do navegador — o conteúdo antigo sai (desliza e esmaece) enquanto
+// o novo entra. Só no modo Completo; sem o recurso (navegador antigo), no Leve ou no
+// recarregamento automático, a troca acontece direto, igual antes. Nunca deixa de
+// executar fn (nem em erro).
+const _movTransicao = (fn) => {
+    if (!_movLigado() || typeof document.startViewTransition !== "function") { fn(); return; }
+    let feito = false;
+    const rodar = () => { if (feito) return; feito = true; fn(); };
+    try { document.startViewTransition(() => { try { rodar(); } catch (e) { console.error(e); } }); }
+    catch (e) { rodar(); }
+};
 // Onda de toque: nasce no ponto do clique e se espalha.
 document.addEventListener("pointerdown", (e) => {
     if (!_movLigado() || e.button > 0) return;
@@ -5979,7 +6013,7 @@ document.addEventListener("click", (e) => {
     const alvo = e.target && e.target.closest ? e.target : null;
     if (!alvo || !alvo.closest("#dash")) return;
     const bMin = alvo.closest(".dshMinBtn");
-    if (bMin) { e.stopPropagation(); const card = bMin.closest(".dshCard"); if (card) _dshMinAlternar(card); return; }
+    if (bMin) { e.stopPropagation(); const card = bMin.closest(".dshCard"); if (card) _movTransicao(() => _dshMinAlternar(card)); return; }
     const bTopo = alvo.closest(".dshTopoBtn");
     if (bTopo) {
         e.stopPropagation();
@@ -5987,7 +6021,7 @@ document.addEventListener("click", (e) => {
         if (ac === "minimizar-tudo") { try { localStorage.setItem(LS_DASH_TUDO, "1"); } catch (er) {} }
         else if (ac === "restaurar-tudo") { try { localStorage.removeItem(LS_DASH_TUDO); } catch (er) {} }
         else if (ac === "restaurar-cards") _dshMinSalvar([]);
-        _dshRender();
+        _movTransicao(() => _dshRender());
     }
 }, true);
 let _dshTimer = 0, _dshPrimeira = !document.documentElement.hasAttribute("data-recarga"), _dshUltChave = "";
@@ -6061,8 +6095,10 @@ document.addEventListener("click", (e) => {
     const bv = alvo.closest(".dshBarra[data-vend]");
     if (bv) {
         const nome = bv.getAttribute("data-vend") || "";
-        vendAtual = vendAtual === nome ? "" : nome;
-        _invalidarCtxCache(); calcSomaSel(); renderTabela(); atualizarSelecaoVendedores();
+        _movTransicao(() => {
+            vendAtual = vendAtual === nome ? "" : nome;
+            _invalidarCtxCache(); calcSomaSel(); renderTabela(); atualizarSelecaoVendedores();
+        });
         return;
     }
     const bt = alvo.closest("[data-tipo]");
@@ -6074,7 +6110,8 @@ document.addEventListener("click", (e) => {
 });
 // Visualização (menu Tema): "simplificada" (padrão) ou "detalhada".
 const _visPref = () => document.documentElement.getAttribute("data-vis") === "detalhada" ? "detalhada" : "simplificada";
-const _visEscolher = (v) => {
+const _visEscolher = (v) => _movTransicao(() => _visAplicar(v));
+const _visAplicar = (v) => {
     const val = v === "detalhada" ? "detalhada" : "simplificada";
     try { localStorage.setItem("fdb_vis", val); } catch (e) {}
     document.documentElement.setAttribute("data-vis", val);
@@ -6502,25 +6539,26 @@ qs("#q").addEventListener("input",e=>{
     const n = DADOS.vendas.length;
     // Delay cresce com o volume: <200 dados=100ms, <500=200ms, <2000=300ms, ≥2000=450ms
     const delay = n > 2000 ? 450 : n > 500 ? 300 : n > 200 ? 200 : 100;
-    debounceBusca = setTimeout(() => {
-        qAtual=String(e.target.value||"").trim();
+    const valor = String(e.target.value||"");
+    debounceBusca = setTimeout(() => _movTransicao(() => {
+        qAtual=valor.trim();
         _invalidarCtxCache();
         const p=parseBusca(qAtual); qInc=p.inc;
         calcSomaSel();
         renderTabela();
-    }, delay);
+    }), delay);
 });
 
-document.querySelectorAll('input[name="tipoBusca"]').forEach(el=>el.addEventListener("change",e=>{
-    tipoBusca=String(e.target&&e.target.value||"todos");
+document.querySelectorAll('input[name="tipoBusca"]').forEach(el=>el.addEventListener("change",e=>{ const _tpNovo=String(e.target&&e.target.value||"todos"); _movTransicao(()=>{
+    tipoBusca=_tpNovo;
     _invalidarCtxCache();
     // Se o vendedor selecionado não existe no novo tipo, limpa a seleção
     if(tipoBusca!=="todos"&&vendAtual&&!DADOS.vendas.some(x=>tipoLinhaOk(x)&&x.vendedor===vendAtual)){
         vendAtual=""; _invalidarCtxCache(); atualizarSelecaoVendedores();
     }
     calcSomaSel(); renderTabela();
-}));
-const _fnLimpar=()=>{vendAtual="";qAtual="";qInc="";tipoBusca="todos";_invalidarCtxCache();qs("#q").value="";const rb=qs('input[name="tipoBusca"][value="todos"]');if(rb)rb.checked=true;calcSomaSel();renderTabela();atualizarSelecaoVendedores();_atualizarXLimpar();toast("Filtro limpo","Mostrando todos.");};
+}); }));
+const _fnLimpar=()=>_movTransicao(()=>{vendAtual="";qAtual="";qInc="";tipoBusca="todos";_invalidarCtxCache();qs("#q").value="";const rb=qs('input[name="tipoBusca"][value="todos"]');if(rb)rb.checked=true;calcSomaSel();renderTabela();atualizarSelecaoVendedores();_atualizarXLimpar();toast("Filtro limpo","Mostrando todos.");});
 qs("#limpar").addEventListener("click",_fnLimpar);
 const _btnLimTab=qs("#limparTabela");if(_btnLimTab)_btnLimTab.addEventListener("click",_fnLimpar);
 
