@@ -7,10 +7,10 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.17.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.20.0 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.18.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.21.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
-| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.0 |
+| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.1.0 |
@@ -28,6 +28,14 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.18.0 — 2026-10-23 22:00
+
+**QR code para abrir no celular.**
+
+- Gerador de QR code próprio, sem biblioteca e sem internet (modo byte UTF-8, correção nível M, versões 1 a 10, máscara pela menor penalidade — conferido módulo a módulo com uma biblioteca de referência e lido por um leitor de verdade).
+- `/qr`: página com o QR code grande, o endereço e "Copiar endereço" — para mostrar na tela e escanear com o celular. `/qr.svg`: só a imagem. `/api/qr`: o endereço em texto.
+- O endereço é sempre o IP desta máquina na rede (`http://IP:porta/`), nunca `localhost` — o celular precisa estar no mesmo Wi-Fi.
 
 ### 2.17.0 — 2026-10-23 16:30
 
@@ -192,6 +200,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.21.0 — 2026-10-23 22:00
+
+**QR code para o celular; tamanho do texto no computador.**
+
+- Botão **Celular** no topo (só no computador): abre uma janela com o QR code do endereço desta máquina na rede, o endereço e "Copiar endereço". Aponte a câmera do celular e o relatório abre.
+- Menu Tema → **Tamanho do texto** agora também no computador (A− / Padrão / A+, de 80% a 140%), salvo separado do tamanho do celular. A página continua ocupando a tela inteira (a altura é compensada) e as janelas nunca passam da tela.
 
 ### 3.20.0 — 2026-10-23 21:30
 
@@ -514,6 +529,12 @@ Cliente de linha de comando.
 ## `iniciar-tray.ps1`
 
 Ícone da bandeja.
+
+### 1.5.1 — 2026-10-23 22:00
+
+**QR code.**
+
+- Novo item **Abrir no celular (QR code)...**: abre a página `/qr` do servidor, com o QR code do endereço desta máquina na rede, para escanear com o celular.
 
 ### 1.5.0 — 2026-10-23 21:00
 
