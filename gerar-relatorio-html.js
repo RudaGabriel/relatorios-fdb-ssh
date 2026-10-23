@@ -1,17 +1,15 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.18.0
+ * @version 3.19.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.18.0 - 2026-10-23 15:30 - Celular: uma linha só, totais em pares e tamanho do texto.
- *     - Badges, título, contagem e dados de cada venda tentam ficar numa linha só: se não
- *       cabem, a letra diminui (até um mínimo); só então quebram linha.
- *     - Badges de totais e de quantidades: pares "Nome: valor" inteiros, lado a lado (sem
- *       o "―"); o par inteiro desce de linha — nunca separa o nome do valor.
- *     - Menu Tema → "Tamanho do texto" (só no celular): A− / Padrão / A+, de 80% a 140%,
- *       salvo no aparelho. No PC nada muda.
+ *   3.19.0 - 2026-10-23 16:30 - Recarregamento automático sem piscar.
+ *     - Venda nova/alterada → a tela recarrega sozinha: agora volta no mesmo ponto da lista
+ *       (rolagem da página no celular, da tabela no PC), com a mesma busca, tipo e vendedor,
+ *       e sem animações de entrada nem contagem de valores (antes a tela toda "piscava" e
+ *       voltava ao topo, sem filtros). Precisa do servidor 2.17.0+.
  */
 
 (function() {
@@ -19,7 +17,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.18.0";
+    const SCRIPT_VERSION = "3.19.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2286,6 +2284,21 @@
       window.__perfDecidir();
       // VISUALIZAÇÃO (v3.11.0): "simplificada" (padrão) ou "detalhada" — antes do 1º desenho.
       try { document.documentElement.setAttribute("data-vis", localStorage.getItem("fdb_vis") === "detalhada" ? "detalhada" : "simplificada"); } catch (e) { document.documentElement.setAttribute("data-vis", "simplificada"); }
+      // RECARREGAMENTO AUTOMÁTICO (v3.19.0): venda nova/alterada → a tela recarrega sozinha.
+      // A página anterior guardou rolagem e filtros (window.__antesRecarga); aqui a nova
+      // marca data-recarga — sem animações de entrada nem contagem de valores — para não
+      // "piscar", e window.__recargaInfo devolve rolagem e filtros (fim do script).
+      try {
+        var _rc = JSON.parse(sessionStorage.getItem("__recarga_auto__") || "null");
+        sessionStorage.removeItem("__recarga_auto__");
+        if (_rc && typeof _rc.ts === "number" && Date.now() - _rc.ts < 20000 && _rc.url === location.pathname + location.search) {
+          document.documentElement.setAttribute("data-recarga", "1");
+          window.__recargaInfo = _rc;
+          // A rolagem é devolvida pelo próprio relatório (com a lista já desenhada); a
+          // restauração do navegador, feita cedo demais, pararia antes do ponto certo.
+          try { history.scrollRestoration = "manual"; } catch (e) {}
+        }
+      } catch (e) {}
       // TAMANHO DO TEXTO NO CELULAR (v3.18.0): "fdb_zoom_mob" = 0.8 a 1.4 (padrão 1). Só tem
       // efeito até 680 px (o CSS usa a variável só dentro do @media do celular).
       try { var _z = parseFloat(localStorage.getItem("fdb_zoom_mob")); if (_z >= 0.8 && _z <= 1.4) { document.documentElement.style.setProperty("--zoom-mob", String(_z)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(_z, 1.2))); } } catch (e) {}
@@ -2714,6 +2727,9 @@ html[data-theme="brasa"]:not([data-perf="leve"]) .dshSvg rect.dshCol { filter: d
 html[data-theme="brasa"]:not([data-perf="leve"]) .dshBarra .dshEnch { box-shadow: 0 0 10px rgba(240, 132, 74, 0.45); }
 @media (max-width: 1280px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dshW4, .dshW6 { grid-column: span 3; } .dshW2 { grid-column: span 3; } }
 @media (max-width: 760px) { html[data-vis="detalhada"] .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .dshW2, .dshW3, .dshW4, .dshW6 { grid-column: span 2; } .dshVal { font-size: 18px; } .dshRosca svg { width: 120px; height: 120px; } }
+/* Recarregamento automático (v3.19.0): a tela nova aparece direto, sem animações nem
+   transições de entrada (o atributo sai ~1,5 s depois; daí em diante tudo anima normal). */
+html[data-recarga] *, html[data-recarga] *::before, html[data-recarga] *::after { animation: none !important; transition: none !important; }
 /* ── MOVIMENTO (v3.12.0) — só no modo de desempenho "Completo" ─────────────
    Entrada da página em cascata, linhas da tabela e vendedores surgindo um a
    um, painéis do modo detalhado subindo, gráficos se desenhando, números
@@ -5584,7 +5600,7 @@ const renderResumoVend=()=>{
     body.innerHTML=h;
 };
 // ── MOVIMENTO (v3.12.0) — só no modo de desempenho "Completo" ───────────────
-const _movLigado = () => document.documentElement.getAttribute("data-perf") === "completo";
+const _movLigado = () => document.documentElement.getAttribute("data-perf") === "completo" && !document.documentElement.hasAttribute("data-recarga");
 // Onda de toque: nasce no ponto do clique e se espalha.
 document.addEventListener("pointerdown", (e) => {
     if (!_movLigado() || e.button > 0) return;
@@ -5974,7 +5990,7 @@ document.addEventListener("click", (e) => {
         _dshRender();
     }
 }, true);
-let _dshTimer = 0, _dshPrimeira = true, _dshUltChave = "";
+let _dshTimer = 0, _dshPrimeira = !document.documentElement.hasAttribute("data-recarga"), _dshUltChave = "";
 const _dshRender = () => {
     const el = document.getElementById("dash");
     if (!el || !_dshVisivel()) return;
@@ -7280,8 +7296,74 @@ const fixHead=()=>{
     // Expõe a função para ser chamada logo abaixo, após o DOM estar pronto.
     window.__nc_iniciarResize = iniciar;
 })();
+// ── RECARREGAMENTO SEM PISCAR (v3.19.0) ─────────────────────────────────────
+// Antes de recarregar sozinha (venda nova), a página guarda rolagem e filtros; a nova
+// os aplica antes do 1º desenho (filtros) e logo depois (rolagem, quando a lista já
+// tem altura). Chamado pelo script do servidor (window.__antesRecarga).
+window.__antesRecarga = () => {
+    try {
+        const tb = document.querySelector("table");
+        sessionStorage.setItem("__recarga_auto__", JSON.stringify({
+            ts: Date.now(), url: location.pathname + location.search,
+            y: Math.round(window.scrollY || 0), tabela: tb ? Math.round(tb.scrollTop || 0) : 0,
+            // posição DENTRO da lista (o topo pode mudar de altura na tela nova)
+            lista: (() => { const tw = document.querySelector(".tableWrap"); return tw ? Math.round(-tw.getBoundingClientRect().top) : null; })(),
+            conteudo: (() => { const c = document.querySelector(".content"); return c ? Math.round(c.scrollTop || 0) : 0; })(),
+            q: String((qs("#q") || {}).value || ""), tipo: tipoBusca, vend: vendAtual
+        }));
+    } catch (e) {}
+};
+const _recInfo = window.__recargaInfo || null;
+if (_recInfo) {
+    try {
+        const rq = String(_recInfo.q || "").slice(0, 500);
+        if (rq && qs("#q")) { qs("#q").value = rq; qAtual = rq.trim(); qInc = parseBusca(qAtual).inc; }
+        const rt = String(_recInfo.tipo || "todos");
+        const rb = document.querySelector('input[name="tipoBusca"][value="' + rt.replace(/[^a-z0-9-]/gi, "") + '"]');
+        if (rb && rt !== "todos") { rb.checked = true; tipoBusca = rt; }
+        const rv = String(_recInfo.vend || "");
+        if (rv && DADOS.vendas.some(x => x && x.vendedor === rv)) vendAtual = rv;
+        _invalidarCtxCache(); calcSomaSel();
+    } catch (e) {}
+}
 renderTudo();
 fixHead();
+if (_recInfo) {
+    try { _atualizarXLimpar(); } catch (e) {}
+    // A lista é desenhada em fatias e o topo ainda se ajusta (letra/linhas): reaplica a
+    // posição a cada quadro por 1,5 s — relativa ao início da lista, não absoluta. Se a
+    // pessoa tocar/rolar nesse meio-tempo, para na hora (nunca briga com o dedo).
+    const t0 = Date.now();
+    let mexeu = false;
+    const parar = () => { mexeu = true; };
+    ["touchstart", "wheel", "pointerdown", "keydown"].forEach(ev => window.addEventListener(ev, parar, { passive: true, once: true, capture: true }));
+    const rolar = () => {
+        if (mexeu) return;
+        try {
+            const tb = document.querySelector("table"), ct = document.querySelector(".content"), tw = document.querySelector(".tableWrap");
+            if (typeof _recInfo.lista === "number" && _recInfo.lista > 0 && tw) {
+                const alvo = Math.round(tw.getBoundingClientRect().top + window.scrollY + _recInfo.lista);
+                if (Math.abs(window.scrollY - alvo) > 1) window.scrollTo(0, alvo);
+            } else if (_recInfo.y > 0 && Math.abs(window.scrollY - _recInfo.y) > 1) window.scrollTo(0, _recInfo.y);
+            if (tb && _recInfo.tabela > 0 && Math.abs(tb.scrollTop - _recInfo.tabela) > 1) tb.scrollTop = _recInfo.tabela;
+            if (ct && _recInfo.conteudo > 0 && Math.abs(ct.scrollTop - _recInfo.conteudo) > 1) ct.scrollTop = _recInfo.conteudo;
+        } catch (e) { return; }
+        if (Date.now() - t0 < 1500) requestAnimationFrame(rolar);
+    };
+    requestAnimationFrame(rolar);
+    // Tirar o atributo faria o navegador disparar AGORA as animações de entrada de tudo
+    // que já está na tela (piscaria aos 1,5 s). Então os elementos atuais ficam com
+    // animação desligada no próprio elemento; os que surgirem depois (lista refeita ao
+    // filtrar, painel) animam normal. Janelas e menu ficam de fora (abrem com animação).
+    setTimeout(() => {
+        try {
+            // (durante o atributo toda animação lê "none", então não dá para escolher pelo
+            // estilo calculado: vale para tudo dentro da página; janelas/menu/avisos ficam fora de .app)
+            document.querySelectorAll(".app, .app *").forEach(el => { el.style.animation = "none"; });
+        } catch (e) {}
+        document.documentElement.removeAttribute("data-recarga");
+    }, 1500);
+}
 // div.top agora existe (criado por renderTudo).
 // Chama iniciar() de forma síncrona: observador registrado +
 // executarVerificacao() disparada imediatamente com layout já computado.

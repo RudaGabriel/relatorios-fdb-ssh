@@ -2,23 +2,22 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.16.0
+ * @version 2.17.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.16.0 - 2026-10-22 16:00 - Controle remoto pelo api.ps1.
- *     - /api/temas e /api/navigate/tema/ID: troca o tema das telas abertas (SSE "tema";
- *       a página aplica e salva, como a escolha no menu). Lista lida do próprio gerador.
- *     - /api/navigate/aviso (POST {msg, segundos}): aviso em destaque em todas as telas.
- *     - /api/navigate/recarregar: recarrega todas as telas abertas.
- *     - /api/info: versões, máquina, banco, memória, tempo ligado e abas conectadas.
- *     - /api/log?linhas=N&filtro=texto: últimas linhas do relatorio.log (só rede local).
- *     - /api/programas e /api/programas/abrir (POST {nome}): abre na máquina do servidor
- *       um programa da lista "programas" do config.json LOCAL (+ "Pasta do sistema" e
- *       "Log do servidor"). Pela rede só se escolhe um nome — nunca caminho ou comando
- *       livre — e a lista não pode ser alterada pela API. Só rede local.
+ *   2.17.0 - 2026-10-23 16:30 - Dispositivos conectados no log; recarga sem piscar.
+ *     - Log [CONEXAO]: cada celular/computador da rede que abre o relatório — tipo, modelo,
+ *       sistema e navegador, IP e o NOME do aparelho (perguntado a ele pela rede: Bonjour/mDNS
+ *       no iPhone/Mac/Android, NetBIOS no Windows, DNS do roteador como reserva); cada rota
+ *       acessada com resultado e tempo; telas abertas/fechadas; resumo das chamadas
+ *       automáticas a cada 10 min; saída do aparelho com tempo conectado. A própria máquina
+ *       do servidor fica de fora.
+ *     - /api/dispositivos: aparelhos com o relatório aberto agora (só rede local).
+ *     - Recarregamento automático chama window.__antesRecarga (gerador 3.19.0+): a tela
+ *       volta no mesmo ponto e com os mesmos filtros, sem piscar.
  */
 
 
@@ -26,7 +25,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.16.0";
+const SERVER_VERSION = "2.17.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2162,6 +2161,11 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "reiniciando?'O relatório volta sozinho em alguns segundos.':" +
             "'Os dados desta tela pararam de ser atualizados. A página recarrega sozinha quando o servidor for iniciado de novo.'," +
             "reiniciando?'#b45309':'#b91c1c');};" +
+            // Recarregamento automático (v2.17.0): antes, a página guarda rolagem e
+            // filtros (window.__antesRecarga, do gerador 3.19.0+) — a nova volta ao mesmo
+            // ponto, sem animações de entrada (não "pisca"). Sem a função, recarrega igual.
+            "var _recarregar=function(){try{if(typeof window.__antesRecarga==='function')window.__antesRecarga();}catch(_){}" +
+            "window.location.replace(window.location.href);};" +
             // SSE (primário)
             "var _es=null,_connTry=0;" +
             "var _conn=function(){" +
@@ -2169,7 +2173,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "_es=new EventSource('/api/events');" +
             "_es.onmessage=function(ev){" +
             "try{var d=JSON.parse(ev.data);" +
-            "if(d.type==='reload')window.location.replace(window.location.href);" +
+            "if(d.type==='reload')_recarregar();" +
             // navigate leva a URL de destino (selecionar-fdb, periodo...). Antes
             // era tratado igual a reload e a aba ficava na mesma página. Só
             // aceita caminho relativo ao próprio servidor ("/..." e não "//").
@@ -2228,7 +2232,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "_pollErros=0;_srvErroDesde=0;" +
             // Servidor voltou depois de ter caído/encerrado: recarrega para
             // mostrar os dados atuais (e tirar o aviso).
-            "if(_srvFora){window.location.replace(window.location.href);return;}" +
+            "if(_srvFora){_recarregar();return;}" +
             "if(d.correcoes&&d.correcoes.length){" +
             "var _deveReload=false;" +
             "d.correcoes.forEach(function(c){" +
@@ -2254,7 +2258,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "}catch(_){}" +
             "if(c.reload)_deveReload=true;" +
             "});" +
-            "if(_deveReload){setTimeout(function(){window.location.replace(window.location.href);},800);}}" +
+            "if(_deveReload){setTimeout(_recarregar,800);}}" +
             "if(d.qt>=0&&(" +
             // Mecanismo 1 (primário): changeTs > _loadTs — detecta mudanças ocorridas
             // APÓS esta página ter sido carregada, mesmo que _q===d.qt (HTML já atualizado).
@@ -2263,7 +2267,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "d.qt!==_q||Math.abs(d.total-_t)>0.01)){" +
             "console.log('[srv] reload: changeTs='+d.changeTs+' loadTs='+_loadTs+' qt='+d.qt+'/'+_q);" +
             "_q=d.qt;_t=d.total;_loadTs=Date.now();" + // atualiza para evitar loops
-            "window.location.replace(window.location.href);}}" +
+            "_recarregar();}}" +
             ")" +
             ".catch(function(err){_pollErros++;" +
             "if(_pollErros<=3)console.log('[srv] poll erro #'+_pollErros+': '+err);" +
@@ -4154,6 +4158,344 @@ var _requisicaoDaRedeLocal = function(req) {
     return local || !_maquinaIP || BIND_ADDR !== "0.0.0.0";
 };
 
+// ── DISPOSITIVOS CONECTADOS (v2.17.0) ──────────────────────────────────────
+// Registra no log (categoria CONEXAO) cada celular/computador da rede que abre o
+// relatório: tipo, modelo, sistema e navegador (do User-Agent), IP e o NOME do
+// aparelho. O navegador nunca envia o nome de "Ajustes → Geral → Sobre"; ele é
+// perguntado ao próprio aparelho pela rede, em paralelo e sem travar nada:
+//   1. Bonjour/mDNS (iPhone, iPad, Mac e muitos Android): o nome local que o
+//      aparelho anuncia na rede — no iPhone, derivado do nome em "Sobre"
+//      (ex.: "iPhone de Ruda" → "iPhone-de-Ruda").
+//   2. NetBIOS (computadores Windows): o nome do computador.
+//   3. DNS reverso do roteador (o nome que o aparelho informou ao pegar o IP).
+// Também registra cada rota acessada (página e /api) com resultado e tempo, as
+// telas abertas/fechadas (tempo real/SSE), um resumo periódico das chamadas
+// automáticas (status, pronto…) e a saída do aparelho. A própria máquina do
+// servidor fica de fora (é o funcionamento interno normal).
+// Não envolve o banco — nada aqui lê ou grava no Firebird.
+var dns   = require("dns");
+var dgram = require("dgram");
+var _DISP_INATIVO_MS  = 3 * 60 * 1000;   // sem requisições e sem tela aberta → saiu
+var _DISP_RESUMO_MS   = 10 * 60 * 1000;  // resumo das chamadas automáticas
+var _DISP_NOME_TTL_MS = 10 * 60 * 1000;  // cache do nome por IP
+var _DISP_NOME_ESPERA = 1600;            // tempo máximo procurando o nome
+var _DISP_MAX         = 200;             // teto de aparelhos acompanhados
+var _DISP_RECARGA_MS  = 8000;            // tela fecha e reabre dentro disto = recarregamento
+var _ROTAS_BATIMENTO  = ["/api/status","/api/pronto","/api/events","/api/db-status","/api/hora-usuario","/pronto"];
+var _dispositivos = {};   // ip → registro
+var _dispNomes    = {};   // ip → { nome, fonte, ts } | { pend: [callbacks] }
+// Só para os testes automáticos: inclui a própria máquina (127.0.0.1).
+var _DISP_INCLUIR_LOCAL = process.env.RELATORIO_DISP_LOCAL === "1";
+
+var _dispEhEstaMaquina = function(ip) {
+    if (_DISP_INCLUIR_LOCAL) return false;
+    return /^127\./.test(ip) || ip === "::1" || ip === "local" || !!(_maquinaIP && ip === _maquinaIP);
+};
+
+// User-Agent → tipo, modelo, sistema e navegador (só para exibição).
+var _dispDescrever = function(uaBruto) {
+    var ua = String(uaBruto || "");
+    var tipo = "Computador", modelo = "", so = "", nav = "";
+    var m;
+    if (/iPhone/.test(ua))      { tipo = "Celular"; modelo = "iPhone"; }
+    else if (/iPad/.test(ua))   { tipo = "Tablet";  modelo = "iPad"; }
+    else if (/Android/.test(ua)) {
+        tipo = /Mobile/.test(ua) ? "Celular" : "Tablet";
+        m = ua.match(/Android[^;)]*;\s*(?:[a-z]{2}[-_][A-Za-z]{2};\s*)?([^;)]+?)(?:\s+Build\/|\))/);
+        if (m && m[1] && !/^(K|wv|Linux|U)$/.test(m[1].trim())) modelo = m[1].trim();
+    }
+    if ((m = ua.match(/(?:iPhone|CPU) OS (\d+)[_.](\d+)/))) so = "iOS " + m[1] + "." + m[2];
+    else if ((m = ua.match(/Android (\d+(?:\.\d+)?)/))) so = "Android " + m[1];
+    else if (/Windows NT 10/.test(ua)) so = "Windows 10/11";
+    else if ((m = ua.match(/Windows NT (\d+\.\d+)/))) so = "Windows NT " + m[1];
+    else if (/Mac OS X/.test(ua)) so = "macOS";   // iPad com iPadOS 13+ também se apresenta assim
+    else if (/CrOS/.test(ua)) so = "ChromeOS";
+    else if (/Linux/.test(ua)) so = "Linux";
+    if ((m = ua.match(/Edg(?:A|iOS)?\/(\d+)/)))            nav = "Edge " + m[1];
+    else if ((m = ua.match(/OPR\/(\d+)/)))                 nav = "Opera " + m[1];
+    else if ((m = ua.match(/SamsungBrowser\/(\d+)/)))      nav = "Samsung Internet " + m[1];
+    else if ((m = ua.match(/CriOS\/(\d+)/)))               nav = "Chrome " + m[1];
+    else if ((m = ua.match(/FxiOS\/(\d+)/)))               nav = "Firefox " + m[1];
+    else if ((m = ua.match(/Firefox\/(\d+)/)))             nav = "Firefox " + m[1];
+    else if ((m = ua.match(/Chrome\/(\d+)/)))              nav = "Chrome " + m[1];
+    else if (/Safari\//.test(ua) && (m = ua.match(/Version\/(\d+(?:\.\d+)?)/))) nav = "Safari " + m[1];
+    else if (/PowerShell/i.test(ua))                       nav = "PowerShell (api.ps1)";
+    else if (ua)                                           nav = ua.split(/[\s(]/)[0].slice(0, 30);
+    var partes = [so, nav].filter(Boolean).join(", ");
+    return { tipo: tipo, modelo: modelo, so: so, navegador: nav,
+             texto: tipo + (modelo ? " " + modelo : "") + (partes ? " (" + partes + ")" : "") };
+};
+
+var _dispLimparNome = function(n) {
+    var s = String(n || "").trim().replace(/\.$/, "");
+    if (!s || /^\d+\.\d+\.\d+\.\d+$/.test(s) || /in-addr\.arpa$/i.test(s)) return "";
+    s = s.split(".")[0];                       // "iPhone-de-Ruda.local" → "iPhone-de-Ruda"
+    s = s.replace(/[^\w\-À-ÿ ]/g, "").slice(0, 60);
+    return /^(localhost|_gateway|gateway|router)$/i.test(s) ? "" : s;
+};
+
+// DNS: lê um nome (com ponteiros de compressão) a partir de off. Nunca lança.
+var _dnsLerNome = function(buf, off) {
+    var rotulos = [], saltos = 0, pos = off, fim = -1;
+    while (pos < buf.length && saltos < 20) {
+        var len = buf[pos];
+        if (len === 0) { if (fim < 0) fim = pos + 1; break; }
+        if ((len & 0xC0) === 0xC0) {
+            if (pos + 1 >= buf.length) break;
+            if (fim < 0) fim = pos + 2;
+            pos = ((len & 0x3F) << 8) | buf[pos + 1]; saltos++; continue;
+        }
+        if (pos + 1 + len > buf.length) break;
+        rotulos.push(buf.toString("utf8", pos + 1, pos + 1 + len));
+        pos += 1 + len;
+    }
+    return { nome: rotulos.join("."), fim: fim < 0 ? buf.length : fim };
+};
+// mDNS: pergunta "quem é este IP?" (PTR em x.x.x.x.in-addr.arpa) ao grupo 224.0.0.251.
+// Porta de origem aleatória ⇒ o aparelho responde direto para nós (unicast).
+var _dispNomeMdns = function(ip, cb) {
+    var feito = false, sock = null, tm = null;
+    var acabar = function(nome) {
+        if (feito) return; feito = true;
+        clearTimeout(tm); try { if (sock) sock.close(); } catch (_) {}
+        cb(nome || "");
+    };
+    try {
+        if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return acabar("");
+        var alvo = ip.split(".").reverse().join(".") + ".in-addr.arpa";
+        var partes = [Buffer.from([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])];
+        alvo.split(".").forEach(function(l) { partes.push(Buffer.from([l.length])); partes.push(Buffer.from(l, "ascii")); });
+        partes.push(Buffer.from([0, 0, 12, 0x80, 1]));   // fim do nome, tipo PTR, classe IN + "resposta direta"
+        var pacote = Buffer.concat(partes);
+        sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
+        sock.on("error", function() { acabar(""); });
+        sock.on("message", function(msg) {
+            try {
+                if (msg.length < 12) return;
+                var qd = msg.readUInt16BE(4), an = msg.readUInt16BE(6) + msg.readUInt16BE(8) + msg.readUInt16BE(10);
+                var off = 12;
+                for (var q = 0; q < qd; q++) off = _dnsLerNome(msg, off).fim + 4;
+                for (var a = 0; a < an && off + 10 <= msg.length; a++) {
+                    var dono = _dnsLerNome(msg, off); off = dono.fim;
+                    if (off + 10 > msg.length) break;
+                    var tipo = msg.readUInt16BE(off), rdlen = msg.readUInt16BE(off + 8);
+                    var ini = off + 10; off = ini + rdlen;
+                    if (tipo === 12 && dono.nome.toLowerCase() === alvo.toLowerCase()) {
+                        var n = _dispLimparNome(_dnsLerNome(msg, ini).nome);
+                        if (n) return acabar(n);
+                    }
+                }
+            } catch (_) {}
+        });
+        sock.bind(0, function() {
+            try { sock.setMulticastTTL(1); } catch (_) {}
+            sock.send(pacote, 5353, "224.0.0.251", function(err) { if (err) acabar(""); });
+            // Alguns aparelhos só respondem a perguntas diretas: manda também para o IP dele.
+            sock.send(pacote, 5353, ip, function() {});
+        });
+        tm = setTimeout(function() { acabar(""); }, _DISP_NOME_ESPERA - 100);
+    } catch (_) { acabar(""); }
+};
+// NetBIOS (UDP 137): nome do computador Windows.
+var _dispNomeNetbios = function(ip, cb) {
+    var feito = false, sock = null, tm = null;
+    var acabar = function(nome) {
+        if (feito) return; feito = true;
+        clearTimeout(tm); try { if (sock) sock.close(); } catch (_) {}
+        cb(nome || "");
+    };
+    try {
+        if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return acabar("");
+        var nomeCod = [0x20], bruto = Buffer.alloc(16, 0); bruto[0] = 0x2A; // "*"
+        for (var i = 0; i < 16; i++) { nomeCod.push(0x41 + (bruto[i] >> 4)); nomeCod.push(0x41 + (bruto[i] & 0x0F)); }
+        nomeCod.push(0);
+        var pacote = Buffer.concat([Buffer.from([0x52, 0x47, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]), Buffer.from(nomeCod), Buffer.from([0, 0x21, 0, 1])]);
+        sock = dgram.createSocket("udp4");
+        sock.on("error", function() { acabar(""); });
+        sock.on("message", function(msg) {
+            try {
+                var off = _dnsLerNome(msg, 12).fim + 10;      // nome + tipo/classe/ttl/tamanho
+                var qtd = msg[off]; off += 1;
+                for (var k = 0; k < qtd && off + 18 <= msg.length; k++, off += 18) {
+                    var nome = msg.toString("latin1", off, off + 15).trim();
+                    var suf = msg[off + 15], grupo = (msg.readUInt16BE(off + 16) & 0x8000) !== 0;
+                    if (suf === 0x00 && !grupo && nome) return acabar(_dispLimparNome(nome));
+                }
+                acabar("");
+            } catch (_) { acabar(""); }
+        });
+        sock.send(pacote, 137, ip, function(err) { if (err) acabar(""); });
+        tm = setTimeout(function() { acabar(""); }, _DISP_NOME_ESPERA - 100);
+    } catch (_) { acabar(""); }
+};
+// Nome do aparelho: as três buscas em paralelo; vale a primeira na ordem de
+// preferência (Bonjour > NetBIOS > DNS do roteador). Cache por IP.
+var _dispNome = function(ip, cb) {
+    var c = _dispNomes[ip];
+    if (c && c.pend) { c.pend.push(cb); return; }
+    if (c && Date.now() - c.ts < _DISP_NOME_TTL_MS) { cb(c.nome, c.fonte); return; }
+    var reg = _dispNomes[ip] = { pend: [cb] };
+    var res = { mdns: null, netbios: null, dns: null }, entregue = false;
+    var decidir = function(forcar) {
+        if (entregue) return;
+        var pronto = res.mdns !== null && res.netbios !== null && res.dns !== null;
+        if (!pronto && !forcar && !res.mdns) return;   // Bonjour respondeu: já basta
+        entregue = true; clearTimeout(tmGeral);
+        var nome = res.mdns || res.netbios || res.dns || "";
+        var fonte = res.mdns ? "Bonjour" : res.netbios ? "NetBIOS" : res.dns ? "DNS do roteador" : "";
+        _dispNomes[ip] = { nome: nome, fonte: fonte, ts: Date.now() };
+        reg.pend.forEach(function(f) { try { f(nome, fonte); } catch (_) {} });
+    };
+    var tmGeral = setTimeout(function() { decidir(true); }, _DISP_NOME_ESPERA);
+    _dispNomeMdns(ip, function(n) { res.mdns = n; decidir(false); });
+    _dispNomeNetbios(ip, function(n) { res.netbios = n; decidir(false); });
+    try { dns.reverse(ip, function(err, nomes) { res.dns = (!err && nomes && nomes.length) ? _dispLimparNome(nomes[0]) : ""; decidir(false); }); }
+    catch (_) { res.dns = ""; decidir(false); }
+};
+
+var _dispRotulo = function(d) { return (d.nome ? d.nome + " (" + d.ip + ")" : d.ip); };
+var _dispHora = function(ts) { var x = new Date(ts); return padDois(x.getHours()) + ":" + padDois(x.getMinutes()) + ":" + padDois(x.getSeconds()); };
+var _dispDuracao = function(ms) {
+    var min = Math.round(ms / 60000);
+    return min < 1 ? "menos de 1 min" : min < 60 ? min + " min" : Math.floor(min / 60) + " h " + (min % 60) + " min";
+};
+// msg pode ser uma função: montada só na hora de gravar — as linhas que esperam o
+// nome do aparelho (até ~1,6 s) saem já com o nome, logo depois de "Novo dispositivo".
+var _dispLog = function(d, msg, cat) {
+    var texto = function() { return typeof msg === "function" ? msg() : msg; };
+    if (d.anunciado) logTs(texto(), cat || "CONEXAO");
+    else d.pend.push([texto, cat || "CONEXAO"]);
+};
+
+// Chamado no início de toda requisição (depois do favicon).
+var _dispRegistrar = function(req, res, rota, parsed) {
+    try {
+        var ip = _ipDaRequisicao(req);
+        if (_dispEhEstaMaquina(ip)) return;
+        var agora = Date.now(), ua = String(req.headers["user-agent"] || "");
+        var d = _dispositivos[ip];
+        if (!d) {
+            var ips = Object.keys(_dispositivos);
+            if (ips.length >= _DISP_MAX) {               // nunca cresce sem limite
+                ips.sort(function(a, b) { return _dispositivos[a].ultimo - _dispositivos[b].ultimo; });
+                delete _dispositivos[ips[0]];
+            }
+            d = _dispositivos[ip] = { ip: ip, ua: ua, desc: _dispDescrever(ua), nome: "", nomeFonte: "",
+                primeiro: agora, ultimo: agora, ultimoResumo: agora, total: 0, rotas: {}, batimento: {},
+                telas: 0, recargas: 0, fechouEm: 0, tmFechou: null, anunciado: false, pend: [] };
+            var cliente = String(req.headers["x-cliente"] || "").trim().slice(0, 40);
+            var anunciar = function(nome, fonte) {
+                if (d.anunciado) return;
+                if (cliente) { d.nome = cliente; d.nomeFonte = "api.ps1"; }
+                else { d.nome = nome || ""; d.nomeFonte = fonte || ""; }
+                d.anunciado = true;
+                logTs("Novo dispositivo conectado: " + d.desc.texto + " | IP " + ip + " | nome: " +
+                      (d.nome ? d.nome + " (" + d.nomeFonte + ")" : "não informado pelo aparelho") +
+                      (d.ua ? " | navegador: " + d.ua.slice(0, 180) : ""), "CONEXAO");
+                var p = d.pend; d.pend = [];
+                p.forEach(function(l) { try { logTs(l[0](), l[1]); } catch (_) {} });
+            };
+            if (cliente) anunciar("", "");
+            else _dispNome(ip, anunciar);
+        } else if (ua && ua !== d.ua) {
+            d.ua = ua; d.desc = _dispDescrever(ua);
+        }
+        d.ultimo = agora; d.total++;
+        if (_ROTAS_BATIMENTO.indexOf(rota) !== -1) {
+            d.batimento[rota] = (d.batimento[rota] || 0) + 1;
+            return;
+        }
+        d.rotas[rota] = (d.rotas[rota] || 0) + 1;
+        // Recarregamento automático da tela (venda nova → a página recarrega): a página
+        // pedida logo depois de a tela fechar não vira uma linha — conta no resumo.
+        if (req.method === "GET" && rota.indexOf("/api/") !== 0 && d.fechouEm && agora - d.fechouEm < _DISP_RECARGA_MS) return;
+        var t0 = agora, metodo = req.method;
+        var qs = parsed && parsed.search ? parsed.search : "";
+        if (qs.length > 120) qs = qs.slice(0, 117) + "...";
+        res.on("finish", function() {
+            try {
+                var fim = " → " + res.statusCode + " (" + (Date.now() - t0) + " ms)";
+                _dispLog(d, function() {
+                    return (rota.indexOf("/api/") === 0 ? "API: " : "Acesso: ") + metodo + " " + rota + qs + " ← " + _dispRotulo(d) + fim;
+                }, rota.indexOf("/api/") === 0 ? "API" : "CONEXAO");
+            } catch (_) {}
+        });
+    } catch (_) { /* registro é informativo — nunca atrapalha a requisição */ }
+};
+// Telas em tempo real (SSE): abertura e fechamento.
+// Fechar e reabrir em até 8 s é a tela recarregando (atualização automática a cada
+// venda): não gera "fechada"/"aberta" — só soma em "recarregamentos" no resumo.
+var _dispTela = function(req, delta) {
+    try {
+        var ip = _ipDaRequisicao(req);
+        var d = _dispositivos[ip]; if (!d) return;
+        var agora = Date.now();
+        d.telas = Math.max(0, d.telas + delta); d.ultimo = agora;
+        if (delta > 0 && d.fechouEm && agora - d.fechouEm < _DISP_RECARGA_MS) {
+            clearTimeout(d.tmFechou); d.tmFechou = null; d.fechouEm = 0; d.recargas++;
+            return;
+        }
+        var agoraTelas = d.telas;
+        var linha = function() {
+            return (delta > 0 ? "Tela aberta (tempo real) em " : "Tela fechada em ") + _dispRotulo(d) + " — telas abertas agora: " + agoraTelas;
+        };
+        if (delta > 0) { _dispLog(d, linha); return; }
+        clearTimeout(d.tmFechou);
+        d.fechouEm = agora;
+        d.tmFechou = setTimeout(function() {
+            try {
+                d.tmFechou = null; d.fechouEm = 0;
+                if (_dispositivos[ip] === d) _dispLog(d, linha);   // não reabriu: fechou mesmo
+            } catch (_) {}
+        }, _DISP_RECARGA_MS);
+        if (d.tmFechou && d.tmFechou.unref) d.tmFechou.unref();
+    } catch (_) {}
+};
+var _dispResumoBatimento = function(d) {
+    var ks = Object.keys(d.batimento);
+    var s = ks.map(function(k) { return k + " ×" + d.batimento[k]; }).join(", ");
+    if (d.recargas) s += (s ? ", " : "") + "recarregamentos automáticos da tela ×" + d.recargas;
+    d.batimento = {}; d.recargas = 0;
+    return s;
+};
+// Varredura: resumo periódico das chamadas automáticas e saída dos aparelhos.
+var _dispVarrer = function() {
+    try {
+        var agora = Date.now();
+        Object.keys(_dispositivos).forEach(function(ip) {
+            var d = _dispositivos[ip];
+            if (!d.anunciado) return;
+            if (d.telas <= 0 && !d.tmFechou && agora - d.ultimo > _DISP_INATIVO_MS) {
+                var rotas = Object.keys(d.rotas).map(function(k) { return k + " ×" + d.rotas[k]; }).join(", ");
+                var bat = _dispResumoBatimento(d);
+                logTs("Dispositivo saiu: " + _dispRotulo(d) + " — " + d.desc.texto + " | conectado das " + _dispHora(d.primeiro) +
+                      " às " + _dispHora(d.ultimo) + " (" + _dispDuracao(d.ultimo - d.primeiro) + "), " + d.total + " requisição(ões)" +
+                      (rotas ? " | rotas: " + rotas : "") + (bat ? " | automáticas: " + bat : ""), "CONEXAO");
+                delete _dispositivos[ip];
+                return;
+            }
+            if (agora - d.ultimoResumo >= _DISP_RESUMO_MS) {
+                var b = _dispResumoBatimento(d);
+                d.ultimoResumo = agora;
+                if (b) logTs("Atividade de " + _dispRotulo(d) + " nos últimos " + Math.round(_DISP_RESUMO_MS / 60000) +
+                             " min — telas abertas: " + d.telas + " | chamadas automáticas: " + b, "CONEXAO");
+            }
+        });
+    } catch (_) {}
+};
+setInterval(_dispVarrer, 30 * 1000).unref();
+// Lista para /api/dispositivos e o api.ps1.
+var _dispListar = function() {
+    var agora = Date.now();
+    return Object.keys(_dispositivos).map(function(ip) {
+        var d = _dispositivos[ip];
+        return { ip: ip, nome: d.nome || "", nomeFonte: d.nomeFonte || "", tipo: d.desc.tipo, modelo: d.desc.modelo,
+                 sistema: d.desc.so, navegador: d.desc.navegador, telasAbertas: d.telas,
+                 conectadoDesde: _dispHora(d.primeiro), ultimaAtividade: _dispHora(d.ultimo),
+                 segundosSemAtividade: Math.round((agora - d.ultimo) / 1000), requisicoes: d.total, rotas: d.rotas };
+    }).sort(function(a, b) { return a.segundosSemAtividade - b.segundosSemAtividade; });
+};
+
 
 // ── CONTROLE REMOTO (v2.16.0): temas e programas ───────────────────────────
 // Temas: lidos do TEMAS_RELATORIO do gerador (fonte única — o servidor nunca
@@ -4261,41 +4603,13 @@ var server=http.createServer(function(req,res){
     catch(_){res.writeHead(400);res.end("URL invalida.");return;}
     var rota=parsed.pathname||"/";
 
-    // LOG DE API (v2.8.0): registra toda chamada a /api/* com origem, para
-    // saber DE QUAL máquina veio cada comando — pedido do usuário e essencial
-    // quando algo é alterado remotamente (proibidos, config, restart) e é
-    // preciso descobrir quem fez.
-    // Fica de fora: /api/status, /api/pronto e /api/events, que são o
-    // batimento normal do relatório (várias chamadas por segundo, por aba) e
-    // afogariam o log — o mesmo erro que a sondagem do fast-poll cometeu.
-    // O nome do computador vem do cabeçalho X-Cliente que o api.ps1 envia;
-    // navegador não envia, então nesses casos registra só o IP.
-    // Rotas de POLLING não entram no log: são chamadas em intervalo fixo pelo
-    // relatório e pelo tray (db-status a cada 10s, hora-usuario a cada 30s,
-    // status/pronto/events várias vezes por segundo). Registrá-las enche o
-    // arquivo de linhas idênticas e empurra o que importa para fora pela
-    // rotação — foi o que aconteceu no log real do usuário.
-    var _ROTAS_SEM_LOG = ["/api/status","/api/pronto","/api/events","/api/db-status","/api/hora-usuario"];
-    if (rota.indexOf("/api/") === 0 && _ROTAS_SEM_LOG.indexOf(rota) === -1) {
-        var _ipOrigem = ((req.socket && req.socket.remoteAddress) || "?").replace(/^::ffff:/, "");
-        // Só registra chamadas vindas de OUTRO computador (v2.8.2). Requisição da
-        // própria máquina é o funcionamento interno normal — o relatório aberto
-        // aqui, o tray, o api.ps1 local — e enchia o log de linhas sem
-        // informação. O valor do registro está em saber quando outra máquina da
-        // rede age sobre este servidor: aí sim importa o que foi feito, quando e
-        // por quem.
-        // "Própria máquina" = loopback (127.x / ::1) ou o IP de rede deste
-        // servidor (_maquinaIP): o SO entrega tráfego auto-endereçado das duas
-        // formas, dependendo de como o cliente montou a URL — o api.ps1, por
-        // exemplo, usa o IP de rede mesmo rodando localmente.
-        var _ehLoopback   = /^127\./.test(_ipOrigem) || _ipOrigem === "::1";
-        var _ehEstaMaquina = _ehLoopback || (_maquinaIP && _ipOrigem === _maquinaIP);
-        if (!_ehEstaMaquina) {
-            var _cliente = String(req.headers["x-cliente"] || "").trim().slice(0, 40);
-            logTs("API: " + req.method + " " + rota + " de " + _ipOrigem +
-                  (_cliente ? " (" + _cliente + ")" : ""));
-        }
-    }
+    // LOG DE CONEXÕES (v2.17.0 — antes só /api/*, sem nome): cada aparelho da rede
+    // (celular, outro computador, api.ps1) aparece no log com tipo, modelo, IP e o
+    // nome do aparelho, e cada rota que ele acessa com resultado e tempo. As rotas de
+    // batimento (status/pronto/events/db-status/hora-usuario, várias por segundo) não
+    // geram uma linha cada: entram num resumo a cada 10 min. A própria máquina do
+    // servidor fica de fora. Ver _dispRegistrar.
+    _dispRegistrar(req, res, rota, parsed);
 
     var sendJson = function(obj, code) {
         res.writeHead(code||200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
@@ -5070,6 +5384,7 @@ var server=http.createServer(function(req,res){
 
         var clientObj = {res:res, id:clientId, hb:null};
         sseClients.push(clientObj);
+        _dispTela(req, +1);
 
         // PRECISÃO FIX (v2.6.6): o heartbeat detectava o socket morto e limpava
         // o próprio timer, mas NÃO removia o cliente de sseClients — dependia de
@@ -5079,9 +5394,11 @@ var server=http.createServer(function(req,res){
         // congelada), a entrada ficava na lista indefinidamente: contagem errada
         // em /api/sse-clients e a referência ao res segurada na memória para
         // sempre. Agora o próprio heartbeat também se desregistra.
+        var _sseEncerrado = false;
         var _encerrarSse = function(){
             clearInterval(clientObj.hb);
             sseClients = sseClients.filter(function(c){return c.id!==clientId;});
+            if (!_sseEncerrado) { _sseEncerrado = true; _dispTela(req, -1); }  // close + error: conta 1 vez
         };
 
         var hb = setInterval(function(){
@@ -5207,6 +5524,13 @@ var server=http.createServer(function(req,res){
         return;
     }
     // /api/log?linhas=N — últimas linhas do relatorio.log (máx. 1000). Só da rede local.
+    // /api/dispositivos — aparelhos da rede com o relatório aberto agora (v2.17.0). Só rede local.
+    if(rota==="/api/dispositivos" && req.method==="GET"){
+        if (!_requisicaoDaRedeLocal(req)) { sendJson({ok:false, erro:"Disponível apenas a partir da rede local."}, 403); return; }
+        var _lista = _dispListar();
+        sendJson({ok:true, total:_lista.length, dispositivos:_lista});
+        return;
+    }
     if(rota==="/api/log" && req.method==="GET"){
         if (!_requisicaoDaRedeLocal(req)) { sendJson({ok:false, erro:"Disponível apenas a partir da rede local."}, 403); return; }
         var nLog = parseInt(parsed.searchParams.get("linhas"), 10);

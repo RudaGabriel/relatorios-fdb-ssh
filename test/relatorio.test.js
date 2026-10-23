@@ -59,12 +59,12 @@ function gerar(dir) {
     return fs.readFileSync(saida, "utf8");
 }
 
-async function iniciarServidor(dir) {
+async function iniciarServidor(dir, envExtra) {
     const porta = await portaLivre();
     const cfg = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8"));
     cfg.porta = porta;
     fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(cfg, null, 2));
-    const proc = spawn(process.execPath, ["servidor-relatorio.js", "--no-browser"], { cwd: dir, env: ambiente(dir), stdio: "ignore" });
+    const proc = spawn(process.execPath, ["servidor-relatorio.js", "--no-browser"], { cwd: dir, env: Object.assign(ambiente(dir), envExtra || {}), stdio: "ignore" });
     const base = "http://127.0.0.1:" + porta;
     for (let i = 0; i < 50; i++) { try { await fetch(base + "/api/db-status"); break; } catch (_) { await esperar(200); } }
     return { proc, base, parar: () => { try { proc.kill(); } catch (_) {} } };
@@ -512,6 +512,47 @@ test("servidor: controle remoto — temas, tema e aviso nas abas, info, log e pr
         assert.ok(!cfgDisco.programas.some(p => p.nome === "X"), "/api/config não pode cadastrar programas");
         ctrl.abort(); await ler;
     } finally { try { ctrl.abort(); } catch (_) {} try { fs.unlinkSync(marca); } catch (_) {} srv.parar(); }
+});
+
+test("servidor: dispositivos conectados — log com tipo, IP e nome, rotas, telas e /api/dispositivos", { timeout: 60000 }, async () => {
+    const dir = montarPasta();
+    // RELATORIO_DISP_LOCAL=1: trata 127.0.0.1 como um aparelho da rede (só para o teste).
+    const srv = await iniciarServidor(dir, { RELATORIO_DISP_LOCAL: "1" });
+    const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+    const h = { "User-Agent": UA };
+    const ctrl = new AbortController();
+    try {
+        assert.strictEqual((await fetch(srv.base + "/api/temas", { headers: h })).status, 200);
+        for (let i = 0; i < 3; i++) await fetch(srv.base + "/api/status", { headers: h });
+        const sse = await fetch(srv.base + "/api/events", { headers: h, signal: ctrl.signal });
+        const leitor = sse.body.getReader(); const ler = (async () => { try { for (;;) { const { done } = await leitor.read(); if (done) break; } } catch (_) {} })();
+        await esperar(2200);   // nome do aparelho: até ~1,6 s procurando
+        const lst = await (await fetch(srv.base + "/api/dispositivos", { headers: h })).json();
+        assert.strictEqual(lst.ok, true);
+        const d = lst.dispositivos.find(x => x.ip === "127.0.0.1");
+        assert.ok(d, "o aparelho aparece em /api/dispositivos");
+        assert.strictEqual(d.tipo, "Celular"); assert.strictEqual(d.modelo, "iPhone");
+        assert.strictEqual(d.sistema, "iOS 17.5"); assert.strictEqual(d.navegador, "Safari 17.5");
+        assert.strictEqual(d.telasAbertas, 1);
+        assert.strictEqual(d.rotas["/api/temas"], 1, "rota contada");
+        assert.ok(!("/api/status" in d.rotas), "batimento não entra nas rotas (vai para o resumo)");
+        // Recarregamento da tela (fecha e reabre em < 8 s) não gera "fechada"/"aberta":
+        // uma 2ª tela abre e fecha logo; depois a 1ª fecha de verdade (a linha sai após 8 s).
+        const abrirTela = async (c) => { const r = await fetch(srv.base + "/api/events", { headers: h, signal: c.signal }); r.body.getReader().read().catch(() => {}); };
+        const ctrl2 = new AbortController(), ctrl3 = new AbortController();
+        await abrirTela(ctrl2); await esperar(300);             // 2ª tela: "aberta" (agora: 2)
+        ctrl2.abort(); await esperar(300);                      // fecha…
+        await abrirTela(ctrl3); await esperar(300);             // …e reabre logo: recarregamento
+        ctrl.abort(); ctrl3.abort(); await ler; await esperar(9000);
+        const log = fs.readFileSync(path.join(dir, "relatorio.log"), "utf8");
+        assert.strictEqual((log.match(/Tela aberta \(tempo real\)/g) || []).length, 2, "a reabertura rápida conta como recarregamento");
+        assert.match(log, /\[CONEXAO\] Novo dispositivo conectado: Celular iPhone \(iOS 17\.5, Safari 17\.5\) \| IP 127\.0\.0\.1 \| nome: /);
+        assert.match(log, /\[API\] API: GET \/api\/temas ← (?:[^\s←—][^←—]* \()?127\.0\.0\.1\)? → 200 \(\d+ ms\)/);
+        assert.match(log, /\[CONEXAO\] Tela aberta \(tempo real\) em (?:[^\s←—][^←—]* \()?127\.0\.0\.1\)? — telas abertas agora: 1/);
+        assert.match(log, /\[CONEXAO\] Tela fechada em (?:[^\s←—][^←—]* \()?127\.0\.0\.1\)? — telas abertas agora: 0/);
+        assert.ok(log.indexOf("Novo dispositivo conectado") < log.indexOf("API: GET /api/temas"), "a linha do aparelho vem antes das rotas dele");
+        assert.ok(!/API: GET \/api\/status/.test(log), "batimento não gera uma linha por chamada");
+    } finally { try { ctrl.abort(); } catch (_) {} srv.parar(); }
 });
 
 test("servidor: encerramento ordenado registra no log, avisa as abas e sai com código 0", { timeout: 60000 }, async () => {

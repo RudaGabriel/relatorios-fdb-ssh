@@ -7,9 +7,9 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.18.0 |
-| [`api.ps1`](#apips1) | 1.7.0 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.17.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.19.0 |
+| [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
@@ -28,6 +28,16 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.17.0 — 2026-10-23 16:30
+
+**Dispositivos conectados no log; recarregamento sem piscar.**
+
+- Nova categoria de log `[CONEXAO]`: cada celular ou computador da rede que abre o relatório aparece com tipo, modelo, sistema e navegador, IP e o **nome do aparelho**. O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergunta ao próprio aparelho pela rede — Bonjour/mDNS (iPhone, iPad, Mac e muitos Android; no iPhone o nome local vem do nome em "Sobre", ex.: "iPhone de Ruda" → `iPhone-de-Ruda`), NetBIOS (computadores Windows) e, como reserva, o DNS do roteador. Busca em paralelo, até ~1,6 s, com cache de 10 min.
+- Cada rota acessada pelo aparelho (página e `/api`) vira uma linha com método, rota, resultado e tempo (`[API]` para `/api`). As chamadas automáticas (status, pronto, events, db-status, hora-usuario) não geram uma linha cada: entram num resumo a cada 10 min. Telas em tempo real (SSE) abertas/fechadas são registradas; fechar e reabrir em até 8 s (o recarregamento automático a cada venda) só conta no resumo. Sem atividade por 3 min e sem tela aberta: "Dispositivo saiu", com tempo conectado e rotas. A própria máquina do servidor fica de fora; o `api.ps1` aparece com o nome do computador que ele envia.
+- `/api/dispositivos` (só rede local): aparelhos com o relatório aberto agora.
+- O recarregamento automático chama `window.__antesRecarga` (gerador 3.19.0+) antes de recarregar: a tela volta no mesmo ponto e com os mesmos filtros, sem piscar.
+- Nada disso lê ou grava no banco.
 
 ### 2.16.0 — 2026-10-22 16:00
 
@@ -182,6 +192,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.19.0 — 2026-10-23 16:30
+
+**Recarregamento automático sem piscar.**
+
+- Quando entra, muda ou sai uma venda, a tela recarrega sozinha. Antes, todas as animações de entrada rodavam de novo (a tela inteira "piscava"), os valores contavam desde zero, a rolagem voltava ao topo e os filtros se perdiam. Agora a página guarda antes de recarregar a posição na lista, a busca, o tipo e o vendedor; a nova aparece direto — sem animações de entrada nem contagem — no mesmo ponto da lista (rolagem da página no celular, da tabela ou do painel no PC) e com os mesmos filtros. Se a pessoa tocar ou rolar enquanto a posição é reaplicada, o ajuste para na hora.
+- As animações continuam normais ao abrir a página, filtrar, abrir janelas etc. Precisa do servidor 2.17.0+.
 
 ### 3.18.0 — 2026-10-23 15:30
 
@@ -431,6 +448,12 @@ gerenciais do filtro [proibidos] são convertidas manualmente por fora do fluxo 
 ## `api.ps1`
 
 Cliente de linha de comando.
+
+### 1.8.0 — 2026-10-23 16:30
+
+**Dispositivos conectados.**
+
+- Opção 37 / `-Endpoint dispositivos`: celulares e computadores da rede com o relatório aberto agora — tipo, modelo, sistema, navegador, IP, nome do aparelho, telas abertas e rotas acessadas (servidor 2.17.0+).
 
 ### 1.7.0 — 2026-10-22 20:30
 
