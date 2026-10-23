@@ -273,6 +273,7 @@ Todas as rotas respondem na porta configurada (padrão `7734`).
 | `/api/navigate/recarregar` | GET | Recarrega todas as abas abertas |
 | `/api/info` | GET | Versões, máquina, banco, memória e tempo ligado |
 | `/api/log?linhas=N&filtro=texto` | GET | Últimas linhas do `relatorio.log` (até 1000; apenas rede local) |
+| `/api/dispositivos` | GET | Celulares e computadores com o relatório aberto agora: tipo, modelo, sistema, navegador, IP, nome, telas abertas e rotas (apenas rede local) |
 | `/api/programas` | GET | Programas que podem ser abertos (lista do `config.json`) |
 | `/api/programas/abrir` | POST | Abre um programa da lista na máquina do servidor: `{ "nome": "..." }` (apenas rede local) |
 | `/api/restart` | GET | Reinicia o servidor (apenas rede local) |
@@ -319,7 +320,8 @@ O cabeçalho do menu mostra o **nome e o IP desta máquina** (a que abriu o `api
 | `aviso` | Mostra uma mensagem em todas as telas abertas (3 a 120 s) |
 | `recarregar-abas` | Recarrega todas as telas abertas |
 | `info` | Versões do servidor e do gerador, Node.js, máquina, banco, memória e tempo ligado |
-| `log` | Últimas linhas do `relatorio.log` do servidor, com filtro e cores (erros em vermelho) |
+| `log` | Últimas linhas do `relatorio.log` do servidor, com filtro e cores (erros em vermelho). Filtre por `CONEXAO` para ver só os aparelhos |
+| `dispositivos` | Celulares e computadores com o relatório aberto agora (IP, nome do aparelho, tipo, rotas) |
 | `programas` / `abrir-programa` | Lista / abre um programa na máquina do servidor (só os da lista `programas` do `config.json` de lá). No menu: `0` ou Enter cancela e volta; antes de abrir pede confirmação `S`/`N` |
 
 No `status`, o valor `-1` significa "ainda não lido do banco" (servidor recém-ligado ou banco fora do ar) — a resposta traz um campo `obs` explicando.
@@ -399,7 +401,8 @@ Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, insta
 | `[BANCO]` | Conexão com o Firebird, caminho do FDB, índices, credenciais |
 | `[GERADOR]` | Geração do relatório (processo filho, HTML) |
 | `[SERVIDOR]` | Início, parada e reinício do servidor |
-| `[API]` | Chamadas de outros computadores (`api.ps1` etc.) |
+| `[CONEXAO]` | Celulares e computadores da rede que abrem o relatório: tipo, modelo, sistema, navegador, IP e nome do aparelho; páginas acessadas; telas abertas/fechadas; resumo a cada 10 min; saída do aparelho |
+| `[API]` | Rotas `/api` chamadas por outros aparelhos (`api.ps1`, celular, outro PC), com resultado e tempo |
 | `[NAVEGADOR]` | Erros enviados pela tela do relatório |
 | `[CONFIG]` | Configurações, proibidos, ícone |
 | `[REDE]` | IP da máquina |
@@ -407,7 +410,16 @@ Tudo vai para **`relatorio.log`**, na pasta do sistema: servidor, bandeja, insta
 | `[DEBUG]` | Detalhes (só com `"logDebug": true`) |
 | `[SISTEMA]` | Demais mensagens e erros não tratados |
 
-- Chamadas à API vindas de **outros computadores** são registradas com IP e nome da máquina.
+- Aparelhos de **outros computadores e celulares** são registrados com IP e nome. O navegador não envia o nome de "Ajustes → Geral → Sobre": o servidor pergunta ao próprio aparelho pela rede (Bonjour no iPhone/Mac/Android, NetBIOS no Windows, DNS do roteador como reserva). No iPhone o nome local vem do nome em "Sobre" (ex.: "iPhone de Ruda" → `iPhone-de-Ruda`). Se o aparelho não responder (rede de visitantes, roteador que bloqueia Bonjour), aparece "não informado pelo aparelho". Exemplo:
+
+```
+[23-10-2026] [16:20:05] [CONEXAO] Novo dispositivo conectado: Celular iPhone (iOS 17.5, Safari 17.5) | IP 192.168.1.50 | nome: iPhone-de-Ruda (Bonjour) | navegador: Mozilla/5.0 (iPhone; ...)
+[23-10-2026] [16:20:05] [CONEXAO] Acesso: GET / ← iPhone-de-Ruda (192.168.1.50) → 200 (3 ms)
+[23-10-2026] [16:20:05] [CONEXAO] Tela aberta (tempo real) em iPhone-de-Ruda (192.168.1.50) — telas abertas agora: 1
+[23-10-2026] [16:20:31] [API] API: GET /api/itens-venda?data=2026-10-23&numero=064759 ← iPhone-de-Ruda (192.168.1.50) → 200 (41 ms)
+[23-10-2026] [16:30:05] [CONEXAO] Atividade de iPhone-de-Ruda (192.168.1.50) nos últimos 10 min — telas abertas: 1 | chamadas automáticas: /api/status ×1200, recarregamentos automáticos da tela ×4
+[23-10-2026] [16:52:40] [CONEXAO] Dispositivo saiu: iPhone-de-Ruda (192.168.1.50) — Celular iPhone (iOS 17.5, Safari 17.5) | conectado das 16:20:05 às 16:49:40 (30 min), 1420 requisição(ões) | rotas: / ×5, /api/itens-venda ×2
+```
 - Para investigar desempenho, ative `"logDebug": true` no `config.json`.
 
 ---

@@ -9,23 +9,21 @@ Interface PowerShell para interacao com API do servidor de relatorios.
 - Contem APENAS endpoints implementados no backend atual
 .REQUIREMENTS
 PowerShell 5.1+ ou 7+ | Salvar como UTF-8 sem BOM
-@version 1.7.0
+@version 1.8.0
 @author Ruda Gabriel
 @changelog
   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-  1.7.0 - 2026-10-22 20:30 - Ajuda e "cancelar e voltar".
-    - Menu: H (ou help, ajuda, ?) lista todos os comandos novamente; Enter vazio
-      so pede a opcao de novo. Modo direto: -Endpoint help.
-    - Opcoes 30 (tema) e 36 (abrir-programa): item "0. Cancelar e voltar ao
-      menu" (0 ou Enter voltam). Na 36, confirmacao S/N antes de abrir o
-      programa na maquina do servidor.
+  1.8.0 - 2026-10-23 16:30 - Dispositivos conectados.
+    - Opcao 37 / -Endpoint dispositivos: celulares e computadores da rede com o
+      relatorio aberto agora - tipo, modelo, sistema, navegador, IP, nome do
+      aparelho, telas abertas e rotas acessadas (servidor 2.17.0+).
 #>
 [CmdletBinding()]
 param(
     [string]$ConfigPath = "$PSScriptRoot\config.json",
     [ValidateSet("status","db-status","sse-clients","proibidos","config","salvar-fdb","abrir-picker","navigate-hoje","navigate-config","navigate-fdb","navigate-periodo","upload-favicon","restart","pronto","log-error","sse-test",
                  "meu-ip","encerrar","foco","modal-config","modal-periodo","atualizar","itens-venda","abrir-navegador","abrir-periodo",
-                 "temas","tema","aviso","recarregar-abas","info","log","programas","abrir-programa","menu","help")]
+                 "temas","tema","aviso","recarregar-abas","info","log","programas","abrir-programa","dispositivos","menu","help")]
     [string]$Endpoint = "menu",
     [object]$Payload,
     [string]$MaquinaIP = $null
@@ -577,6 +575,7 @@ function Executar-Endpoint {
             return $r
         }
         "programas" { return Invoke-ApiCall -Rota "/api/programas" }
+        "dispositivos" { return Invoke-ApiCall -Rota "/api/dispositivos" }
         "abrir-programa" {
             # Payload: nome do programa, como aparece em 'programas'.
             $nomeP = ([string]$Data).Trim()
@@ -637,6 +636,7 @@ function Mostrar-Menu {
     Write-Host "34. log              | Ultimas linhas do relatorio.log (com filtro)"
     Write-Host "35. programas        | Programas que o servidor pode abrir"
     Write-Host "36. abrir-programa   | Abrir um programa na maquina do servidor"
+    Write-Host "37. dispositivos     | Celulares/computadores com o relatorio aberto (IP, nome, rotas)"
     Write-Host ""
     Write-Host " H. help (ou ajuda, ?) | Listar todos os comandos novamente"
     Write-Host " 0. Sair"
@@ -683,7 +683,7 @@ if ($Endpoint -eq "menu") {
                 "23"="modal-config"; "24"="modal-periodo"; "25"="atualizar"; "26"="itens-venda"
                 "27"="abrir-navegador"; "28"="abrir-periodo"
                 "29"="temas"; "30"="tema"; "31"="aviso"; "32"="recarregar-abas"; "33"="info"
-                "34"="log"; "35"="programas"; "36"="abrir-programa"
+                "34"="log"; "35"="programas"; "36"="abrir-programa"; "37"="dispositivos"
             }
             $epNome = $epMap[$escolha]
             if (-not $epNome) { Write-Warning "Opcao invalida"; continue }
