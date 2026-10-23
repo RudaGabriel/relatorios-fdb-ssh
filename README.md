@@ -87,7 +87,7 @@ O sistema roda em segundo plano no Windows, com ícone na bandeja. Ele inicia ju
 - Configurações editáveis pela própria tela: nome do sistema, ícone, intervalos, janela de correção de horário, proibidos e atalhos.
 
 ### Operação
-- **Ícone na bandeja do Windows** com abrir relatório, atualizar, gerar por período, configurações, selecionar banco, reiniciar e sair.
+- **Ícone na bandeja do Windows** com menu completo e ícones: status ao vivo, abrir relatório, atualizar, gerar por período, telas abertas (trazer para frente, recarregar, aviso, tema), dispositivos conectados, configurações (banco, status), ferramentas (informações, copiar endereço de acesso, pasta, log, log ao vivo, `api.ps1`, programas), reiniciar e sair.
 - **Watchdog:** o servidor é reiniciado sozinho se cair ou travar.
 - **Inicialização automática** ao fazer logon (qualquer usuário) e ao ligar o computador, imediata e sem condições (funciona também em notebook na bateria), reiniciando a cada 1 min em caso de falha, com espera de até 30 min pela pasta de rede e pelo banco.
 - **Detecção automática do banco:**

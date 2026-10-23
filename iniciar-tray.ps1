@@ -3,16 +3,22 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.4.1
+# @version 1.5.0
 # @author Ruda Gabriel
 # @changelog
 #   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-#   1.4.1 - 2026-10-07 22:30 - Correcoes da varredura de bugs.
-#     - Mutex abandonado (tray anterior morto sem liberar) era tratado como
-#       "outra instancia rodando" e o icone nao subia mais; agora e' adquirido.
-#     - "Reiniciar servidor" so' anuncia sucesso se o processo novo continua
-#       vivo apos 2 s (antes bastava o Start retornar, mesmo com a porta ocupada).
-#     - Data e hora do log tiradas do MESMO instante (virada da meia-noite).
+#   1.5.0 - 2026-10-23 21:00 - Menu completo, com icones.
+#     - Todas as opcoes, em grupos: cabecalho com status ao vivo (servidor, banco,
+#       telas, aparelhos), abrir / abrir em nova aba, atualizar, periodo, Telas
+#       abertas (trazer para frente, recarregar, enviar aviso, tema), Dispositivos
+#       conectados (janela com nome do aparelho, IP, rotas - atualiza a cada 5 s),
+#       Configuracoes (editar, banco FDB, status do banco), Ferramentas (informacoes,
+#       copiar endereco de acesso, pasta, log, log ao vivo, api.ps1, programas),
+#       reiniciar e sair.
+#     - Icones vetoriais (os mesmos SVG Lucide do relatorio), coloridos, nitidos em
+#       qualquer escala de tela; menu com fundo branco e destaque azul; textos com
+#       acento. Sem favicon.png, icone proprio na bandeja. Se o visual nao puder ser
+#       montado, o menu funciona igual, sem icones.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -355,6 +361,653 @@ try {
 } catch {}
 
 # ---------------------------------------------------------------------------
+# Visual do menu (v1.5.0): icones vetoriais (os mesmos SVG Lucide do relatorio),
+# cores proprias e nitidez em telas com escala. Codigo C# compilado na hora
+# (compativel com o PowerShell 5.1 do Windows). Se a compilacao falhar por
+# qualquer motivo, o menu continua funcionando, so' que sem icones e no visual
+# padrao do Windows - nunca derruba a bandeja.
+# ---------------------------------------------------------------------------
+$script:visualOk = $false
+$csTray = @'
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+// @@GDI-INICIO
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Windows.Forms;
+// @@GDI-FIM
+
+namespace RelTray
+{
+    // Trecho de caminho ja convertido: 0 = mover, 1 = linha, 2 = curva cubica, 3 = fechar.
+    public struct Seg
+    {
+        public int Tipo;
+        public float X1, Y1, X2, Y2, X3, Y3;
+        public Seg(int t, float x1, float y1, float x2, float y2, float x3, float y3)
+        { Tipo = t; X1 = x1; Y1 = y1; X2 = x2; Y2 = y2; X3 = x3; Y3 = y3; }
+    }
+
+    // Leitor minimo de icones SVG (o mesmo desenho dos icones do relatorio - Lucide,
+    // grade 24x24). Elementos separados por ";":
+    //   p:<d do path>   r:x,y,w,h,rx   c:cx,cy,r   e:cx,cy,rx,ry   l:x1,y1,x2,y2
+    // Comandos de path: M L H V C S Q T A Z (maiusculos e minusculos). Arcos viram
+    // curvas cubicas (SVG 1.1, apendice F.6). Nunca lanca: trecho invalido e' ignorado.
+    public static class SvgMini
+    {
+        static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+        public static List<Seg> Icone(string def)
+        {
+            List<Seg> o = new List<Seg>();
+            if (string.IsNullOrEmpty(def)) return o;
+            foreach (string bruto in def.Split(';'))
+            {
+                string el = bruto.Trim();
+                if (el.Length < 3 || el[1] != ':') continue;
+                string corpo = el.Substring(2);
+                try
+                {
+                    switch (el[0])
+                    {
+                        case 'p': Caminho(corpo, o); break;
+                        case 'r': Retangulo(Nums(corpo), o); break;
+                        case 'c': { float[] n = Nums(corpo); if (n.Length >= 3) Elipse(n[0], n[1], n[2], n[2], o); } break;
+                        case 'e': { float[] n = Nums(corpo); if (n.Length >= 4) Elipse(n[0], n[1], n[2], n[3], o); } break;
+                        case 'l':
+                            {
+                                float[] n = Nums(corpo);
+                                if (n.Length >= 4) { o.Add(new Seg(0, n[0], n[1], 0, 0, 0, 0)); o.Add(new Seg(1, n[2], n[3], 0, 0, 0, 0)); }
+                            }
+                            break;
+                    }
+                }
+                catch { /* elemento invalido: ignora so' ele */ }
+            }
+            return o;
+        }
+
+        static float[] Nums(string s)
+        {
+            string[] p = s.Split(new char[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            List<float> r = new List<float>();
+            foreach (string x in p) { float v; if (float.TryParse(x, NumberStyles.Float, Inv, out v)) r.Add(v); }
+            return r.ToArray();
+        }
+
+        static void Retangulo(float[] n, List<Seg> o)
+        {
+            if (n.Length < 4) return;
+            float x = n[0], y = n[1], w = n[2], h = n[3], r = n.Length > 4 ? n[4] : 0;
+            r = Math.Max(0, Math.Min(r, Math.Min(w, h) / 2));
+            if (r <= 0)
+            {
+                o.Add(new Seg(0, x, y, 0, 0, 0, 0)); o.Add(new Seg(1, x + w, y, 0, 0, 0, 0));
+                o.Add(new Seg(1, x + w, y + h, 0, 0, 0, 0)); o.Add(new Seg(1, x, y + h, 0, 0, 0, 0)); o.Add(new Seg(3, 0, 0, 0, 0, 0, 0));
+                return;
+            }
+            string d = string.Format(Inv, "M{0} {1}H{2}A{3} {3} 0 0 1 {4} {5}V{6}A{3} {3} 0 0 1 {2} {7}H{0}A{3} {3} 0 0 1 {8} {6}V{5}A{3} {3} 0 0 1 {0} {1}Z",
+                x + r, y, x + w - r, r, x + w, y + r, y + h - r, y + h, x);
+            Caminho(d, o);
+        }
+
+        static void Elipse(float cx, float cy, float rx, float ry, List<Seg> o)
+        {
+            string d = string.Format(Inv, "M{0} {1}A{2} {3} 0 1 0 {4} {1}A{2} {3} 0 1 0 {0} {1}Z", cx - rx, cy, rx, ry, cx + rx);
+            Caminho(d, o);
+        }
+
+        // ---- tokenizacao ----
+        sealed class Leitor
+        {
+            readonly string s; int i;
+            public Leitor(string t) { s = t ?? ""; i = 0; }
+            void Pular() { while (i < s.Length && (char.IsWhiteSpace(s[i]) || s[i] == ',')) i++; }
+            public bool Fim { get { Pular(); return i >= s.Length; } }
+            public bool ProximoEhComando { get { Pular(); return i < s.Length && char.IsLetter(s[i]) && s[i] != 'e' && s[i] != 'E'; } }
+            public char Comando() { Pular(); return s[i++]; }
+            public bool TemNumero { get { Pular(); return i < s.Length && (char.IsDigit(s[i]) || s[i] == '-' || s[i] == '+' || s[i] == '.'); } }
+            public float Numero()
+            {
+                Pular();
+                int ini = i;
+                if (i < s.Length && (s[i] == '-' || s[i] == '+')) i++;
+                bool ponto = false;
+                while (i < s.Length && (char.IsDigit(s[i]) || (s[i] == '.' && !ponto)))
+                {
+                    if (s[i] == '.') ponto = true;
+                    i++;
+                }
+                if (i < s.Length && (s[i] == 'e' || s[i] == 'E'))
+                {
+                    int volta = i; i++;
+                    if (i < s.Length && (s[i] == '-' || s[i] == '+')) i++;
+                    if (i < s.Length && char.IsDigit(s[i])) { while (i < s.Length && char.IsDigit(s[i])) i++; }
+                    else i = volta;
+                }
+                if (i == ini) throw new FormatException("numero esperado");
+                return float.Parse(s.Substring(ini, i - ini), NumberStyles.Float, Inv);
+            }
+            // Bandeira de arco: um unico "0" ou "1" (pode vir colado: "011").
+            public bool Bandeira()
+            {
+                Pular();
+                if (i < s.Length && (s[i] == '0' || s[i] == '1')) { return s[i++] == '1'; }
+                throw new FormatException("bandeira esperada");
+            }
+        }
+
+        public static void Caminho(string d, List<Seg> o)
+        {
+            Leitor L = new Leitor(d);
+            float cx = 0, cy = 0, sx = 0, sy = 0;      // ponto atual e inicio do subcaminho
+            float ux = 0, uy = 0; char ult = ' ';       // ultimo controle (S/T)
+            char cmd = ' ';
+            int guarda = 0;
+            while (!L.Fim && guarda++ < 10000)
+            {
+                if (L.ProximoEhComando) cmd = L.Comando();
+                else if (cmd == ' ') return;
+                bool rel = char.IsLower(cmd);
+                char C = char.ToUpperInvariant(cmd);
+                switch (C)
+                {
+                    case 'M':
+                        {
+                            float x = L.Numero(), y = L.Numero();
+                            if (rel) { x += cx; y += cy; }
+                            o.Add(new Seg(0, x, y, 0, 0, 0, 0));
+                            cx = sx = x; cy = sy = y;
+                            cmd = rel ? 'l' : 'L';              // pares seguintes = linhas
+                            ult = 'M';
+                        }
+                        break;
+                    case 'L':
+                        {
+                            float x = L.Numero(), y = L.Numero();
+                            if (rel) { x += cx; y += cy; }
+                            o.Add(new Seg(1, x, y, 0, 0, 0, 0)); cx = x; cy = y; ult = 'L';
+                        }
+                        break;
+                    case 'H':
+                        { float x = L.Numero(); if (rel) x += cx; o.Add(new Seg(1, x, cy, 0, 0, 0, 0)); cx = x; ult = 'L'; }
+                        break;
+                    case 'V':
+                        { float y = L.Numero(); if (rel) y += cy; o.Add(new Seg(1, cx, y, 0, 0, 0, 0)); cy = y; ult = 'L'; }
+                        break;
+                    case 'C':
+                        {
+                            float x1 = L.Numero(), y1 = L.Numero(), x2 = L.Numero(), y2 = L.Numero(), x = L.Numero(), y = L.Numero();
+                            if (rel) { x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy; }
+                            o.Add(new Seg(2, x1, y1, x2, y2, x, y)); ux = x2; uy = y2; cx = x; cy = y; ult = 'C';
+                        }
+                        break;
+                    case 'S':
+                        {
+                            float x2 = L.Numero(), y2 = L.Numero(), x = L.Numero(), y = L.Numero();
+                            if (rel) { x2 += cx; y2 += cy; x += cx; y += cy; }
+                            float x1 = ult == 'C' ? 2 * cx - ux : cx, y1 = ult == 'C' ? 2 * cy - uy : cy;
+                            o.Add(new Seg(2, x1, y1, x2, y2, x, y)); ux = x2; uy = y2; cx = x; cy = y; ult = 'C';
+                        }
+                        break;
+                    case 'Q':
+                        {
+                            float qx = L.Numero(), qy = L.Numero(), x = L.Numero(), y = L.Numero();
+                            if (rel) { qx += cx; qy += cy; x += cx; y += cy; }
+                            Quad(o, cx, cy, qx, qy, x, y); ux = qx; uy = qy; cx = x; cy = y; ult = 'Q';
+                        }
+                        break;
+                    case 'T':
+                        {
+                            float x = L.Numero(), y = L.Numero();
+                            if (rel) { x += cx; y += cy; }
+                            float qx = ult == 'Q' ? 2 * cx - ux : cx, qy = ult == 'Q' ? 2 * cy - uy : cy;
+                            Quad(o, cx, cy, qx, qy, x, y); ux = qx; uy = qy; cx = x; cy = y; ult = 'Q';
+                        }
+                        break;
+                    case 'A':
+                        {
+                            float rx = L.Numero(), ry = L.Numero(), rot = L.Numero();
+                            bool fa = L.Bandeira(), fs = L.Bandeira();
+                            float x = L.Numero(), y = L.Numero();
+                            if (rel) { x += cx; y += cy; }
+                            Arco(o, cx, cy, rx, ry, rot, fa, fs, x, y); cx = x; cy = y; ult = 'A';
+                        }
+                        break;
+                    case 'Z':
+                        o.Add(new Seg(3, 0, 0, 0, 0, 0, 0)); cx = sx; cy = sy; ult = 'Z';
+                        cmd = ' ';
+                        if (!L.ProximoEhComando) return;        // "Z" seguido de numero: invalido
+                        break;
+                    default:
+                        return;                                  // comando desconhecido: para
+                }
+            }
+        }
+
+        static void Quad(List<Seg> o, float x0, float y0, float qx, float qy, float x, float y)
+        {
+            o.Add(new Seg(2, x0 + 2f / 3f * (qx - x0), y0 + 2f / 3f * (qy - y0), x + 2f / 3f * (qx - x), y + 2f / 3f * (qy - y), x, y));
+        }
+
+        static double Angulo(double ux, double uy, double vx, double vy)
+        {
+            return Math.Atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+        }
+
+        static void Arco(List<Seg> o, float x1, float y1, float rxF, float ryF, float rotGraus, bool fa, bool fs, float x2, float y2)
+        {
+            if (x1 == x2 && y1 == y2) return;
+            double rx = Math.Abs(rxF), ry = Math.Abs(ryF);
+            if (rx < 1e-6 || ry < 1e-6) { o.Add(new Seg(1, x2, y2, 0, 0, 0, 0)); return; }
+            double phi = rotGraus * Math.PI / 180.0, cos = Math.Cos(phi), sin = Math.Sin(phi);
+            double dx = (x1 - x2) / 2.0, dy = (y1 - y2) / 2.0;
+            double x1p = cos * dx + sin * dy, y1p = -sin * dx + cos * dy;
+            double lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+            if (lam > 1) { double k = Math.Sqrt(lam); rx *= k; ry *= k; }
+            double num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+            double den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+            double coef = den <= 0 ? 0 : Math.Sqrt(Math.Max(0, num / den));
+            if (fa == fs) coef = -coef;
+            double cxp = coef * rx * y1p / ry, cyp = -coef * ry * x1p / rx;
+            double ccx = cos * cxp - sin * cyp + (x1 + x2) / 2.0, ccy = sin * cxp + cos * cyp + (y1 + y2) / 2.0;
+            double t1 = Angulo(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+            double dt = Angulo((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+            if (!fs && dt > 0) dt -= 2 * Math.PI;
+            else if (fs && dt < 0) dt += 2 * Math.PI;
+            int n = (int)Math.Ceiling(Math.Abs(dt) / (Math.PI / 2) - 1e-9);
+            if (n < 1) n = 1;
+            double delta = dt / n, t = 4.0 / 3.0 * Math.Tan(delta / 4);
+            for (int k = 0; k < n; k++)
+            {
+                double a1 = t1 + k * delta, a2 = a1 + delta;
+                double c1 = Math.Cos(a1), s1 = Math.Sin(a1), c2 = Math.Cos(a2), s2 = Math.Sin(a2);
+                double p1x = c1 - t * s1, p1y = s1 + t * c1;   // controle 1 (unitario)
+                double p2x = c2 + t * s2, p2y = s2 - t * c2;   // controle 2
+                o.Add(new Seg(2,
+                    (float)(ccx + rx * cos * p1x - ry * sin * p1y), (float)(ccy + rx * sin * p1x + ry * cos * p1y),
+                    (float)(ccx + rx * cos * p2x - ry * sin * p2y), (float)(ccy + rx * sin * p2x + ry * cos * p2y),
+                    (k == n - 1) ? x2 : (float)(ccx + rx * cos * c2 - ry * sin * s2),
+                    (k == n - 1) ? y2 : (float)(ccy + rx * sin * c2 + ry * cos * s2)));
+            }
+        }
+
+        // Para conferencia (testes): os trechos de volta em SVG so' com M/L/C/Z.
+        public static string ParaSvg(List<Seg> segs)
+        {
+            StringBuilder b = new StringBuilder();
+            foreach (Seg g in segs)
+            {
+                switch (g.Tipo)
+                {
+                    case 0: b.AppendFormat(Inv, "M{0:0.###} {1:0.###}", g.X1, g.Y1); break;
+                    case 1: b.AppendFormat(Inv, "L{0:0.###} {1:0.###}", g.X1, g.Y1); break;
+                    case 2: b.AppendFormat(Inv, "C{0:0.###} {1:0.###} {2:0.###} {3:0.###} {4:0.###} {5:0.###}", g.X1, g.Y1, g.X2, g.Y2, g.X3, g.Y3); break;
+                    case 3: b.Append("Z"); break;
+                }
+            }
+            return b.ToString();
+        }
+    }
+// @@GDI-INICIO
+
+    // Desenha um icone (grade 24x24) no tamanho pedido, com traco arredondado e
+    // suavizacao. Subcaminho minusculo (os "pontos" dos icones, ex.: M12 18h.01)
+    // vira um circulo cheio do tamanho do traco.
+    public static class Icones
+    {
+        public static Bitmap Criar(string def, int px, Color cor, float traco)
+        {
+            if (px < 8) px = 8;
+            Bitmap bmp = new Bitmap(px, px, PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (Pen pen = new Pen(cor, traco))
+            using (SolidBrush pincel = new SolidBrush(cor))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.Clear(Color.Transparent);
+                float esc = px / 24f;
+                g.ScaleTransform(esc, esc);
+                pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round; pen.LineJoin = LineJoin.Round;
+                List<Seg> segs = SvgMini.Icone(def);
+                List<List<Seg>> partes = new List<List<Seg>>();
+                List<Seg> atual = null;
+                foreach (Seg s in segs)
+                {
+                    if (s.Tipo == 0 || atual == null) { atual = new List<Seg>(); partes.Add(atual); }
+                    atual.Add(s);
+                }
+                foreach (List<Seg> parte in partes) DesenharParte(g, pen, pincel, parte, traco);
+            }
+            return bmp;
+        }
+
+        static void DesenharParte(Graphics g, Pen pen, Brush pincel, List<Seg> parte, float traco)
+        {
+            float px = 0, py = 0, ix = 0, iy = 0, minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+            bool fechar = false;
+            using (GraphicsPath gp = new GraphicsPath())
+            {
+                foreach (Seg s in parte)
+                {
+                    switch (s.Tipo)
+                    {
+                        case 0: px = ix = s.X1; py = iy = s.Y1; break;
+                        case 1: gp.AddLine(px, py, s.X1, s.Y1); px = s.X1; py = s.Y1; break;
+                        case 2: gp.AddBezier(px, py, s.X1, s.Y1, s.X2, s.Y2, s.X3, s.Y3); px = s.X3; py = s.Y3; break;
+                        case 3: fechar = true; px = ix; py = iy; break;
+                    }
+                    if (s.Tipo == 0 || s.Tipo == 1) { minX = Math.Min(minX, s.X1); maxX = Math.Max(maxX, s.X1); minY = Math.Min(minY, s.Y1); maxY = Math.Max(maxY, s.Y1); }
+                    if (s.Tipo == 2) { minX = Math.Min(minX, s.X3); maxX = Math.Max(maxX, s.X3); minY = Math.Min(minY, s.Y3); maxY = Math.Max(maxY, s.Y3); }
+                }
+                if (maxX - minX < 0.3f && maxY - minY < 0.3f)
+                {
+                    g.FillEllipse(pincel, ix - traco / 2f, iy - traco / 2f, traco, traco);
+                    return;
+                }
+                if (fechar) gp.CloseFigure();
+                g.DrawPath(pen, gp);
+            }
+        }
+
+        // Icone da bandeja (quando nao ha favicon.png): quadrado arredondado em degrade
+        // com grafico de barras branco.
+        public static Icon Bandeja(int px)
+        {
+            using (Bitmap bmp = new Bitmap(px, px, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+                    float r = px * 0.22f, w = px - 1;
+                    using (GraphicsPath fundo = new GraphicsPath())
+                    {
+                        fundo.AddArc(0, 0, r * 2, r * 2, 180, 90); fundo.AddArc(w - r * 2, 0, r * 2, r * 2, 270, 90);
+                        fundo.AddArc(w - r * 2, w - r * 2, r * 2, r * 2, 0, 90); fundo.AddArc(0, w - r * 2, r * 2, r * 2, 90, 90);
+                        fundo.CloseFigure();
+                        using (LinearGradientBrush lg = new LinearGradientBrush(new PointF(0, 0), new PointF(px, px), Color.FromArgb(37, 99, 235), Color.FromArgb(14, 165, 233)))
+                            g.FillPath(lg, fundo);
+                    }
+                    float esc = px / 24f;
+                    g.ScaleTransform(esc, esc);
+                    using (Pen p = new Pen(Color.White, 2.6f))
+                    {
+                        p.StartCap = LineCap.Round; p.EndCap = LineCap.Round;
+                        g.DrawLine(p, 7, 17, 7, 12); g.DrawLine(p, 12, 17, 12, 7); g.DrawLine(p, 17, 17, 17, 10);
+                    }
+                }
+                IntPtr h = bmp.GetHicon();
+                Icon tmp = Icon.FromHandle(h);
+                Icon copia = (Icon)tmp.Clone();
+                tmp.Dispose();
+                DestroyIcon(h);
+                return copia;
+            }
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool DestroyIcon(IntPtr h);
+    }
+
+    // Nitidez em telas com escala (125%, 150%...): sem isto o Windows estica o menu
+    // desenhado a 100% e os icones ficam borrados. Chamado antes de criar janelas.
+    public static class Dpi
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetProcessDPIAware();
+        public static void Ativar() { try { SetProcessDPIAware(); } catch { } }
+    }
+
+    // Cores do menu: fundo branco, destaque azul claro, bordas e separadores suaves.
+    public class Cores : ProfessionalColorTable
+    {
+        static Color C(int r, int g, int b) { return Color.FromArgb(r, g, b); }
+        public override Color ToolStripDropDownBackground { get { return Color.White; } }
+        public override Color ImageMarginGradientBegin { get { return Color.White; } }
+        public override Color ImageMarginGradientMiddle { get { return Color.White; } }
+        public override Color ImageMarginGradientEnd { get { return Color.White; } }
+        public override Color MenuBorder { get { return C(209, 213, 219); } }
+        public override Color MenuItemBorder { get { return C(147, 197, 253); } }
+        public override Color MenuItemSelected { get { return C(232, 240, 254); } }
+        public override Color MenuItemSelectedGradientBegin { get { return C(232, 240, 254); } }
+        public override Color MenuItemSelectedGradientEnd { get { return C(232, 240, 254); } }
+        public override Color MenuItemPressedGradientBegin { get { return C(219, 234, 254); } }
+        public override Color MenuItemPressedGradientMiddle { get { return C(219, 234, 254); } }
+        public override Color MenuItemPressedGradientEnd { get { return C(219, 234, 254); } }
+        public override Color SeparatorDark { get { return C(229, 231, 235); } }
+        public override Color SeparatorLight { get { return Color.White; } }
+        public override Color CheckBackground { get { return C(219, 234, 254); } }
+        public override Color CheckSelectedBackground { get { return C(191, 219, 254); } }
+        public override Color CheckPressedBackground { get { return C(191, 219, 254); } }
+    }
+
+    public class Renderizador : ToolStripProfessionalRenderer
+    {
+        public Renderizador() : base(new Cores()) { RoundedEdges = true; }
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            if (e.Item is ToolStripMenuItem) e.TextColor = e.Item.Enabled ? Color.FromArgb(31, 41, 55) : Color.FromArgb(156, 163, 175);
+            base.OnRenderItemText(e);
+        }
+        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+        {
+            e.ArrowColor = Color.FromArgb(107, 114, 128);
+            base.OnRenderArrow(e);
+        }
+    }
+// @@GDI-FIM
+}
+'@
+try {
+    Add-Type -TypeDefinition $csTray -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop
+    $script:visualOk = $true
+    [RelTray.Dpi]::Ativar()
+} catch {
+    Write-TrayLog "Visual do menu indisponivel (icones desligados): $($_.Exception.Message)" "AVISO"
+}
+try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop } catch {}
+
+# Textos com acento: este arquivo e' 100% ASCII (o PowerShell 5.1 le .ps1 sem BOM
+# na pagina de codigo do Windows), entao os acentos vao como \u00XX e viram o
+# caractere certo aqui. So' para textos fixos - nunca passar nomes/caminhos por aqui.
+function L([string]$s) { try { return [regex]::Unescape($s) } catch { return $s } }
+
+# Tamanho dos icones conforme a escala da tela (16 px a 100%, 24 px a 150%...).
+$ICON_PX = 16
+try {
+    $gDpi = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+    $ICON_PX = [int][math]::Max(16, [math]::Round(16 * $gDpi.DpiX / 96))
+    $gDpi.Dispose()
+} catch {}
+
+# Icones (grade 24x24, mesmos desenhos Lucide do relatorio). Formato: elementos
+# separados por ";" - p:<path> r:x,y,w,h,rx c:cx,cy,r e:cx,cy,rx,ry l:x1,y1,x2,y2
+$ICONES = @{
+    abrir       = 'r:2,3,20,14,2;l:8,21,16,21;l:12,17,12,21'
+    externo     = 'p:M15 3h6v6;p:M10 14 21 3;p:M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'
+    atualizar   = 'p:M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8;p:M21 3v5h-5;p:M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16;p:M8 16H3v5'
+    periodo     = 'r:3,4,18,18,2;l:16,2,16,6;l:8,2,8,6;l:3,10,21,10;p:M8 14h.01;p:M12 14h.01;p:M16 14h.01;p:M8 18h.01;p:M12 18h.01'
+    telas       = 'r:2,3,20,14,2;l:8,21,16,21;l:12,17,12,21;p:M7 8h10;p:M7 12h6'
+    foco        = 'p:M15 3h6v6;p:M9 21H3v-6;p:M21 3l-7 7;p:M3 21l7-7'
+    aviso       = 'p:M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z;p:M12 7v3;p:M12 13h.01'
+    tema        = 'c:12,12,4;p:M12 2v2;p:M12 20v2;p:m4.93 4.93 1.41 1.41;p:m17.66 17.66 1.41 1.41;p:M2 12h2;p:M20 12h2;p:m6.34 17.66-1.41 1.41;p:m19.07 4.93-1.41 1.41'
+    celular     = 'r:5,2,14,20,2;p:M12 18h.01'
+    config      = 'p:M20 7h-9;p:M14 17H5;c:17,17,3;c:7,7,3'
+    banco       = 'e:12,5,9,3;p:M3 5V19A9 3 0 0 0 21 19V5;p:M3 12A9 3 0 0 0 21 12'
+    info        = 'c:12,12,10;p:M12 16v-4;p:M12 8h.01'
+    pasta       = 'p:M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'
+    log         = 'p:M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z;p:M14 2v4a2 2 0 0 0 2 2h4;p:M10 9H8;p:M16 13H8;p:M16 17H8'
+    aovivo      = 'p:M22 12h-4l-3 9L9 3l-3 9H2'
+    terminal    = 'p:m4 17 6-6-6-6;p:M12 19h8'
+    programas   = 'r:3,3,7,7,1;r:14,3,7,7,1;r:14,14,7,7,1;r:3,14,7,7,1'
+    link        = 'p:M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71;p:M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'
+    ferramentas = 'p:M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z'
+    reiniciar   = 'p:M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8;p:M3 3v5h5'
+    sair        = 'p:M12 2v10;p:M18.4 6.6a9 9 0 1 1-12.77.04'
+    servidor    = 'r:2,2,20,8,2;r:2,14,20,8,2;p:M6 6h.01;p:M6 18h.01'
+}
+function Get-Icone([string]$nome, [string]$cor) {
+    if (-not $script:visualOk -or -not $ICONES.ContainsKey($nome)) { return $null }
+    try { return [RelTray.Icones]::Criar($ICONES[$nome], $ICON_PX, [System.Drawing.ColorTranslator]::FromHtml($cor), 2.0) }
+    catch { return $null }
+}
+# Item de menu com icone. $Texto passa por L (acentos); $Acao = scriptblock do clique.
+function New-ItemMenu {
+    param([string]$Texto, [string]$Icone = "", [string]$Cor = "#374151", [scriptblock]$Acao = $null, [switch]$Negrito)
+    $it = New-Object System.Windows.Forms.ToolStripMenuItem
+    $it.Text = L $Texto
+    if ($Icone) { $img = Get-Icone $Icone $Cor; if ($img) { $it.Image = $img } }
+    if ($Negrito) { $it.Font = New-Object System.Drawing.Font($menu.Font.FontFamily, $menu.Font.Size, [System.Drawing.FontStyle]::Bold) }
+    $it.Padding = New-Object System.Windows.Forms.Padding(0, 3, 0, 3)
+    if ($Acao) { $it.Add_Click($Acao) }
+    return $it
+}
+function New-Separador { return (New-Object System.Windows.Forms.ToolStripSeparator) }
+
+# Chamada a API local do servidor (127.0.0.1). Devolve o JSON ja convertido, ou
+# $null em falha ($script:ultimoErroApi diz o motivo, inclusive a mensagem que o
+# servidor mandou em respostas 4xx/5xx). Corpo em UTF-8 (acentos no PowerShell 5.1).
+$script:ultimoErroApi = ""
+function Invoke-Api {
+    param([string]$Rota, [string]$Metodo = "GET", $Corpo = $null, [int]$Timeout = 4)
+    $script:ultimoErroApi = ""
+    try {
+        $p = @{ Uri = "$ADDR_LOCAL$Rota"; Method = $Metodo; UseBasicParsing = $true; TimeoutSec = $Timeout; ErrorAction = 'Stop'; Headers = @{ 'X-Cliente' = 'Bandeja' } }
+        if ($null -ne $Corpo) {
+            $p.Body = [System.Text.Encoding]::UTF8.GetBytes(($Corpo | ConvertTo-Json -Compress))
+            $p.ContentType = 'application/json; charset=utf-8'
+        }
+        $r = Invoke-WebRequest @p
+        $txt = [System.Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray())
+        if (-not $txt) { return @{ ok = $true } }
+        return ($txt | ConvertFrom-Json)
+    } catch {
+        $msg = $_.Exception.Message
+        # Corpo da resposta de erro ({ok:false, erro:"..."}): em ErrorDetails (PS 5.1 e 7)
+        # ou, se vazio, lido do proprio WebException (PS 5.1).
+        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $je = $_.ErrorDetails.Message | ConvertFrom-Json; if ($je.erro) { $script:ultimoErroApi = [string]$je.erro; return $null } } } catch {}
+        try {
+            $resp = $_.Exception.Response
+            if ($resp) {
+                $sr = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+                $corpoErro = $sr.ReadToEnd(); $sr.Close()
+                $j = $corpoErro | ConvertFrom-Json
+                if ($j.erro) { $msg = [string]$j.erro }
+            }
+        } catch {}
+        $script:ultimoErroApi = $msg
+        return $null
+    }
+}
+function Show-Balao([string]$Titulo, [string]$Texto, [string]$Tipo = "Info", [int]$Ms = 3500) {
+    try {
+        $tray.BalloonTipTitle = $Titulo
+        $tray.BalloonTipText  = $Texto
+        $tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::$Tipo
+        $tray.ShowBalloonTip($Ms)
+    } catch {}
+}
+function Show-Mensagem([string]$Texto, [string]$Titulo, [string]$Icone = "Information") {
+    [System.Windows.Forms.MessageBox]::Show($Texto, $Titulo, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::$Icone) | Out-Null
+}
+function Get-MaquinaIP {
+    try {
+        if (Test-Path $cfgPath) {
+            $c = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF) | ConvertFrom-Json
+            if ($c.maquinaIP) { return ([string]$c.maquinaIP).Trim() }
+        }
+    } catch {}
+    if ($MAQUINA_IP) { return $MAQUINA_IP }
+    return "127.0.0.1"
+}
+
+# ---------------------------------------------------------------------------
+# Janela "Dispositivos conectados": celulares e computadores com o relatorio
+# aberto agora (nome do aparelho, IP, tipo, telas, rotas). Atualiza a cada 5 s.
+# Variaveis em $script: porque os eventos (timer, botoes) rodam depois que a
+# funcao ja terminou.
+# ---------------------------------------------------------------------------
+$script:formDisp = $null
+function Update-Dispositivos {
+    if (-not $script:formDisp -or $script:formDisp.IsDisposed) { return }
+    $j = Invoke-Api "/api/dispositivos" -Timeout 3
+    $lv = $script:dispLista
+    if ($null -eq $j) {
+        $script:dispStatus.Text = (L "N\u00e3o foi poss\u00edvel consultar o servidor: ") + $script:ultimoErroApi
+        return
+    }
+    $lv.BeginUpdate()
+    try {
+        $lv.Items.Clear()
+        foreach ($d in @($j.dispositivos)) {
+            if ($null -eq $d) { continue }
+            $nome = if ($d.nome) { [string]$d.nome } else { L "(sem nome)" }
+            $it = New-Object System.Windows.Forms.ListViewItem($nome)
+            $tipo = (([string]$d.tipo) + " " + ([string]$d.modelo)).Trim()
+            $rotas = ""
+            try { $rotas = (@($d.rotas.PSObject.Properties) | ForEach-Object { "$($_.Name) x$($_.Value)" }) -join ", " } catch {}
+            foreach ($v in @([string]$d.ip, $tipo, [string]$d.sistema, [string]$d.navegador, [string]$d.telasAbertas, [string]$d.conectadoDesde, [string]$d.ultimaAtividade, [string]$d.requisicoes, $rotas)) {
+                $it.SubItems.Add($v) | Out-Null
+            }
+            $lv.Items.Add($it) | Out-Null
+        }
+    } finally { $lv.EndUpdate() }
+    $qtd = @($j.dispositivos).Count
+    $script:dispStatus.Text = "$qtd " + $(if ($qtd -eq 1) { L "aparelho" } else { L "aparelhos" }) + (L " na rede com o relat\u00f3rio aberto \u2014 atualizado \u00e0s ") + (Get-Date -Format "HH:mm:ss") + (L "  (a pr\u00f3pria m\u00e1quina do servidor n\u00e3o aparece)")
+}
+function Show-Dispositivos {
+    if ($script:formDisp -and -not $script:formDisp.IsDisposed) { $script:formDisp.Activate(); Update-Dispositivos; return }
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = "$APP_NAME - " + (L "Dispositivos conectados")
+    $f.Size = New-Object System.Drawing.Size(1000, 440)
+    $f.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $f.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $f.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+    try { $f.Icon = $tray.Icon } catch {}
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.View = [System.Windows.Forms.View]::Details
+    $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
+    $lv.Dock = [System.Windows.Forms.DockStyle]::Fill
+    foreach ($c in @(@("Nome do aparelho", 150), @("IP", 105), @("Tipo", 110), @("Sistema", 95), @("Navegador", 110), @("Telas", 50), @("Desde", 65), @("\u00daltima atividade", 105), @("Requisi\u00e7\u00f5es", 80), @("Rotas acessadas", 260))) {
+        $lv.Columns.Add((L $c[0]), $c[1]) | Out-Null
+    }
+    $rodape = New-Object System.Windows.Forms.Panel
+    $rodape.Dock = [System.Windows.Forms.DockStyle]::Bottom; $rodape.Height = 44
+    $st = New-Object System.Windows.Forms.Label
+    $st.AutoSize = $false; $st.Left = 10; $st.Top = 13; $st.Width = 700; $st.Height = 20
+    $st.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $st.ForeColor = [System.Drawing.Color]::FromArgb(75, 85, 99)
+    $bAt = New-Object System.Windows.Forms.Button
+    $bAt.Text = "Atualizar"; $bAt.Width = 100; $bAt.Height = 28; $bAt.Top = 8
+    $bAt.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $bAt.Left = $rodape.Width - 220
+    $bFe = New-Object System.Windows.Forms.Button
+    $bFe.Text = "Fechar"; $bFe.Width = 100; $bFe.Height = 28; $bFe.Top = 8
+    $bFe.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $bFe.Left = $rodape.Width - 110
+    $rodape.Controls.AddRange(@($st, $bAt, $bFe))
+    $f.Controls.Add($lv); $f.Controls.Add($rodape)
+    $rodape.Add_Resize({ try { $script:dispBotaoAt.Left = $this.Width - 220; $script:dispBotaoFe.Left = $this.Width - 110; $script:dispStatus.Width = [math]::Max(100, $this.Width - 240) } catch {} })
+    $script:formDisp = $f; $script:dispLista = $lv; $script:dispStatus = $st; $script:dispBotaoAt = $bAt; $script:dispBotaoFe = $bFe
+    $bAt.Add_Click({ Update-Dispositivos })
+    $bFe.Add_Click({ try { $script:formDisp.Close() } catch {} })
+    $script:dispTimer = New-Object System.Windows.Forms.Timer
+    $script:dispTimer.Interval = 5000
+    $script:dispTimer.Add_Tick({ Update-Dispositivos })
+    $f.Add_FormClosed({
+        try { $script:dispTimer.Stop(); $script:dispTimer.Dispose() } catch {}
+        $script:formDisp = $null
+    })
+    $f.Add_Shown({ Update-Dispositivos; $script:dispTimer.Start() })
+    $f.Show()
+    $f.Activate()
+}
+
+# ---------------------------------------------------------------------------
 # Icone da bandeja
 # ---------------------------------------------------------------------------
 $tray         = New-Object System.Windows.Forms.NotifyIcon
@@ -384,28 +1037,73 @@ if (Test-Path $faviconPath) {
         $bmp.Dispose()
     } catch { $tray.Icon = [System.Drawing.SystemIcons]::Application }
 } else {
+    # Sem favicon.png: icone proprio (grafico de barras em degrade azul) em vez do
+    # icone generico de aplicativo do Windows.
     $tray.Icon = [System.Drawing.SystemIcons]::Application
+    if ($script:visualOk) { try { $tray.Icon = [RelTray.Icones]::Bandeja(32) } catch {} }
 }
 
 # ---------------------------------------------------------------------------
-# Menu de contexto
+# Menu de contexto (v1.5.0): todas as opcoes, em grupos, com icones.
+#   [cabecalho: nome do sistema + status ao vivo]
+#   Abrir relatorio / Abrir em nova aba
+#   Atualizar dados de hoje / Gerar por periodo
+#   Telas abertas > (trazer para frente, recarregar, aviso, tema)
+#   Dispositivos conectados...
+#   Configuracoes > (editar, banco FDB, status do banco)
+#   Ferramentas > (informacoes, pasta, log, log ao vivo, api.ps1, programas, copiar endereco)
+#   Reiniciar servidor / Sair
 # ---------------------------------------------------------------------------
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
+if ($script:visualOk) {
+    try { $menu.Renderer = New-Object RelTray.Renderizador } catch { $menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System }
+} else {
+    $menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
+}
+try { $menu.Font = New-Object System.Drawing.Font("Segoe UI", 9.75) } catch {}
+$menu.ImageScalingSize = New-Object System.Drawing.Size($ICON_PX, $ICON_PX)
+$menu.ShowCheckMargin = $false
+$menu.ShowImageMargin = $true
 
-# --- Abrir Relatorio (negrito) ---
-$itemAbrir = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemAbrir.Text = "Abrir Relatorio"
-$itemAbrir.Font = New-Object System.Drawing.Font($menu.Font.FontFamily, $menu.Font.Size, [System.Drawing.FontStyle]::Bold)
-$itemAbrir.Add_Click({ Open-Relatorio "/" })
-$menu.Items.Add($itemAbrir) | Out-Null
+# --- Cabecalho: nome + status (atualizado toda vez que o menu abre) ---
+$cabTitulo = New-Object System.Windows.Forms.ToolStripLabel
+$cabTitulo.Text = $APP_NAME
+$cabTitulo.Font = New-Object System.Drawing.Font($menu.Font.FontFamily, ($menu.Font.Size + 0.5), [System.Drawing.FontStyle]::Bold)
+$cabTitulo.ForeColor = [System.Drawing.Color]::FromArgb(17, 24, 39)
+$cabTitulo.Padding = New-Object System.Windows.Forms.Padding(2, 6, 2, 0)
+$imgCab = Get-Icone "servidor" "#2563EB"; if ($imgCab) { $cabTitulo.Image = $imgCab }
+$cabStatus = New-Object System.Windows.Forms.ToolStripLabel
+$cabStatus.Text = L "Verificando..."
+$cabStatus.ForeColor = [System.Drawing.Color]::FromArgb(107, 114, 128)
+$cabStatus.Padding = New-Object System.Windows.Forms.Padding(2, 0, 2, 6)
+$menu.Items.Add($cabTitulo) | Out-Null
+$menu.Items.Add($cabStatus) | Out-Null
+$menu.Items.Add((New-Separador)) | Out-Null
 
-$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+function Update-Cabecalho {
+    try {
+        $db = Invoke-Api "/api/db-status" -Timeout 1
+        if ($null -eq $db) {
+            $cabStatus.Text = L "\u25cf Servidor fora do ar"
+            $cabStatus.ForeColor = [System.Drawing.Color]::FromArgb(220, 38, 38)
+            return
+        }
+        $telas = 0; $sc = Invoke-Api "/api/sse-clients" -Timeout 1; if ($sc) { $telas = [int]$sc.clients }
+        $aparelhos = 0; $dv = Invoke-Api "/api/dispositivos" -Timeout 1; if ($dv) { $aparelhos = [int]$dv.total }
+        $bancoTxt = if ($db.ok) { L "banco conectado" } elseif ($db.scanning) { L "procurando o banco..." } else { L "banco sem conex\u00e3o" }
+        $cabStatus.Text = (L "\u25cf No ar \u00b7 ") + $bancoTxt + (L " \u00b7 ") + $telas + $(if ($telas -eq 1) { L " tela" } else { L " telas" }) + (L " \u00b7 ") + $aparelhos + $(if ($aparelhos -eq 1) { L " aparelho na rede" } else { L " aparelhos na rede" })
+        $cabStatus.ForeColor = if ($db.ok) { [System.Drawing.Color]::FromArgb(22, 163, 74) } else { [System.Drawing.Color]::FromArgb(217, 119, 6) }
+    } catch {}
+}
+$menu.Add_Opening({ Update-Cabecalho })
 
-# --- Atualizar dados de hoje ---
-$itemAtualizar = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemAtualizar.Text = "Atualizar dados de hoje"
-$itemAtualizar.Add_Click({
+# --- Abrir ---
+$menu.Items.Add((New-ItemMenu "Abrir relat\u00f3rio" "abrir" "#2563EB" { Open-Relatorio "/" } -Negrito)) | Out-Null
+$menu.Items.Add((New-ItemMenu "Abrir em nova aba do navegador" "externo" "#2563EB" { try { Start-Process $ADDR } catch {} })) | Out-Null
+$menu.Items.Add((New-Separador)) | Out-Null
+
+# --- Dados ---
+$menu.Items.Add((New-ItemMenu "Atualizar dados de hoje" "atualizar" "#16A34A" {
     $clients = Get-SseClients
     if ($clients -gt 0) {
         # Aba aberta: navega para / (reload) e forca foco
@@ -415,13 +1113,8 @@ $itemAtualizar.Add_Click({
         # Sem aba aberta: abre /atualizar no browser (redireciona para / apos limpar cache)
         try { Start-Process "$ADDR/atualizar" } catch {}
     }
-})
-$menu.Items.Add($itemAtualizar) | Out-Null
-
-# --- Gerar por periodo ---
-$itemPeriodo = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemPeriodo.Text = "Gerar por periodo..."
-$itemPeriodo.Add_Click({
+})) | Out-Null
+$menu.Items.Add((New-ItemMenu "Gerar por per\u00edodo..." "periodo" "#7C3AED" {
     $clients = Get-SseClients
     if ($clients -gt 0) {
         # Aba aberta: abre modal de periodo via SSE (nao abre nova aba)
@@ -433,15 +1126,63 @@ $itemPeriodo.Add_Click({
         # Sem aba aberta: abre /periodo no browser
         try { Start-Process "$ADDR/periodo" } catch {}
     }
+})) | Out-Null
+$menu.Items.Add((New-Separador)) | Out-Null
+
+# --- Telas abertas ---
+$subTelas = New-ItemMenu "Telas abertas" "telas" "#0891B2"
+$subTelas.DropDownItems.Add((New-ItemMenu "Trazer o relat\u00f3rio para frente" "foco" "#0891B2" {
+    $r = Invoke-Api "/api/navigate/foco" -Timeout 2
+    if ($null -eq $r) { Open-Relatorio "/" }
+})) | Out-Null
+$subTelas.DropDownItems.Add((New-ItemMenu "Recarregar todas as telas" "atualizar" "#0891B2" {
+    $r = Invoke-Api "/api/navigate/recarregar" -Timeout 3
+    if ($null -eq $r) { Show-Balao $APP_NAME ((L "N\u00e3o foi poss\u00edvel recarregar: ") + $script:ultimoErroApi) "Warning"; return }
+    $n = 0; try { $n = [int]$r.clients } catch {}
+    Show-Balao $APP_NAME ((L "Recarregando ") + $n + $(if ($n -eq 1) { L " tela." } else { L " telas." })) "Info" 2500
+})) | Out-Null
+$subTelas.DropDownItems.Add((New-ItemMenu "Enviar aviso para as telas..." "aviso" "#0891B2" {
+    $txt = ""
+    try { $txt = [Microsoft.VisualBasic.Interaction]::InputBox((L "Mensagem que vai aparecer em destaque em todas as telas abertas (at\u00e9 300 caracteres):"), "$APP_NAME - " + (L "Enviar aviso"), "") } catch {}
+    if ([string]::IsNullOrWhiteSpace($txt)) { return }
+    if ($txt.Length -gt 300) { $txt = $txt.Substring(0, 300) }
+    $r = Invoke-Api "/api/navigate/aviso" -Metodo POST -Corpo @{ msg = $txt; segundos = 15 } -Timeout 3
+    if ($null -eq $r) { Show-Balao $APP_NAME ((L "Aviso n\u00e3o enviado: ") + $script:ultimoErroApi) "Warning"; return }
+    $n = 0; try { $n = [int]$r.clients } catch {}
+    Show-Balao $APP_NAME ((L "Aviso enviado para ") + $n + $(if ($n -eq 1) { L " tela." } else { L " telas." })) "Info" 2500
+})) | Out-Null
+$subTema = New-ItemMenu "Tema das telas" "tema" "#0891B2"
+$subTema.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripMenuItem((L "Carregando...")))) | Out-Null
+$subTema.Add_DropDownOpening({
+    $alvo = $this
+    $alvo.DropDownItems.Clear()
+    $t = Invoke-Api "/api/temas" -Timeout 2
+    if ($null -eq $t -or -not $t.temas) {
+        $vazio = New-Object System.Windows.Forms.ToolStripMenuItem((L "(servidor sem resposta)")); $vazio.Enabled = $false
+        $alvo.DropDownItems.Add($vazio) | Out-Null; return
+    }
+    foreach ($tm in @($t.temas)) {
+        $it = New-Object System.Windows.Forms.ToolStripMenuItem([string]$tm.nome)
+        $it.Tag = [string]$tm.id
+        $it.Add_Click({
+            param($s, $e)
+            $id = [string]$s.Tag
+            $r = Invoke-Api ("/api/navigate/tema/" + [uri]::EscapeDataString($id)) -Timeout 3
+            if ($null -eq $r) { Show-Balao $APP_NAME ((L "Tema n\u00e3o aplicado: ") + $script:ultimoErroApi) "Warning"; return }
+            $n = 0; try { $n = [int]$r.clients } catch {}
+            Show-Balao $APP_NAME ((L "Tema \u201c") + $s.Text + (L "\u201d aplicado em ") + $n + $(if ($n -eq 1) { L " tela." } else { L " telas." })) "Info" 2500
+        })
+        $alvo.DropDownItems.Add($it) | Out-Null
+    }
 })
-$menu.Items.Add($itemPeriodo) | Out-Null
+$subTelas.DropDownItems.Add($subTema) | Out-Null
+$menu.Items.Add($subTelas) | Out-Null
+$menu.Items.Add((New-ItemMenu "Dispositivos conectados..." "celular" "#DB2777" { Show-Dispositivos })) | Out-Null
+$menu.Items.Add((New-Separador)) | Out-Null
 
-$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-
-# --- Editar configuracoes ---
-$itemEditarCfg = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemEditarCfg.Text = "Editar configuracoes..."
-$itemEditarCfg.Add_Click({
+# --- Configuracoes ---
+$subCfg = New-ItemMenu "Configura\u00e7\u00f5es" "config" "#475569"
+$subCfg.DropDownItems.Add((New-ItemMenu "Editar configura\u00e7\u00f5es..." "config" "#475569" {
     $clients = Get-SseClients
     if ($clients -gt 0) {
         try {
@@ -459,13 +1200,8 @@ $itemEditarCfg.Add_Click({
             ) | Out-Null
         }
     }
-})
-$menu.Items.Add($itemEditarCfg) | Out-Null
-
-# --- Selecionar banco (FDB)... ---
-$itemFdb = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemFdb.Text = "Selecionar banco (FDB)..."
-$itemFdb.Add_Click({
+})) | Out-Null
+$subCfg.DropDownItems.Add((New-ItemMenu "Selecionar banco (FDB)..." "banco" "#475569" {
     # 1) Verifica se o servidor esta respondendo antes de qualquer acao
     if (-not (Test-ServidorAtivo)) {
         $tray.BalloonTipTitle = "$APP_NAME - Atencao"
@@ -515,15 +1251,83 @@ $itemFdb.Add_Click({
             ) | Out-Null
         }
     }
+})) | Out-Null
+$subCfg.DropDownItems.Add((New-ItemMenu "Status do banco de dados..." "banco" "#475569" {
+    $db = Invoke-Api "/api/db-status" -Timeout 3
+    $inf = Invoke-Api "/api/info" -Timeout 3
+    if ($null -eq $db) { Show-Mensagem ((L "O servidor n\u00e3o respondeu: ") + $script:ultimoErroApi) "$APP_NAME" "Warning"; return }
+    $caminho = ""; try { $caminho = [string]$inf.banco.caminho } catch {}
+    $estado = if ($db.ok) { L "Conectado (somente leitura)." } elseif ($db.scanning) { L "Procurando o banco na rede..." } else { (L "Sem conex\u00e3o: ") + [string]$db.erro }
+    Show-Mensagem ((L "Banco de dados (Firebird)`n`nEstado: ") + $estado + (L "`nServidor do banco: ") + [string]$db.ip + (L "`nArquivo: ") + $caminho) "$APP_NAME" $(if ($db.ok) { "Information" } else { "Warning" })
+})) | Out-Null
+$menu.Items.Add($subCfg) | Out-Null
+
+# --- Ferramentas ---
+$subFer = New-ItemMenu "Ferramentas" "ferramentas" "#EA580C"
+$subFer.DropDownItems.Add((New-ItemMenu "Informa\u00e7\u00f5es do sistema..." "info" "#EA580C" {
+    $i = Invoke-Api "/api/info" -Timeout 3
+    if ($null -eq $i) { Show-Mensagem ((L "O servidor n\u00e3o respondeu: ") + $script:ultimoErroApi) "$APP_NAME" "Warning"; return }
+    $txt = (L "Servidor: ") + $i.servidor + (L "`nGerador: ") + $i.gerador + (L "`nNode.js: ") + $i.node +
+           (L "`n`nComputador: ") + $i.computador + (L "`nSistema: ") + $i.sistema +
+           (L "`nEndere\u00e7o de acesso: http://") + $i.ip + ":" + $i.porta +
+           (L "`n`nLigado h\u00e1: ") + $i.ligadoHa + (L "`nMem\u00f3ria: ") + $i.memoriaMB + " MB" + (L "`nTelas abertas: ") + $i.abasConectadas +
+           (L "`n`nPasta: ") + $i.pasta
+    Show-Mensagem $txt ("$APP_NAME - " + (L "Informa\u00e7\u00f5es"))
+})) | Out-Null
+$subFer.DropDownItems.Add((New-ItemMenu "Copiar endere\u00e7o de acesso" "link" "#EA580C" {
+    $end = "http://" + (Get-MaquinaIP) + ":" + $PORT
+    $ok = $false
+    try { [System.Windows.Forms.Clipboard]::SetText($end); $ok = $true } catch { try { Set-Clipboard -Value $end; $ok = $true } catch {} }
+    if ($ok) { Show-Balao $APP_NAME ((L "Copiado: ") + $end + (L "`nCole no navegador de qualquer computador ou celular da rede.")) "Info" 3500 }
+    else { Show-Mensagem ((L "Endere\u00e7o de acesso:`n") + $end) "$APP_NAME" }
+})) | Out-Null
+$subFer.DropDownItems.Add((New-Separador)) | Out-Null
+$subFer.DropDownItems.Add((New-ItemMenu "Abrir pasta do sistema" "pasta" "#EA580C" { try { Start-Process explorer.exe -ArgumentList "`"$DIR`"" } catch {} })) | Out-Null
+$subFer.DropDownItems.Add((New-ItemMenu "Abrir o log (relatorio.log)" "log" "#EA580C" {
+    if (-not (Test-Path $LOG_PATH)) { Show-Mensagem (L "O relatorio.log ainda n\u00e3o existe.") "$APP_NAME"; return }
+    try { Start-Process notepad.exe -ArgumentList "`"$LOG_PATH`"" } catch {}
+})) | Out-Null
+$subFer.DropDownItems.Add((New-ItemMenu "Acompanhar o log ao vivo" "aovivo" "#EA580C" {
+    $cmd = '$host.UI.RawUI.WindowTitle = ''{1} - log ao vivo''; Get-Content -LiteralPath ''{0}'' -Wait -Tail 80 -Encoding UTF8' -f ($LOG_PATH -replace "'", "''"), ($APP_NAME -replace "'", "''")
+    try { Start-Process powershell.exe -ArgumentList @("-NoProfile", "-NoExit", "-Command", $cmd) } catch {}
+})) | Out-Null
+$subFer.DropDownItems.Add((New-ItemMenu "Cliente da API (api.ps1)" "terminal" "#EA580C" {
+    $api = Join-Path $DIR "api.ps1"
+    if (-not (Test-Path $api)) { Show-Mensagem (L "api.ps1 n\u00e3o encontrado na pasta do sistema.") "$APP_NAME" "Warning"; return }
+    try { Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", "`"$api`"", "-MaquinaIP", "127.0.0.1") } catch {}
+})) | Out-Null
+$subProg = New-ItemMenu "Programas" "programas" "#EA580C"
+$subProg.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripMenuItem((L "Carregando...")))) | Out-Null
+$subProg.Add_DropDownOpening({
+    $alvo = $this
+    $alvo.DropDownItems.Clear()
+    $p = Invoke-Api "/api/programas" -Timeout 2
+    if ($null -eq $p -or -not $p.programas) {
+        $vazio = New-Object System.Windows.Forms.ToolStripMenuItem((L "(servidor sem resposta)")); $vazio.Enabled = $false
+        $alvo.DropDownItems.Add($vazio) | Out-Null; return
+    }
+    foreach ($pg in @($p.programas)) {
+        $it = New-Object System.Windows.Forms.ToolStripMenuItem([string]$pg.nome)
+        $it.Tag = [string]$pg.nome
+        if (-not $pg.existe) { $it.Enabled = $false; $it.Text = [string]$pg.nome + (L "  (arquivo n\u00e3o encontrado)") }
+        $it.Add_Click({
+            param($s, $e)
+            $r = Invoke-Api "/api/programas/abrir" -Metodo POST -Corpo @{ nome = [string]$s.Tag } -Timeout 5
+            if ($null -eq $r) { Show-Balao $APP_NAME ((L "N\u00e3o abriu: ") + $script:ultimoErroApi) "Warning" }
+        })
+        $alvo.DropDownItems.Add($it) | Out-Null
+    }
+    $dica = New-Object System.Windows.Forms.ToolStripMenuItem((L "Para incluir programas: lista \u201cprogramas\u201d no config.json"))
+    $dica.Enabled = $false
+    $alvo.DropDownItems.Add((New-Separador)) | Out-Null
+    $alvo.DropDownItems.Add($dica) | Out-Null
 })
-$menu.Items.Add($itemFdb) | Out-Null
+$subFer.DropDownItems.Add($subProg) | Out-Null
+$menu.Items.Add($subFer) | Out-Null
+$menu.Items.Add((New-Separador)) | Out-Null
 
-$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-
-# --- Reiniciar servidor ---
-$itemReiniciar = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemReiniciar.Text = "Reiniciar servidor"
-$itemReiniciar.Add_Click({
+# --- Servidor ---
+$menu.Items.Add((New-ItemMenu "Reiniciar servidor" "reiniciar" "#D97706" {
     Write-TrayLog "Reinicio manual solicitado pelo usuario via bandeja."
     # 1) Encerra o servidor de forma ordenada (log + aviso nas telas abertas)
     #    e, so' se ele nao responder, mata a arvore do PID que o tray lancou
@@ -570,15 +1374,8 @@ $itemReiniciar.Add_Click({
         $tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::Error
         $tray.ShowBalloonTip(5000)
     }
-})
-$menu.Items.Add($itemReiniciar) | Out-Null
-
-$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-
-# --- Sair ---
-$itemSair = New-Object System.Windows.Forms.ToolStripMenuItem
-$itemSair.Text = "Sair"
-$itemSair.Add_Click({
+})) | Out-Null
+$menu.Items.Add((New-ItemMenu "Sair" "sair" "#DC2626" {
     Write-TrayLog "Encerramento solicitado pelo usuario via bandeja."
     $watchTimer.Stop()   # impede o watchdog de relancar o servidor durante o encerramento
     $tray.Visible = $false
@@ -594,8 +1391,7 @@ $itemSair.Add_Click({
     ) | Out-Null
     try { $mutex.ReleaseMutex() } catch {}
     [System.Windows.Forms.Application]::Exit()
-})
-$menu.Items.Add($itemSair) | Out-Null
+})) | Out-Null
 
 $tray.ContextMenuStrip = $menu
 $tray.Add_DoubleClick({ Open-Relatorio "/" })
