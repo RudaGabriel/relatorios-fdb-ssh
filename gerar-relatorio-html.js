@@ -1,17 +1,15 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.20.0
+ * @version 3.21.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.20.0 - 2026-10-23 21:30 - Animações de saída (modo Completo).
- *     - Janelas (venda, ajuda, duplicatas, configurações, período…): a caixa encolhe e
- *       esmaece ao fechar; no celular, desce de volta. Antes só o fundo escurecido sumia.
- *     - Lista de vendas e painel: ao filtrar (vendedor, tipo, busca), limpar, minimizar/
- *       restaurar cartões ou trocar a visualização, o conteúdo antigo sai deslizando e
- *       esmaecendo enquanto o novo entra (transição nativa do navegador; sem ela, troca
- *       direto). Modo Leve e recarregamento automático continuam sem animação.
+ *   3.21.0 - 2026-10-23 22:00 - QR code para o celular; tamanho do texto no computador.
+ *     - Botão "Celular" no topo (só no computador): janela com o QR code do endereço desta
+ *       máquina na rede, o endereço e "Copiar endereço" (servidor 2.18.0+).
+ *     - Menu Tema → "Tamanho do texto" agora também no computador (80% a 140%, salvo à
+ *       parte do celular); a página continua ocupando a tela inteira.
  */
 
 (function() {
@@ -19,7 +17,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.20.0";
+    const SCRIPT_VERSION = "3.21.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2304,6 +2302,8 @@
       // TAMANHO DO TEXTO NO CELULAR (v3.18.0): "fdb_zoom_mob" = 0.8 a 1.4 (padrão 1). Só tem
       // efeito até 680 px (o CSS usa a variável só dentro do @media do celular).
       try { var _z = parseFloat(localStorage.getItem("fdb_zoom_mob")); if (_z >= 0.8 && _z <= 1.4) { document.documentElement.style.setProperty("--zoom-mob", String(_z)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(_z, 1.2))); } } catch (e) {}
+      // No computador (v3.21.0): "fdb_zoom_pc", separado do celular — cada tela pede um tamanho.
+      try { var _zp = parseFloat(localStorage.getItem("fdb_zoom_pc")); if (_zp >= 0.8 && _zp <= 1.4) document.documentElement.style.setProperty("--zoom-pc", String(_zp)); } catch (e) {}
     </script>
 <style>
 :root {
@@ -3198,7 +3198,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .dshTit .dshMinBtn, .dshTit .dshExtra + .dshMinBtn { margin-left: auto; }
   /* Janelas (v3.16.0): cabeçalho compacto com "Fechar" ao lado do título, campos
      empilhados (rótulo em cima, campo embaixo, largura toda) — nada passa da borda. */
-  .ov.sheet .modal { padding: 0; max-height: 88vh; max-height: 88dvh; }
+  .ov.sheet .modal { padding: 0; max-height: calc(88vh / var(--zoom-mob, 1)); max-height: calc(88dvh / var(--zoom-mob, 1)); }
   .mhead { padding: 14px 16px; flex-wrap: nowrap; align-items: flex-start; }
   .mhead > div:first-child { flex: 1 1 auto; min-width: 0; }
   .mhead > .btn { flex: none; }
@@ -3269,6 +3269,20 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .tmPerfOp:hover { border-color: var(--border-focus); }
 .tmPerfOp[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .tmZoom { display: none; }
+/* Tamanho do texto no computador (v3.21.0): mesmo controle do celular. A página ocupa a
+   tela inteira com altura fixa, então a altura é compensada pelo zoom (senão sobraria
+   faixa vazia ao diminuir, ou cortaria ao aumentar). */
+@media (min-width: 681px) {
+  .app { zoom: var(--zoom-pc, 1); height: calc(100vh / var(--zoom-pc, 1)); max-height: calc(100vh / var(--zoom-pc, 1)); }
+  .ov .modal { zoom: var(--zoom-pc, 1); max-height: calc(90vh / var(--zoom-pc, 1)); }
+  .tmMenu .tmZoom { display: block; }
+}
+/* QR code (v3.21.0): botão só no computador — no celular o relatório já está aberto. */
+@media (max-width: 680px) { #btnCelular { display: none !important; } }
+.qrCaixa { background: #fff; border-radius: 14px; padding: 10px; width: 260px; height: 260px; margin: 4px auto 0; box-shadow: var(--shadow-md); }
+.qrCaixa img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.qrUrl { font: 600 15px 'JetBrains Mono', Consolas, monospace; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; text-align: center; word-break: break-all; }
+.qrDica { font-size: 12.5px; color: var(--text-muted); text-align: center; line-height: 1.5; }
 .tmZoomOps .tmPerfOp { flex: 1 1 0; }
 .tmZoomOps .tmZoomOp[disabled] { opacity: 0.4; cursor: default; }
 .tmPerfDica { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
@@ -3314,6 +3328,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 <button id="btnDuplicatas" class="btn btnLabel" type="button" style="display:none" data-tip="Ver gerenciais que foram automaticamente ocultadas nesta geração por já terem virado NFC-e/NF-e" aria-label="Ver duplicatas"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Duplicatas <span id="badgeDuplicatas" style="opacity:.75"></span></button>
 <button id="btnAutoteste" class="btn btnLabel" type="button" style="display:none" data-tip="Resultado do auto-teste desta atualização: totais, duplicidades e leitura do banco" aria-label="Ver auto-teste"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>Auto-teste <span id="badgeAutoteste" style="opacity:.85"></span></button>
 <button id="atualizar" class="btn btnLabel" type="button" data-tip="Recarregar relatório do dia atual" aria-label="Atualizar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>Atualizar</button>
+<button id="btnCelular" class="btn btnLabel" type="button" data-tip="Abrir este relatório no celular: mostra um QR code para escanear com a câmera" aria-label="Abrir no celular (QR code)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>Celular</button>
 <button id="btnTema" class="btn btnLabel" type="button" data-tip="Escolher tema de cores" aria-label="Escolher tema de cores" aria-haspopup="menu" aria-expanded="false"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>Tema<svg class="tmChev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
 <button id="btnModalPeriodo" class="btn btnLabel" type="button" data-tip="Gerar relatório para um intervalo de datas" aria-label="Gerar por período"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>Por período</button>
 <button id="acoes" class="btn btnLabel" type="button" data-tip="Editar configurações do sistema" aria-label="Editar configurações"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Configurações</button>
@@ -6123,13 +6138,18 @@ const _visAplicar = (v) => {
 };
 // Tamanho do texto no celular (menu Tema): 80% a 140%, de 10 em 10. Salvo no aparelho.
 const ZOOM_NIVEIS = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4];
-const _zoomAtual = () => { const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--zoom-mob")); return ZOOM_NIVEIS.indexOf(v) >= 0 ? v : 1; };
+// Celular e computador guardam o tamanho separado (fdb_zoom_mob / fdb_zoom_pc).
+const _zoomEhCel = () => { try { return window.matchMedia("(max-width: 680px)").matches; } catch (e) { return false; } };
+const _zoomVar = () => _zoomEhCel() ? "--zoom-mob" : "--zoom-pc";
+const _zoomChave = () => _zoomEhCel() ? "fdb_zoom_mob" : "fdb_zoom_pc";
+const _zoomAtual = () => { const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(_zoomVar())); return ZOOM_NIVEIS.indexOf(v) >= 0 ? v : 1; };
 const _zoomPasso = (dir) => {
     const i = ZOOM_NIVEIS.indexOf(_zoomAtual());
     const novo = dir === 0 ? 1 : ZOOM_NIVEIS[Math.max(0, Math.min(ZOOM_NIVEIS.length - 1, (i < 0 ? 2 : i) + (dir > 0 ? 1 : -1)))];
-    try { if (novo === 1) localStorage.removeItem("fdb_zoom_mob"); else localStorage.setItem("fdb_zoom_mob", String(novo)); } catch (e) {}
-    if (novo === 1) { document.documentElement.style.removeProperty("--zoom-mob"); document.documentElement.style.removeProperty("--zoom-bar"); }
-    else { document.documentElement.style.setProperty("--zoom-mob", String(novo)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(novo, 1.2))); }
+    const cel = _zoomEhCel(), chave = _zoomChave(), vr = _zoomVar(), h = document.documentElement.style;
+    try { if (novo === 1) localStorage.removeItem(chave); else localStorage.setItem(chave, String(novo)); } catch (e) {}
+    if (novo === 1) { h.removeProperty(vr); if (cel) h.removeProperty("--zoom-bar"); }
+    else { h.setProperty(vr, String(novo)); if (cel) h.setProperty("--zoom-bar", String(Math.min(novo, 1.2))); }
     _zoomMarcarMenu();
     // Sem disparar "resize": o menu fica parado sob o dedo (A+ / A− várias vezes seguidas);
     // só os textos de "uma linha só" são reajustados ao novo tamanho.
@@ -6604,6 +6624,7 @@ ajustarPlaceholder(); window.addEventListener("resize",ajustarPlaceholder);
 
 const clicar=sel=>{const el=qs(sel);if(el)el.dispatchEvent(new MouseEvent("click",{bubbles:true}));};
 const acoes=qs("#acoes");if(acoes)acoes.addEventListener("click",function(){ __abrirModalConfig(); });
+const btnCel=qs("#btnCelular");if(btnCel)btnCel.addEventListener("click",function(){ __abrirModalQr(); });
 const acoesFechar=qs("#acoesFechar");if(acoesFechar)acoesFechar.addEventListener("click",fecharAcoes);
 const ovA=qs("#ovAcoes");if(ovA)ovA.addEventListener("click",e=>{if(e.target===ovA)fecharAcoes();});
 const copiarFechar=qs("#copiarFechar");if(copiarFechar)copiarFechar.addEventListener("click",fecharCopiar);
@@ -6831,6 +6852,46 @@ var __abrirModalPeriodo = function() {
         if (_st)  _st.style.display = "block";
         if (_btn) { _btn.disabled = true; _btn.textContent = "Gerando..."; }
         window.location.href = "/periodo?i=" + encodeURIComponent(inicio) + "&f=" + encodeURIComponent(fim);
+    });
+};
+
+// ── QR code para abrir no celular (v3.21.0) ────────────────────────────────
+// Imagem e endereço vêm do servidor (/qr.svg e /api/qr): sempre o IP desta máquina na
+// rede, nunca "localhost" (que no celular apontaria para o próprio celular).
+var __abrirModalQr = function() {
+    if (document.getElementById("ovQr")) return;
+    var _bg = document.createElement("div");
+    _bg.className = "ov sheet"; _bg.id = "ovQr"; _bg.setAttribute("aria-hidden", "false");
+    _bg.innerHTML =
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="Abrir no celular" style="max-width:400px">' +
+          '<div class="mhead"><div><div class="mtitle">Abrir no celular</div>' +
+          '<div class="msub">Aponte a câmera do celular para o código.</div></div>' +
+          '<button class="btn" id="qrFechar" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</button></div>' +
+          '<div class="mbody" style="gap:12px;padding:16px 18px 20px">' +
+            '<div class="qrCaixa"><img id="qrImg" alt="QR code do endereço do relatório" src="/qr.svg?t=' + Date.now() + '"></div>' +
+            '<div class="qrUrl" id="qrUrl">…</div>' +
+            '<button class="btn" id="qrCopiar" type="button" style="width:100%;justify-content:center;min-height:42px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar endereço</button>' +
+            '<div class="qrDica">O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.</div>' +
+          '</div>' +
+        '</div>';
+    document.body.appendChild(_bg);
+    void _bg.offsetWidth;
+    _bg.classList.add("on");
+    function _escQr(e) { if (e.key === "Escape") _fechar(); }
+    var _fechar = function() { document.removeEventListener("keydown", _escQr); _fecharOverlayAnimado(_bg); };
+    document.getElementById("qrFechar").addEventListener("click", _fechar);
+    _bg.addEventListener("click", function(e) { if (e.target === _bg) _fechar(); });
+    document.addEventListener("keydown", _escQr);
+    var _img = document.getElementById("qrImg");
+    _img.addEventListener("error", function() {
+        var cx = _img.parentNode; if (cx) cx.innerHTML = '<div class="qrDica" style="padding:90px 10px">Não foi possível gerar o QR code — o servidor está ligado?</div>';
+    });
+    _fetchJSON("/api/qr", {cache: "no-store"}).then(function(r) {
+        var u = document.getElementById("qrUrl"); if (u) u.textContent = (r && r.url) ? r.url : location.origin + "/";
+    }).catch(function() { var u = document.getElementById("qrUrl"); if (u) u.textContent = location.origin + "/"; });
+    document.getElementById("qrCopiar").addEventListener("click", function() {
+        var u = document.getElementById("qrUrl"); if (!u) return;
+        copiarTexto(u.textContent); toast("Copiado", "Endereço do relatório: " + u.textContent);
     });
 };
 

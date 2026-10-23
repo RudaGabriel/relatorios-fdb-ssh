@@ -3,22 +3,12 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.5.0
+# @version 1.5.1
 # @author Ruda Gabriel
 # @changelog
 #   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-#   1.5.0 - 2026-10-23 21:00 - Menu completo, com icones.
-#     - Todas as opcoes, em grupos: cabecalho com status ao vivo (servidor, banco,
-#       telas, aparelhos), abrir / abrir em nova aba, atualizar, periodo, Telas
-#       abertas (trazer para frente, recarregar, enviar aviso, tema), Dispositivos
-#       conectados (janela com nome do aparelho, IP, rotas - atualiza a cada 5 s),
-#       Configuracoes (editar, banco FDB, status do banco), Ferramentas (informacoes,
-#       copiar endereco de acesso, pasta, log, log ao vivo, api.ps1, programas),
-#       reiniciar e sair.
-#     - Icones vetoriais (os mesmos SVG Lucide do relatorio), coloridos, nitidos em
-#       qualquer escala de tela; menu com fundo branco e destaque azul; textos com
-#       acento. Sem favicon.png, icone proprio na bandeja. Se o visual nao puder ser
-#       montado, o menu funciona igual, sem icones.
+#   1.5.1 - 2026-10-23 22:00 - "Abrir no celular (QR code)...": abre a pagina /qr do
+#     servidor (QR code do endereco desta maquina na rede) para escanear com o celular.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -849,6 +839,7 @@ $ICONES = @{
     reiniciar   = 'p:M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8;p:M3 3v5h5'
     sair        = 'p:M12 2v10;p:M18.4 6.6a9 9 0 1 1-12.77.04'
     servidor    = 'r:2,2,20,8,2;r:2,14,20,8,2;p:M6 6h.01;p:M6 18h.01'
+    qr          = 'r:3,3,5,5,1;r:16,3,5,5,1;r:3,16,5,5,1;p:M21 16h-3a2 2 0 0 0-2 2v3;p:M21 21v.01;p:M12 7v3a2 2 0 0 1-2 2H7;p:M3 12h.01;p:M12 3h.01;p:M12 16v.01;p:M16 12h1;p:M21 12v.01;p:M12 21v-1'
 }
 function Get-Icone([string]$nome, [string]$cor) {
     if (-not $script:visualOk -or -not $ICONES.ContainsKey($nome)) { return $null }
@@ -1100,6 +1091,8 @@ $menu.Add_Opening({ Update-Cabecalho })
 # --- Abrir ---
 $menu.Items.Add((New-ItemMenu "Abrir relat\u00f3rio" "abrir" "#2563EB" { Open-Relatorio "/" } -Negrito)) | Out-Null
 $menu.Items.Add((New-ItemMenu "Abrir em nova aba do navegador" "externo" "#2563EB" { try { Start-Process $ADDR } catch {} })) | Out-Null
+# QR code (v1.5.1): pagina do servidor com o codigo do endereco desta maquina na rede.
+$menu.Items.Add((New-ItemMenu "Abrir no celular (QR code)..." "qr" "#2563EB" { try { Start-Process "$ADDR/qr" } catch {} })) | Out-Null
 $menu.Items.Add((New-Separador)) | Out-Null
 
 # --- Dados ---

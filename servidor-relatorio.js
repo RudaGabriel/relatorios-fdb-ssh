@@ -2,22 +2,15 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.17.0
+ * @version 2.18.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.17.0 - 2026-10-23 16:30 - Dispositivos conectados no log; recarga sem piscar.
- *     - Log [CONEXAO]: cada celular/computador da rede que abre o relatório — tipo, modelo,
- *       sistema e navegador, IP e o NOME do aparelho (perguntado a ele pela rede: Bonjour/mDNS
- *       no iPhone/Mac/Android, NetBIOS no Windows, DNS do roteador como reserva); cada rota
- *       acessada com resultado e tempo; telas abertas/fechadas; resumo das chamadas
- *       automáticas a cada 10 min; saída do aparelho com tempo conectado. A própria máquina
- *       do servidor fica de fora.
- *     - /api/dispositivos: aparelhos com o relatório aberto agora (só rede local).
- *     - Recarregamento automático chama window.__antesRecarga (gerador 3.19.0+): a tela
- *       volta no mesmo ponto e com os mesmos filtros, sem piscar.
+ *   2.18.0 - 2026-10-23 22:00 - QR code para abrir no celular.
+ *     - Gerador de QR code próprio (sem biblioteca, sem internet): /qr (página para mostrar
+ *       na tela), /qr.svg (imagem) e /api/qr (endereço). Sempre o IP desta máquina na rede.
  */
 
 
@@ -25,7 +18,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.17.0";
+const SERVER_VERSION = "2.18.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -4158,6 +4151,200 @@ var _requisicaoDaRedeLocal = function(req) {
     return local || !_maquinaIP || BIND_ADDR !== "0.0.0.0";
 };
 
+// ── QR CODE (v2.18.0) ──────────────────────────────────────────────────────
+// Gerador de QR code próprio (sem biblioteca, funciona sem internet): modo byte
+// (UTF-8), correção de erros nível M (~15% do código pode estar danificado),
+// versões 1 a 10 (até 213 bytes — sobra para qualquer endereço de rede), máscara
+// escolhida pela menor penalidade (norma ISO/IEC 18004). Usado em /qr e /qr.svg
+// para abrir o relatório no celular.
+var _QR_TOTAL = [0, 26, 44, 70, 100, 134, 172, 196, 242, 292, 346];
+var _QR_ECC_M = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26];
+var _QR_BLOCOS_M = [null, [[1, 16]], [[1, 28]], [[1, 44]], [[2, 32]], [[2, 43]], [[4, 27]], [[4, 31]],
+                    [[2, 38], [2, 39]], [[3, 36], [2, 37]], [[4, 43], [1, 44]]];
+var _QR_ALINHA = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+var _qrGf = (function() {
+    var exp = new Array(512), log = new Array(256), x = 1;
+    for (var i = 0; i < 255; i++) { exp[i] = x; log[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11D; }
+    for (var j = 255; j < 512; j++) exp[j] = exp[j - 255];
+    return { exp: exp, log: log };
+})();
+var _qrMul = function(a, b) { return (a === 0 || b === 0) ? 0 : _qrGf.exp[_qrGf.log[a] + _qrGf.log[b]]; };
+// Reed-Solomon: n codewords de correção para os dados.
+var _qrRs = function(dados, n) {
+    var gen = [1];
+    for (var i = 0; i < n; i++) {
+        var novo = new Array(gen.length + 1).fill(0);
+        for (var j = 0; j < gen.length; j++) { novo[j] ^= gen[j]; novo[j + 1] ^= _qrMul(gen[j], _qrGf.exp[i]); }
+        gen = novo;
+    }
+    var resto = new Array(n).fill(0);
+    for (var k = 0; k < dados.length; k++) {
+        var f = dados[k] ^ resto[0];
+        resto.shift(); resto.push(0);
+        for (var m = 0; m < n; m++) resto[m] ^= _qrMul(gen[m + 1], f);
+    }
+    return resto;
+};
+var _qrBch = function(valor, gen, bitsGen) {
+    var v = valor << (bitsGen - 1);
+    var grau = function(x) { var g = -1; while (x) { g++; x >>>= 1; } return g; };
+    while (grau(v) >= bitsGen - 1) v ^= gen << (grau(v) - (bitsGen - 1));
+    return (valor << (bitsGen - 1)) | v;
+};
+// Devolve { tam, m } (m[linha][coluna] = true para módulo escuro) ou null se não couber.
+var _qrMatriz = function(texto, mascaraFixa) {
+    var bytes = Array.prototype.slice.call(Buffer.from(String(texto), "utf8"));
+    var ver = 0;
+    for (var v = 1; v <= 10; v++) {
+        var cap = 0; _QR_BLOCOS_M[v].forEach(function(g) { cap += g[0] * g[1]; });
+        var bitsCont = v < 10 ? 8 : 16;
+        if (4 + bitsCont + bytes.length * 8 <= cap * 8) { ver = v; break; }
+    }
+    if (!ver) return null;
+    // Bits: modo byte (0100), contagem, dados, terminador, preenchimento.
+    var capBytes = 0; _QR_BLOCOS_M[ver].forEach(function(g) { capBytes += g[0] * g[1]; });
+    var bits = [];
+    var por = function(val, n) { for (var i = n - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+    por(4, 4); por(bytes.length, ver < 10 ? 8 : 16);
+    bytes.forEach(function(b) { por(b, 8); });
+    for (var t = 0; t < 4 && bits.length < capBytes * 8; t++) bits.push(0);
+    while (bits.length % 8) bits.push(0);
+    var cw = [];
+    for (var i = 0; i < bits.length; i += 8) { var b = 0; for (var j = 0; j < 8; j++) b = (b << 1) | bits[i + j]; cw.push(b); }
+    for (var p = 0; cw.length < capBytes; p++) cw.push(p % 2 ? 0x11 : 0xEC);
+    // Blocos + correção, depois intercalados.
+    var blocos = [], eccs = [], pos = 0, nEcc = _QR_ECC_M[ver];
+    _QR_BLOCOS_M[ver].forEach(function(g) {
+        for (var q = 0; q < g[0]; q++) { var bl = cw.slice(pos, pos + g[1]); pos += g[1]; blocos.push(bl); eccs.push(_qrRs(bl, nEcc)); }
+    });
+    var final = [], maxDados = Math.max.apply(null, blocos.map(function(x) { return x.length; }));
+    for (var a = 0; a < maxDados; a++) blocos.forEach(function(bl) { if (a < bl.length) final.push(bl[a]); });
+    for (var e = 0; e < nEcc; e++) eccs.forEach(function(ec) { final.push(ec[e]); });
+    // Matriz: padrões fixos.
+    var tam = ver * 4 + 17;
+    var m = [], reservado = [];
+    for (var r = 0; r < tam; r++) { m.push(new Array(tam).fill(false)); reservado.push(new Array(tam).fill(false)); }
+    var pino = function(r, c, escuro) { if (r >= 0 && r < tam && c >= 0 && c < tam) { m[r][c] = !!escuro; reservado[r][c] = true; } };
+    var localizador = function(r0, c0) {
+        for (var dr = -1; dr <= 7; dr++) for (var dc = -1; dc <= 7; dc++) {
+            var dentro = dr >= 0 && dr <= 6 && dc >= 0 && dc <= 6;
+            var escuro = dentro && (dr === 0 || dr === 6 || dc === 0 || dc === 6 || (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4));
+            pino(r0 + dr, c0 + dc, escuro);
+        }
+    };
+    localizador(0, 0); localizador(0, tam - 7); localizador(tam - 7, 0);
+    for (var k = 8; k < tam - 8; k++) { pino(6, k, k % 2 === 0); pino(k, 6, k % 2 === 0); }
+    var al = _QR_ALINHA[ver];
+    al.forEach(function(ar) { al.forEach(function(ac) {
+        if ((ar === 6 && ac === 6) || (ar === 6 && ac === tam - 7) || (ar === tam - 7 && ac === 6)) return;
+        for (var dr = -2; dr <= 2; dr++) for (var dc = -2; dc <= 2; dc++) pino(ar + dr, ac + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+    }); });
+    pino(tam - 8, 8, true);                                    // módulo escuro fixo
+    for (var f = 0; f < 9; f++) { if (!reservado[8][f]) reservado[8][f] = true; if (!reservado[f][8]) reservado[f][8] = true; }
+    for (var g2 = 0; g2 < 8; g2++) { reservado[8][tam - 1 - g2] = true; reservado[tam - 1 - g2][8] = true; }
+    if (ver >= 7) for (var vi = 0; vi < 6; vi++) for (var vj = 0; vj < 3; vj++) { reservado[vi][tam - 11 + vj] = true; reservado[tam - 11 + vj][vi] = true; }
+    // Dados em ziguezague (de baixo para cima, pares de colunas, pulando a coluna 6).
+    var bitsDados = [];
+    final.forEach(function(b) { for (var i = 7; i >= 0; i--) bitsDados.push((b >>> i) & 1); });
+    var idx = 0, subindo = true;
+    for (var col = tam - 1; col > 0; col -= 2) {
+        if (col === 6) col--;
+        for (var n = 0; n < tam; n++) {
+            var lin = subindo ? tam - 1 - n : n;
+            for (var d = 0; d < 2; d++) {
+                var cc = col - d;
+                if (reservado[lin][cc]) continue;
+                m[lin][cc] = idx < bitsDados.length ? bitsDados[idx] === 1 : false;
+                idx++;
+            }
+        }
+        subindo = !subindo;
+    }
+    var regra = [
+        function(r, c) { return (r + c) % 2 === 0; }, function(r) { return r % 2 === 0; },
+        function(r, c) { return c % 3 === 0; }, function(r, c) { return (r + c) % 3 === 0; },
+        function(r, c) { return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0; },
+        function(r, c) { return (r * c) % 2 + (r * c) % 3 === 0; },
+        function(r, c) { return ((r * c) % 2 + (r * c) % 3) % 2 === 0; },
+        function(r, c) { return ((r + c) % 2 + (r * c) % 3) % 2 === 0; }
+    ];
+    var aplicar = function(mask) {
+        var q = m.map(function(l) { return l.slice(); });
+        for (var r = 0; r < tam; r++) for (var c = 0; c < tam; c++) if (!reservado[r][c] && regra[mask](r, c)) q[r][c] = !q[r][c];
+        // Informação de formato: nível M = 00, máscara; BCH(15,5) com 0x537, XOR 0x5412.
+        var fmt = _qrBch((0 << 3) | mask, 0x537, 11) ^ 0x5412;
+        var bit = function(i) { return ((fmt >>> i) & 1) === 1; };
+        for (var i = 0; i <= 5; i++) q[8][i] = bit(14 - i);
+        q[8][7] = bit(8); q[8][8] = bit(7); q[7][8] = bit(6);
+        for (var i2 = 9; i2 < 15; i2++) q[14 - i2][8] = bit(14 - i2);
+        for (var i3 = 0; i3 < 8; i3++) q[tam - 1 - i3][8] = bit(14 - i3);
+        for (var i4 = 0; i4 < 8; i4++) q[8][tam - 1 - i4] = bit(i4);
+        q[tam - 8][8] = true;
+        if (ver >= 7) {
+            var vinfo = _qrBch(ver, 0x1F25, 13);
+            for (var b = 0; b < 18; b++) {
+                var on = ((vinfo >>> b) & 1) === 1, a = Math.floor(b / 3), c2 = b % 3;
+                q[a][tam - 11 + c2] = on; q[tam - 11 + c2][a] = on;
+            }
+        }
+        return q;
+    };
+    var penalidade = function(q) {
+        var p = 0, r, c;
+        for (var eixo = 0; eixo < 2; eixo++) for (r = 0; r < tam; r++) {
+            var corrida = 1;
+            for (c = 1; c < tam; c++) {
+                var x = eixo ? q[c][r] : q[r][c], y = eixo ? q[c - 1][r] : q[r][c - 1];
+                if (x === y) { corrida++; if (corrida === 5) p += 3; else if (corrida > 5) p++; } else corrida = 1;
+            }
+        }
+        for (r = 0; r < tam - 1; r++) for (c = 0; c < tam - 1; c++) if (q[r][c] === q[r][c + 1] && q[r][c] === q[r + 1][c] && q[r][c] === q[r + 1][c + 1]) p += 3;
+        var padA = [true, false, true, true, true, false, true, false, false, false, false], padB = padA.slice().reverse();
+        for (var e2 = 0; e2 < 2; e2++) for (r = 0; r < tam; r++) for (c = 0; c + 11 <= tam; c++) {
+            var okA = true, okB = true;
+            for (var k = 0; k < 11; k++) { var v2 = e2 ? q[c + k][r] : q[r][c + k]; if (v2 !== padA[k]) okA = false; if (v2 !== padB[k]) okB = false; }
+            if (okA) p += 40; if (okB) p += 40;
+        }
+        var escuros = 0; for (r = 0; r < tam; r++) for (c = 0; c < tam; c++) if (q[r][c]) escuros++;
+        p += Math.floor(Math.abs(escuros * 20 - tam * tam * 10) / (tam * tam)) * 10;
+        return p;
+    };
+    var melhor = null, melhorP = Infinity, melhorMask = 0;
+    for (var mk = 0; mk < 8; mk++) {
+        if (mascaraFixa !== undefined && mascaraFixa !== mk) continue;
+        var cand = aplicar(mk), pen = penalidade(cand);
+        if (pen < melhorP) { melhorP = pen; melhor = cand; melhorMask = mk; }
+    }
+    return { tam: tam, m: melhor, versao: ver, mascara: melhorMask };
+};
+// SVG do QR code (com margem de 4 módulos, exigida pelos leitores).
+var _qrSvg = function(texto, px) {
+    var q = _qrMatriz(texto);
+    if (!q) return null;
+    var borda = 4, n = q.tam + borda * 2, d = "";
+    for (var r = 0; r < q.tam; r++) for (var c = 0; c < q.tam; c++) if (q.m[r][c]) d += "M" + (c + borda) + " " + (r + borda) + "h1v1h-1z";
+    var lado = px || n * 8;
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + lado + '" height="' + lado + '" viewBox="0 0 ' + n + ' ' + n + '" shape-rendering="crispEdges">' +
+           '<rect width="' + n + '" height="' + n + '" fill="#fff"/><path d="' + d + '" fill="#000"/></svg>';
+};
+// Endereço que o celular deve abrir: IP da máquina na rede (nunca "localhost", que
+// no celular apontaria para o próprio celular). Sem IP detectado: o endereço pelo qual
+// a pessoa acessou (se não for local) ou o 1º IPv4 de rede desta máquina.
+var _qrEndereco = function(req) {
+    var ip = _maquinaIP || "";
+    if (!ip) {
+        var host = String((req && req.headers && req.headers.host) || "").replace(/:\d+$/, "");
+        if (host && !/^(localhost|127\.|\[?::1\]?$)/i.test(host) && /^[\w.\-]+$/.test(host)) ip = host;
+    }
+    if (!ip) {
+        try {
+            var ifs = os.networkInterfaces();
+            Object.keys(ifs).some(function(k) { return (ifs[k] || []).some(function(a) { if (a && a.family === "IPv4" && !a.internal) { ip = a.address; return true; } return false; }); });
+        } catch (_) {}
+    }
+    return "http://" + (ip || "127.0.0.1") + ":" + PORT + "/";
+};
+
 // ── DISPOSITIVOS CONECTADOS (v2.17.0) ──────────────────────────────────────
 // Registra no log (categoria CONEXAO) cada celular/computador da rede que abre o
 // relatório: tipo, modelo, sistema e navegador (do User-Agent), IP e o NOME do
@@ -5524,6 +5711,38 @@ var server=http.createServer(function(req,res){
         return;
     }
     // /api/log?linhas=N — últimas linhas do relatorio.log (máx. 1000). Só da rede local.
+    // QR CODE (v2.18.0): /qr (página para mostrar na tela e escanear com o celular),
+    // /qr.svg (só a imagem) e /api/qr (endereço em texto). Sempre o endereço desta
+    // máquina na rede — o celular precisa estar no mesmo Wi-Fi.
+    if((rota==="/qr.svg" || rota==="/qr" || rota==="/api/qr") && req.method==="GET"){
+        var _qrUrl = _qrEndereco(req);
+        if (rota === "/api/qr") { sendJson({ok:true, url:_qrUrl}); return; }
+        var _qrImg = _qrSvg(_qrUrl, rota === "/qr" ? 300 : 0);
+        if (!_qrImg) { sendJson({ok:false, erro:"Endereço longo demais para o QR code."}, 500); return; }
+        if (rota === "/qr.svg") {
+            res.writeHead(200, {"Content-Type":"image/svg+xml; charset=utf-8", "Cache-Control":"no-store"});
+            res.end(_qrImg); return;
+        }
+        var _qrNome = escH(String((_config && _config.appName) || "Relatórios"));
+        res.writeHead(200, {"Content-Type":"text/html; charset=utf-8", "Cache-Control":"no-store"});
+        res.end('<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+            '<title>' + _qrNome + ' — abrir no celular</title><style>' +
+            'html,body{margin:0;min-height:100%;background:#0f172a;color:#e2e8f0;font-family:Inter,Segoe UI,Arial,sans-serif}' +
+            'body{display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;min-height:100vh}' +
+            '.c{background:#111c33;border:1px solid #1e2b47;border-radius:20px;padding:28px 32px;text-align:center;max-width:420px;box-shadow:0 30px 60px -20px rgba(0,0,0,.6)}' +
+            'h1{font-size:20px;margin:0 0 6px}p{margin:6px 0;color:#94a3b8;font-size:14px;line-height:1.5}' +
+            '.q{background:#fff;border-radius:14px;padding:10px;display:inline-block;margin:16px 0 12px}.q svg{display:block;width:280px;height:280px;max-width:70vw;max-height:70vw}' +
+            '.u{font:600 17px Consolas,monospace;color:#f8fafc;background:#0b1324;border:1px solid #1e2b47;border-radius:10px;padding:10px 12px;word-break:break-all;margin-top:6px}' +
+            'button{margin-top:14px;padding:10px 18px;border-radius:10px;border:1px solid #2563eb;background:#2563eb;color:#fff;font:600 14px inherit;cursor:pointer}' +
+            '</style></head><body><div class="c"><h1>' + _qrNome + ' no celular</h1>' +
+            '<p>Aponte a câmera do celular para o código.</p>' +
+            '<div class="q">' + _qrImg + '</div>' +
+            '<div class="u" id="u">' + escH(_qrUrl) + '</div>' +
+            '<p>O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina.</p>' +
+            '<button type="button" onclick="try{navigator.clipboard.writeText(document.getElementById(\'u\').textContent);this.textContent=\'Copiado!\'}catch(e){}">Copiar endereço</button>' +
+            '</div></body></html>');
+        return;
+    }
     // /api/dispositivos — aparelhos da rede com o relatório aberto agora (v2.17.0). Só rede local.
     if(rota==="/api/dispositivos" && req.method==="GET"){
         if (!_requisicaoDaRedeLocal(req)) { sendJson({ok:false, erro:"Disponível apenas a partir da rede local."}, 403); return; }
