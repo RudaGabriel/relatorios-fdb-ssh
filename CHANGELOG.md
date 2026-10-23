@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.16.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.17.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.18.0 |
 | [`api.ps1`](#apips1) | 1.7.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -182,6 +182,15 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.18.0 — 2026-10-23 15:30
+
+**Celular: uma linha só, totais em pares e tamanho do texto.**
+
+- Tudo adaptável: badges do topo, título e contagem da tabela e os dados de cada venda tentam ficar numa linha só — se o texto não cabe, a letra diminui (até um mínimo legível); só se nem assim couber, volta ao tamanho normal e quebra linha. Medições em lote, sem travar a lista.
+- Badges de totais e de quantidades: cada par "Nome: valor" (Total, Gerencial, NFC-e, NF-e) fica inteiro e lado a lado, sem o "―"; quando falta espaço, o par inteiro desce — nunca separa o nome do valor.
+- Menu Tema → **Tamanho do texto** (aparece só no celular): A− / Padrão / A+, de 80% a 140%, salvo no aparelho. Aumenta a página, as janelas e a barra de baixo (esta até 120%); o menu fica parado enquanto se ajusta. Filtros por tipo deslizam para o lado quando não cabem.
+- No computador nada muda.
 
 ### 3.17.0 — 2026-10-22 23:00
 

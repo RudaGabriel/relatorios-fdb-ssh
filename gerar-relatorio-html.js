@@ -1,14 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.17.0
+ * @version 3.18.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.17.0 - 2026-10-22 23:00 - Celular: visual compacto.
- *     - No modelo enviado: badges do topo empilhados na largura toda, botões do topo
- *       centralizados, título da tabela justificado, cartões de venda mais densos (fontes
- *       menores, dados numa linha só) e barra de baixo mais baixa. No PC nada muda.
+ *   3.18.0 - 2026-10-23 15:30 - Celular: uma linha só, totais em pares e tamanho do texto.
+ *     - Badges, título, contagem e dados de cada venda tentam ficar numa linha só: se não
+ *       cabem, a letra diminui (até um mínimo); só então quebram linha.
+ *     - Badges de totais e de quantidades: pares "Nome: valor" inteiros, lado a lado (sem
+ *       o "―"); o par inteiro desce de linha — nunca separa o nome do valor.
+ *     - Menu Tema → "Tamanho do texto" (só no celular): A− / Padrão / A+, de 80% a 140%,
+ *       salvo no aparelho. No PC nada muda.
  */
 
 (function() {
@@ -16,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.17.0";
+    const SCRIPT_VERSION = "3.18.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2283,6 +2286,9 @@
       window.__perfDecidir();
       // VISUALIZAÇÃO (v3.11.0): "simplificada" (padrão) ou "detalhada" — antes do 1º desenho.
       try { document.documentElement.setAttribute("data-vis", localStorage.getItem("fdb_vis") === "detalhada" ? "detalhada" : "simplificada"); } catch (e) { document.documentElement.setAttribute("data-vis", "simplificada"); }
+      // TAMANHO DO TEXTO NO CELULAR (v3.18.0): "fdb_zoom_mob" = 0.8 a 1.4 (padrão 1). Só tem
+      // efeito até 680 px (o CSS usa a variável só dentro do @media do celular).
+      try { var _z = parseFloat(localStorage.getItem("fdb_zoom_mob")); if (_z >= 0.8 && _z <= 1.4) { document.documentElement.style.setProperty("--zoom-mob", String(_z)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(_z, 1.2))); } } catch (e) {}
     </script>
 <style>
 :root {
@@ -3105,11 +3111,11 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
      mais densos (fontes menores, uma linha de dados) e barra de baixo mais baixa. */
   .top { padding: 14px 16px; gap: 12px; }
   .top .left { align-items: flex-start; }
-  .top .badges { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 5px; }
+  .top .badges { flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: flex-start; gap: 5px; }
   .top .badge, .top.badgesCompactos .badge { justify-content: flex-start; text-align: left; border-radius: 6px; font-size: 10px; letter-spacing: 0.03em; padding: 5px 10px; }
   .top .right { justify-content: center; gap: 8px; row-gap: 8px; }
   .tableTop { padding: 16px 18px; gap: 4px; }
-  .tableTitle { font-size: 15px; line-height: 1.3; text-align: justify; text-align-last: left; }
+  .tableTitle { font-size: 15px; line-height: 1.3; }
   .cards { padding: 14px 14px calc(96px + env(safe-area-inset-bottom, 0px)); }
   .cardRow { padding: 14px 16px; margin-bottom: 12px; border-radius: var(--radius-md); }
   .cardHead { margin-bottom: 8px; }
@@ -3123,7 +3129,29 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .cardRow .itensChip { font-size: 10.5px; padding: 3px 8px 3px 3px; }
   .cardRow .itensQtd { font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-right: 6px; }
   .mobileBar { padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); gap: 10px; }
-  .mobileBar .btn { height: 40px; font-size: 12px; border-radius: var(--radius-md); }
+  .mobileBar .btn { height: 40px; font-size: 12px; border-radius: var(--radius-md); min-width: 0; }
+  .mobileBar .btn svg { flex: none; }
+  /* Tamanho do texto (menu Tema → "Tamanho do texto", só no celular): aumenta/diminui a
+     página, as janelas e a barra de baixo juntas (o menu de temas e as dicas ficam fora). */
+  .app, .ov .modal { zoom: var(--zoom-mob, 1); }
+  .mobileBar { zoom: var(--zoom-bar, 1); }  /* barra: no máximo 120% — os 3 botões sempre cabem */
+  .tmMenu .tmZoom { display: block; }
+  /* Badge de totais (v3.18.0): pares "Nome: valor" inteiros, lado a lado, sem o "―";
+     numa linha só quando cabem (o JS _linhaUnica diminui a letra antes), senão o par
+     inteiro desce — nunca separa o nome do valor. */
+  .top #bDiaBrk:not([style*="none"]) { display: block !important; white-space: normal; line-height: 1.6; }
+  /* Demais badges também em fluxo de texto (não flex): se nem com a letra menor couberem
+     numa linha, quebram como texto, em vez de estourar a borda. */
+  .top .badges > .badge:not(.badgeHora):not(#bDiaBrk) { display: block; }
+  /* Filtro por tipo: sempre dentro da tela; se faltar largura (letra grande, tela estreita),
+     os espaços diminuem e, no limite, a fileira desliza para o lado. */
+  .radioBusca { overflow-x: auto; scrollbar-width: none; justify-content: space-between; }
+  .radioBusca::-webkit-scrollbar { display: none; }
+  .radioBusca .radio { flex: none; padding: 6px clamp(8px, 3.5vw, 16px); }
+  .top .badges .bSep { display: none; }
+  .top .badges .bPar { white-space: nowrap; margin-right: 10px; }
+  .top #bDiaBrk > span, .top #bDiaBrk #tDiaBrkMini > span { white-space: inherit; }
+  .top #bDiaBrk .bPar, .top #bDiaBrk #tDiaBrkMini > .bPar { white-space: nowrap; margin-right: 10px; }
   /* Selo "↻ auto" (indicador da atualização automática, que continua ligada): no
      celular não há canto livre — ficava por cima das vendas e dos cartões. */
   #__srv_badge { display: none !important; }
@@ -3204,6 +3232,9 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .tmPerfOp { flex: 1 1 0; min-width: 90px; height: 34px; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
 .tmPerfOp:hover { border-color: var(--border-focus); }
 .tmPerfOp[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.tmZoom { display: none; }
+.tmZoomOps .tmPerfOp { flex: 1 1 0; }
+.tmZoomOps .tmZoomOp[disabled] { opacity: 0.4; cursor: default; }
 .tmPerfDica { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 /* Menu auto-ajustável (v3.14.0): se não couber na altura da janela, o JS (_tmAjustar) aplica
    níveis de compactação — mais colunas, prévias mais baixas, sem as dicas, espaçamentos menores —
@@ -3232,8 +3263,8 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 <div class="badges">
 <div class="badge" data-tip="Data dos dados desse relatório">Data: ${escHtml(dataBR)}</div>
 <div class="badge badgeHora" data-tip="Dia, hora e mês em que esse relatório foi gerado">Gerado em: ${escHtml(diaMesGeradaBR)}/${ano2} às ${escHtml(horaGeradaBR)}</div>
-<div class="badge" data-tip="Quantidade de vendas por tipo">Gerencial: <span id="tQtdGer"></span><span id="badgeQtdNfce" style="display:none"> ― NFC-e: <span id="tQtdNfce"></span></span><span id="badgeNfe" style="display:none"> ― NF-e: <span id="tQtdNfe"></span></span></div>
-<div class="badge" id="bDiaBrk" data-tip="Soma total ― Gerencial ― NFC-e ― NF-e">Total: <span id="tDiaSel"></span><span id="tDiaBrkMini" style="display:none"> ― Gerencial: <span id="tDiaGer"></span><span id="tDiaNfceMini" style="display:none"> ― NFC-e: <span id="tDiaNfce"></span></span><span id="tDiaNfeMini" style="display:none"> ― NF-e: <span id="tDiaNfe"></span></span></span></div>
+<div class="badge" data-tip="Quantidade de vendas por tipo"><span class="bPar">Gerencial: <span id="tQtdGer"></span></span><span id="badgeQtdNfce" style="display:none"> <span class="bSep">―</span> <span class="bPar">NFC-e: <span id="tQtdNfce"></span></span></span><span id="badgeNfe" style="display:none"> <span class="bSep">―</span> <span class="bPar">NF-e: <span id="tQtdNfe"></span></span></span></div>
+<div class="badge" id="bDiaBrk" data-tip="Soma total ― Gerencial ― NFC-e ― NF-e"><span class="bPar">Total: <span id="tDiaSel"></span></span><span id="tDiaBrkMini" style="display:none"> <span class="bSep">―</span> <span class="bPar">Gerencial: <span id="tDiaGer"></span></span><span id="tDiaNfceMini" style="display:none"> <span class="bSep">―</span> <span class="bPar">NFC-e: <span id="tDiaNfce"></span></span></span><span id="tDiaNfeMini" style="display:none"> <span class="bSep">―</span> <span class="bPar">NF-e: <span id="tDiaNfe"></span></span></span></span></div>
 </div>
 </div>
 <div class="right">
@@ -3747,9 +3778,18 @@ const _tmConstruir = () => {
         +     '<button type="button" class="tmPerfOp" role="radio" data-perf="leve">Leve</button>'
         +   '</div>'
         +   '<div class="tmPerfDica">Leve: sem animações, desfoque nem sombras pesadas — para computadores, notebooks e celulares mais fracos. O automático detecta sozinho.</div>'
+        + '</div>'
+        + '<div class="tmPerf tmZoom"><div class="tmHead tmPerfHead"><span class="tmTitulo">Tamanho do texto</span><span class="tmAtual tmZoomEstado"></span></div>'
+        +   '<div class="tmPerfOps tmZoomOps" role="group" aria-label="Tamanho do texto">'
+        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="-1" aria-label="Diminuir o texto">A−</button>'
+        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="0" aria-label="Tamanho padrão">Padrão</button>'
+        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="1" aria-label="Aumentar o texto">A+</button>'
+        +   '</div>'
         + '</div>';
     m.addEventListener("click", (e) => {
         const alvo = e.target;
+        const oz = alvo && alvo.closest ? alvo.closest(".tmZoomOp") : null;
+        if (oz && m.contains(oz)) { _zoomPasso(parseInt(oz.getAttribute("data-zoom"), 10) || 0); return; }
         const ov = alvo && alvo.closest ? alvo.closest(".tmVisOp") : null;
         if (ov && m.contains(ov)) { _visEscolher(ov.getAttribute("data-vis")); return; }
         const op = alvo && alvo.closest ? alvo.closest(".tmPerfOp") : null;
@@ -3764,6 +3804,7 @@ const _tmConstruir = () => {
     _tmMarcarAtual();
     _perfMarcarMenu();
     _visMarcarMenu();
+    _zoomMarcarMenu();
     return m;
 };
 // Posição: abaixo do botão, borda direita alinhada com a dele e sempre dentro da janela; se abaixo
@@ -3838,6 +3879,7 @@ const _tmAbrir = () => {
     _tmMarcarAtual();
     _perfMarcarMenu();
     _visMarcarMenu();
+    _zoomMarcarMenu();
     _tmAberto = true;
     _tmAtualizarBotao();
     _tmPosicionar();
@@ -6026,6 +6068,30 @@ const _visEscolher = (v) => {
     try { window.dispatchEvent(new Event("resize")); } catch (e) {}
     try { toast("Visualização", val === "detalhada" ? "Detalhada — painel com gráficos acima da tabela." : "Simplificada — só a tabela."); } catch (e) {}
 };
+// Tamanho do texto no celular (menu Tema): 80% a 140%, de 10 em 10. Salvo no aparelho.
+const ZOOM_NIVEIS = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4];
+const _zoomAtual = () => { const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--zoom-mob")); return ZOOM_NIVEIS.indexOf(v) >= 0 ? v : 1; };
+const _zoomPasso = (dir) => {
+    const i = ZOOM_NIVEIS.indexOf(_zoomAtual());
+    const novo = dir === 0 ? 1 : ZOOM_NIVEIS[Math.max(0, Math.min(ZOOM_NIVEIS.length - 1, (i < 0 ? 2 : i) + (dir > 0 ? 1 : -1)))];
+    try { if (novo === 1) localStorage.removeItem("fdb_zoom_mob"); else localStorage.setItem("fdb_zoom_mob", String(novo)); } catch (e) {}
+    if (novo === 1) { document.documentElement.style.removeProperty("--zoom-mob"); document.documentElement.style.removeProperty("--zoom-bar"); }
+    else { document.documentElement.style.setProperty("--zoom-mob", String(novo)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(novo, 1.2))); }
+    _zoomMarcarMenu();
+    // Sem disparar "resize": o menu fica parado sob o dedo (A+ / A− várias vezes seguidas);
+    // só os textos de "uma linha só" são reajustados ao novo tamanho.
+    try { if (typeof window.__linhaUnica === "function") window.__linhaUnica(); } catch (e) {}
+};
+const _zoomMarcarMenu = () => {
+    const m = document.getElementById("tmMenu"); if (!m) return;
+    const z = _zoomAtual();
+    const est = m.querySelector(".tmZoomEstado"); if (est) est.textContent = Math.round(z * 100) + "%";
+    m.querySelectorAll(".tmZoomOp").forEach(b => {
+        const d = parseInt(b.getAttribute("data-zoom"), 10) || 0;
+        b.disabled = (d < 0 && z <= ZOOM_NIVEIS[0]) || (d > 0 && z >= ZOOM_NIVEIS[ZOOM_NIVEIS.length - 1]);
+        if (d === 0) b.setAttribute("aria-pressed", z === 1 ? "true" : "false");
+    });
+};
 const _visMarcarMenu = () => {
     const m = document.getElementById("tmMenu"); if (!m) return;
     const v = _visPref();
@@ -7223,6 +7289,80 @@ if (typeof window.__nc_iniciarResize === "function") {
     window.__nc_iniciarResize();
     delete window.__nc_iniciarResize;
 }
+// ── UMA LINHA SÓ NO CELULAR (v3.18.0) ───────────────────────────────────────
+// Até 680 px: badges do topo, título e contagem da tabela e os dados de cada venda
+// tentam ficar numa linha só — se o texto não cabe, a letra diminui (até um mínimo);
+// só se nem assim couber, volta ao tamanho normal e quebra linha. Leituras e escritas
+// de layout em lote (2-3 cálculos por rodada, não um por elemento). No PC, desfaz tudo.
+(() => {
+    const MQ = window.matchMedia ? window.matchMedia("(max-width: 680px)") : null;
+    const alvosFixos = () => Array.prototype.slice.call(document.querySelectorAll(".top .badges > .badge, .tableTitle, #count"));
+    const MIN = (el) => el.classList.contains("tableTitle") ? 11 : 8.5;
+    const transborda = (el) => el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 0.5;
+    const desfazer = (els) => els.forEach(el => { if (el.hasAttribute("data-linha")) { el.style.fontSize = ""; el.style.whiteSpace = ""; el.removeAttribute("data-linha"); } });
+    const ajustar = (els) => {
+        els = els.filter(el => el && el.isConnected && el.offsetParent !== null);
+        if (!els.length) return;
+        els.forEach(el => { el.style.fontSize = ""; el.style.whiteSpace = "nowrap"; el.setAttribute("data-linha", "1"); });
+        const base = els.map(el => parseFloat(getComputedStyle(el).fontSize) || 12);
+        const med = els.map(el => [el.scrollWidth, el.clientWidth]);
+        const tam = els.map((el, i) => {
+            const sw = med[i][0], cw = med[i][1];
+            if (!(cw > 0) || sw <= cw + 0.5) return 0;
+            return Math.max(MIN(el), Math.floor(base[i] * cw / sw * 10) / 10);
+        });
+        els.forEach((el, i) => { if (tam[i]) el.style.fontSize = tam[i] + "px"; });
+        // 2ª tentativa (arredondamentos, espaçamento entre letras): meio pixel a menos.
+        const quase = els.map((el, i) => tam[i] && transborda(el) && tam[i] - 0.5 >= MIN(el));
+        els.forEach((el, i) => { if (quase[i]) el.style.fontSize = (tam[i] - 0.5) + "px"; });
+        // Nem no mínimo coube: tamanho normal e quebra de linha.
+        const naoCabe = els.map(el => transborda(el));
+        els.forEach((el, i) => { if (naoCabe[i]) { el.style.fontSize = ""; el.style.whiteSpace = "normal"; } });
+    };
+    const ehCelular = () => !!(MQ && MQ.matches);
+    let rafTudo = 0, rafCards = 0, obs = null;
+    // As escritas do próprio ajuste (style dos badges) também viram "mutação": descarta
+    // esses avisos logo depois, senão o observador chamaria o ajuste em laço.
+    const descartarProprios = () => { try { if (obs) obs.takeRecords(); } catch (_) {} };
+    const tudo = () => {
+        if (rafTudo) return;
+        rafTudo = requestAnimationFrame(() => {
+            rafTudo = 0;
+            try {
+                const cards = Array.prototype.slice.call(document.querySelectorAll("#cards .cardMeta, #cards .cardPay"));
+                if (!ehCelular()) desfazer(alvosFixos().concat(cards));
+                else ajustar(alvosFixos().concat(cards));
+            } catch (_) { /* cosmético — nunca derruba a página */ }
+            descartarProprios();
+        });
+    };
+    // Cartões novos (a lista é desenhada em fatias): só os que ainda não foram ajustados.
+    const novosCards = () => {
+        if (rafCards || !ehCelular()) return;
+        rafCards = requestAnimationFrame(() => {
+            rafCards = 0;
+            try { ajustar(Array.prototype.slice.call(document.querySelectorAll("#cards .cardMeta:not([data-linha]), #cards .cardPay:not([data-linha])"))); } catch (_) {}
+        });
+    };
+    try {
+        const cardsEl = document.getElementById("cards");
+        if (cardsEl) new MutationObserver(novosCards).observe(cardsEl, { childList: true });
+        obs = new MutationObserver((lista) => {
+            // Mudanças de estilo nos próprios badges vêm dos ajustes de layout (este e o
+            // antigo do topo, que oculta a hora) — reagir a elas criaria um laço entre os
+            // dois. Textos e as partes do total aparecendo/sumindo, sim, pedem novo ajuste.
+            if (lista.some(r => r.type !== "attributes" || !(r.target.classList && r.target.classList.contains("badge")))) tudo();
+        });
+        const badges = document.querySelector(".top .badges"); if (badges) obs.observe(badges, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+        const sub = document.getElementById("sub"); if (sub) obs.observe(sub, { childList: true, characterData: true, subtree: true });
+        const cnt = document.getElementById("count"); if (cnt) obs.observe(cnt, { childList: true, characterData: true, subtree: true });
+        window.addEventListener("resize", tudo, { passive: true });
+        if (MQ && MQ.addEventListener) MQ.addEventListener("change", tudo);
+        try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(tudo).catch(() => {}); } catch (_) {}
+        window.__linhaUnica = tudo;
+        tudo(); setTimeout(tudo, 600);
+    } catch (_) {}
+})();
 // ── AUTO-TESTE no navegador (v3.1.0) ─────────────────────────────────────
 // Junta o resultado do auto-teste do servidor (DADOS.autoteste, calculado na geração) com
 // uma conferência do que ESTÁ NA TELA agora — que pode diferir do servidor depois das
