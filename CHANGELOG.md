@@ -10,7 +10,7 @@ Versões em uso hoje:
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.17.0 |
 | [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.19.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
-| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.4.1 |
+| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.1.0 |
@@ -505,6 +505,22 @@ Cliente de linha de comando.
 ## `iniciar-tray.ps1`
 
 Ícone da bandeja.
+
+### 1.5.0 — 2026-10-23 21:00
+
+**Menu completo, com ícones.**
+
+- Todas as opções, em grupos:
+  - cabeçalho com o nome do sistema e status ao vivo (servidor no ar, banco conectado, telas abertas, aparelhos na rede);
+  - **Abrir relatório** e **Abrir em nova aba do navegador**;
+  - **Atualizar dados de hoje** e **Gerar por período...**;
+  - **Telas abertas ▸** trazer o relatório para frente, recarregar todas as telas, enviar aviso para as telas, tema das telas (lista lida do servidor);
+  - **Dispositivos conectados...** — janela com nome do aparelho, IP, tipo, sistema, navegador, telas, horários, requisições e rotas; atualiza a cada 5 s;
+  - **Configurações ▸** editar configurações, selecionar banco (FDB), status do banco de dados;
+  - **Ferramentas ▸** informações do sistema, copiar endereço de acesso (para abrir em outro PC ou celular), abrir pasta do sistema, abrir o log, acompanhar o log ao vivo, cliente da API (`api.ps1`), programas (lista do `config.json`);
+  - **Reiniciar servidor** e **Sair** (como antes).
+- Ícones vetoriais coloridos — os mesmos SVG (Lucide) do relatório, desenhados por um leitor de SVG embutido (C# compatível com o PowerShell 5.1), nítidos em qualquer escala de tela; menu com fundo branco, destaque azul-claro e textos com acento (o arquivo continua 100% ASCII). Sem `favicon.png`, a bandeja usa um ícone próprio em vez do genérico do Windows.
+- Se o visual não puder ser montado (C# bloqueado na máquina, por exemplo), o menu funciona igual, só sem ícones — registrado no log como aviso.
 
 ### 1.4.1 — 2026-10-07 22:30
 
