@@ -1,14 +1,17 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.21.1
+ * @version 3.22.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.21.1 - 2026-10-23 23:30 - Lista até o fim da tela no modo detalhado; voltar ao topo no celular.
- *     - Com o painel de gráficos oculto (ou baixo), a lista cresce até o rodapé; a base de 78%
- *       da tela agora é compensada pelo tamanho do texto (antes o zoom encolhia a lista).
- *     - Celular: botão redondo "voltar ao topo" acima da barra de baixo, depois de descer bastante.
+ *   3.22.0 - 2026-10-24 01:30 - Preferências por aparelho.
+ *     - Num aparelho da rede, "Configurações" vira "Minhas preferências": duração dos avisos,
+ *       proibidos e teclas de atalho valem só para ele (só o que foi mexido; o resto segue o
+ *       padrão do servidor). Nome, intervalo, log, janela e ícone só no computador do servidor.
+ *     - No computador do servidor: "Aplicar a todos os aparelhos" e editar as preferências de
+ *       um aparelho conectado (também por /?cfgAparelho=, aberto pela bandeja).
+ *     - As preferências do aparelho já vêm na página (sem piscar) e mudam ao vivo pelo SSE.
  */
 
 (function() {
@@ -16,7 +19,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.21.1";
+    const SCRIPT_VERSION = "3.22.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -4215,15 +4218,23 @@ const ligarEditorProibidos=(ta,elCont)=>{
 (function _syncProibidos(){
     // 1. Estado inicial — proibidos embutidos no HTML no momento da geração
     const _embutidos = DADOS && Array.isArray(DADOS.proibidosServidor) ? DADOS.proibidosServidor : [];
-    if (_embutidos.length) {
+    // v3.22.0: com o servidor, a lista DESTE aparelho já vem na página (window.__APARELHO__)
+    // e vale mesmo vazia (ele pode ter limpado a dele); senão, a embutida, como antes.
+    let _doAparelho = null;
+    try { const ap = window.__APARELHO__; if (ap && ap.prefs && Array.isArray(ap.prefs.proibidos)) _doAparelho = ap.prefs.proibidos.map(String); } catch (_) {}
+    if (_doAparelho) {
+        setProibidosUser(_doAparelho);
+    } else if (_embutidos.length) {
         setProibidosUser(_embutidos);
     }
     // 2. Sincroniza com o servidor (pega atualizações posteriores à geração)
     try{
         _fetchJSON('/api/proibidos',{cache:'no-store'})
         .then(d=>{
-            if(Array.isArray(d.proibidos)&&d.proibidos.length){
+            if(Array.isArray(d.proibidos)&&(d.efetivo===true||d.proibidos.length)){
+                const antes=valoresProibidos.join("\n");
                 setProibidosUser(d.proibidos);
+                if(valoresProibidos.join("\n")!==antes){ try{ renderTabela(); }catch(_){} }
             }
         }).catch(()=>{});
     }catch(e){}
@@ -4652,6 +4663,30 @@ const __ncToastMsgs=new Set();
 window.__TOAST_MS = (typeof __TOAST_DURACAO__==="number" && __TOAST_DURACAO__>=500) ? __TOAST_DURACAO__ : 5000;
 // Teclas de atalho — inicializadas do HTML embutido; atualizadas in-place ao salvar configurações.
 window.__teclasPersonalizadas = (typeof __TECLAS_PERSONALIZADAS__!=="undefined" && Array.isArray(__TECLAS_PERSONALIZADAS__)) ? __TECLAS_PERSONALIZADAS__ : [];
+// ── Preferências deste aparelho (v3.22.0) ───────────────────────────────────
+// Cada aparelho da rede tem as suas (duração dos avisos, proibidos, teclas de
+// atalho): o servidor injeta window.__APARELHO__ com as dele já resolvidas (as
+// próprias por cima do padrão do servidor). Sem servidor (arquivo aberto direto),
+// valem as embutidas, como antes. Aviso "prefs" pelo SSE → __aplicarPrefs relê.
+const _aplicarPrefsObj = (pf, comLista) => {
+    if (!pf || typeof pf !== "object") return false;
+    const td = parseInt(pf.toastDuration, 10);
+    if (td >= 500 && td <= 60000) window.__TOAST_MS = td;
+    if (Array.isArray(pf.teclasPersonalizadas)) window.__teclasPersonalizadas = pf.teclasPersonalizadas.filter(t => t && t.tecla && (t.comando || t.acao));
+    if (comLista && Array.isArray(pf.proibidos)) {
+        const nova = pf.proibidos.map(String), antes = valoresProibidos.join("\n");
+        setProibidosUser(nova);
+        return valoresProibidos.join("\n") !== antes;
+    }
+    return false;
+};
+try { if (window.__APARELHO__ && window.__APARELHO__.prefs) _aplicarPrefsObj(window.__APARELHO__.prefs, false); } catch (_) {}
+window.__aplicarPrefs = () => {
+    _fetchJSON("/api/preferencias", {cache: "no-store"}).then(d => {
+        if (!d || !d.ok) return;
+        if (_aplicarPrefsObj(d.prefs, true)) { try { renderTabela(); } catch (_) {} }
+    }).catch(() => {});
+};
 const showToast=msg=>{
     if(!msg||__ncToastMsgs.has(msg))return;
     __ncToastMsgs.add(msg);
@@ -6640,6 +6675,19 @@ ajustarPlaceholder(); window.addEventListener("resize",ajustarPlaceholder);
 
 const clicar=sel=>{const el=qs(sel);if(el)el.dispatchEvent(new MouseEvent("click",{bubbles:true}));};
 const acoes=qs("#acoes");if(acoes)acoes.addEventListener("click",function(){ __abrirModalConfig(); });
+// Bandeja → Dispositivos → "Configurações do aparelho..." abre /?cfgAparelho=<chave>
+// no computador do servidor: abre o modal já com as preferências daquele aparelho.
+(function(){
+    try{
+        const u=new URL(location.href), ch=u.searchParams.get("cfgAparelho");
+        if(!ch)return;
+        u.searchParams.delete("cfgAparelho");
+        try{ history.replaceState(history.state,"",u.pathname+(u.search||"")+u.hash); }catch(_){}
+        if(!/^([a-f0-9]{32}|ip:[0-9A-Za-z.:%-]{2,60})$/.test(ch))return;
+        if(window.__APARELHO__&&window.__APARELHO__.servidor===false)return;
+        setTimeout(()=>{ __abrirModalConfig({aparelho:ch}); },400);
+    }catch(_){}
+})();
 const btnCel=qs("#btnCelular");if(btnCel)btnCel.addEventListener("click",function(){ __abrirModalQr(); });
 const acoesFechar=qs("#acoesFechar");if(acoesFechar)acoesFechar.addEventListener("click",fecharAcoes);
 const ovA=qs("#ovAcoes");if(ovA)ovA.addEventListener("click",e=>{if(e.target===ovA)fecharAcoes();});
@@ -6935,8 +6983,13 @@ var __abrirModalQr = function() {
 };
 
 // ── Modal de configurações (acionado via botão Editar configurações ou tray → SSE navigate-hash:config) ───
-var __abrirModalConfig = function() {
+// v3.22.0 — preferências por aparelho: num aparelho da rede o modal vira "Minhas
+// preferências" (duração dos avisos, proibidos e teclas — só dele); no computador do
+// servidor edita o padrão de todos e, com { aparelho: chave }, as de um aparelho.
+var __abrirModalConfig = function(opcoes) {
     if (document.getElementById("ovConfig")) return;
+    var _op = (opcoes && typeof opcoes === "object" && !opcoes.type) ? opcoes : {};
+    var _alvo = typeof _op.aparelho === "string" ? _op.aparelho : "";
     var _bg = document.createElement("div");
     _bg.className = "ov sheet";
     _bg.id = "ovConfig";
@@ -6955,9 +7008,19 @@ var __abrirModalConfig = function() {
     };
 
     // Carrega valores atuais do servidor antes de montar o HTML
-    _fetchJSON("/api/config", {cache: "no-store"})
+    _fetchJSON("/api/config" + (_alvo ? "?aparelho=" + encodeURIComponent(_alvo) : ""), {cache: "no-store"})
     .catch(function(){ return {}; })
     .then(function(cfg) {
+        cfg = (cfg && typeof cfg === "object") ? cfg : {};
+        var _apPag = window.__APARELHO__ || null;
+        var _remoto = cfg.servidor === false || (cfg.servidor === undefined && !!_apPag && _apPag.servidor === false);
+        if (_remoto) _alvo = "";                         // aparelho da rede só edita as dele
+        var _soPrefs = _remoto || !!_alvo;
+        var _pers = (cfg.personalizado && typeof cfg.personalizado === "object") ? cfg.personalizado : {};
+        var _rotPers = { toastDuration: "duração dos avisos", proibidos: "termos proibidos", teclasPersonalizadas: "teclas de atalho" };
+        var _listaPers = Object.keys(_rotPers).filter(function(k){ return _pers[k]; }).map(function(k){ return _rotPers[k]; });
+        var _apTxt = cfg.aparelho && cfg.aparelho.texto ? String(cfg.aparelho.texto) : "";
+        var _escondeSrv = _soPrefs ? ' style="display:none"' : '';
         // XSS FIX (v2.8.0): valores do servidor entram no HTML abaixo — escapados
         // com esc() (& < > "), não só aspas.
         var _pn  = esc(String(cfg.appName  || ""));
@@ -6968,28 +7031,34 @@ var __abrirModalConfig = function() {
         var _jh  = parseInt(cfg.janelaCorrecaoHoraMin || 180, 10);
         var _prArr = Array.isArray(cfg.proibidos) ? cfg.proibidos : [];
 
-        // Aplica a duração de toast imediatamente ao abrir o modal
-        window.__TOAST_MS = Math.max(500, _td);
+        // Aplica a duração de toast imediatamente ao abrir o modal (só se forem as
+        // preferências desta própria tela — não as de outro aparelho).
+        if (!_alvo) window.__TOAST_MS = Math.max(500, _td);
 
         _bg.innerHTML =
           '<div class="modal" role="dialog" aria-modal="true" style="max-width:480px">' +
             '<div class="mhead">' +
               '<div>' +
-                '<div class="mtitle">Editar configurações</div>' +
-                '<div class="msub">Alterações aplicadas em tempo real — campos avançados: edite config.json diretamente.</div>' +
+                '<div class="mtitle">' + (_alvo ? 'Preferências do aparelho' : (_remoto ? 'Minhas preferências' : 'Editar configurações')) + '</div>' +
+                '<div class="msub">' + (_alvo
+                    ? 'Aparelho: <b>' + esc(_apTxt || "?") + '</b> — valem só para ele; aplicadas na tela dele na hora.'
+                    : (_remoto
+                        ? 'Valem só para este aparelho' + (_apTxt ? ' (' + esc(_apTxt) + ')' : '') + ' — os outros não são afetados. Nome, intervalo, log, janela de correção e ícone só podem ser alterados no computador do servidor.'
+                        : 'Padrão de todos os aparelhos (cada um pode ter as suas preferências). Avançado: config.json.')) + '</div>' +
+                (_soPrefs ? '<div class="msub" id="cfgPersInfo" style="margin-top:4px">' + (_listaPers.length ? 'Próprias: ' + esc(_listaPers.join(", ")) + '.' : 'Seguindo o padrão do servidor.') + '</div>' : '') +
               '</div>' +
               '<button class="btn" id="cfgFechar" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</button>' +
             '</div>' +
             '<div class="mbody" style="gap:14px;padding-bottom:24px">' +
-              '<div class="kv">' +
+              '<div class="kv"' + _escondeSrv + '>' +
                 '<div class="k">Nome do sistema</div>' +
                 '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Minha Loja" style="flex:1">' +
               '</div>' +
-              '<div class="kv">' +
+              '<div class="kv"' + _escondeSrv + '>' +
                 '<div class="k">Intervalo de atualização automática (ms)</div>' +
                 '<input type="number" id="cfgPollInterval" value="' + _pi + '" min="100" step="50" class="input" style="flex:1">' +
               '</div>' +
-              '<div class="kv">' +
+              '<div class="kv"' + _escondeSrv + '>' +
                 '<div class="k">Máx. linhas de log interno</div>' +
                 '<input type="number" id="cfgMaxLogLines" value="' + _ml + '" min="100" step="100" class="input" style="flex:1">' +
               '</div>' +
@@ -7000,14 +7069,14 @@ var __abrirModalConfig = function() {
                   '<button class="btn" type="button" id="cfgToastReset" data-tip="Restaurar duração padrão (5 segundos)" style="white-space:nowrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Padrão (5s)</button>' +
                 '</div>' +
               '</div>' +
-              '<div class="kv">' +
+              '<div class="kv"' + _escondeSrv + '>' +
                 '<div class="k" data-tip="Gerenciais com hora no futuro ou entre 3 min e este tempo atrás passam a usar a hora atual; mais antigas são ignoradas.">Janela de correção de horário (min)</div>' +
                 '<div style="display:flex;gap:8px;align-items:center;flex:1">' +
                   '<input type="number" id="cfgJanelaHora" value="' + _jh + '" min="5" max="720" step="5" class="input" style="flex:1">' +
                   '<button class="btn" type="button" id="cfgJanelaReset" data-tip="Restaurar janela padrão (3 horas)" style="white-space:nowrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Padrão (3h)</button>' +
                 '</div>' +
               '</div>' +
-              '<div class="kv" style="flex-direction:column;gap:8px">' +
+              '<div class="kv" style="flex-direction:column;gap:8px' + (_soPrefs ? ';display:none' : '') + '">' +
                 '<div class="k">Ícone (favicon)</div>' +
                 '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
                   '<input type="text" id="cfgFaviconPath" value="' + esc(_fv) + '" class="input" placeholder="Caminho do arquivo ou vazio para padrão" style="flex:1;min-width:0">' +
@@ -7029,8 +7098,16 @@ var __abrirModalConfig = function() {
                 '<div id="cfgTeclasLista" style="display:flex;flex-direction:column;gap:8px"></div>' +
                 '<button class="btn" type="button" id="cfgAddTecla" style="align-self:flex-start"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Adicionar atalho</button>' +
               '</div>' +
+              (_soPrefs
+                ? '<button class="btn" type="button" id="cfgRestaurarAp"' + (_listaPers.length ? '' : ' disabled') + ' style="align-self:flex-start"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Voltar ao padrão do servidor</button>'
+                : '<div class="kv" style="flex-direction:column;gap:8px">' +
+                    '<div class="k">Aparelhos da rede</div>' +
+                    '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.4;cursor:pointer"><input type="checkbox" id="cfgAplicarTodos" style="margin-top:2px">Aplicar duração dos avisos, proibidos e teclas a TODOS os aparelhos (apaga as preferências próprias deles)</label>' +
+                    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="cfgApSel" class="input" style="flex:1;min-width:0;cursor:pointer"><option value="">Editar as preferências de um aparelho conectado...</option></select>' +
+                    '<button class="btn" type="button" id="cfgApEditar" disabled>Editar</button></div>' +
+                  '</div>') +
               '<div id="cfgStatus" style="display:none;text-align:center;padding:8px 0;font-size:13px;color:var(--text-muted)">Salvando...</div>' +
-              '<button class="btn" id="cfgSalvar" type="button" style="width:100%;min-height:48px;height:auto;padding:12px 18px;font-size:15px;font-weight:700;white-space:normal;line-height:1.3;gap:10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar configurações</button>' +
+              '<button class="btn" id="cfgSalvar" type="button" style="width:100%;min-height:48px;height:auto;padding:12px 18px;font-size:15px;font-weight:700;white-space:normal;line-height:1.3;gap:10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>' + (_soPrefs ? 'Salvar preferências' : 'Salvar configurações') + '</button>' +
             '</div>' +
           '</div>';
 
@@ -7051,6 +7128,12 @@ var __abrirModalConfig = function() {
             ? cfg.teclasPersonalizadas.map(function(t){ return {tecla:String(t.tecla||""),comando:String(t.comando||""),acao:String(t.acao||"")}; })
             : (Array.isArray(window.__teclasPersonalizadas) ? window.__teclasPersonalizadas.map(function(t){ return {tecla:String(t.tecla||""),comando:String(t.comando||""),acao:String(t.acao||"")}; }) : []);
 
+
+        // Para as preferências de aparelho só vai o que MUDOU (v3.22.0): o que não foi
+        // mexido continua seguindo o padrão do servidor.
+        var _normTeclas = function(a) { return JSON.stringify((a || []).filter(function(t){ return t && t.tecla && (t.comando || t.acao); }).map(function(t){ return [String(t.tecla), String(t.comando || ""), String(t.acao || "")]; })); };
+        var _teclasOrig = _normTeclas(_teclasArr);
+        var _prOrig = JSON.stringify(_prArr.map(String));
 
         var _teclaValida = function(k, ctrl, alt) {
             if (!k) return false;
@@ -7197,7 +7280,8 @@ var __abrirModalConfig = function() {
         });
 
         // Botão restaurar padrão do toast
-        document.getElementById("cfgJanelaReset").addEventListener("click", function() {
+        var _jReset = document.getElementById("cfgJanelaReset");
+        if (_jReset) _jReset.addEventListener("click", function() {
             document.getElementById("cfgJanelaHora").value = 180;
         });
         document.getElementById("cfgToastReset").addEventListener("click", function() {
@@ -7214,8 +7298,43 @@ var __abrirModalConfig = function() {
         var MAX_FAVICON_BYTES = 2 * 1024 * 1024; // 2MB — favicon não precisa ser maior que isso
         var _fileInp = document.getElementById("cfgFaviconFile");
         document.getElementById("cfgFaviconPick").addEventListener("click", function(){
-            _fileInp.click();
+            if (!_soPrefs) _fileInp.click();
         });
+        // Preferências de aparelho (v3.22.0): voltar ao padrão do servidor; no
+        // computador do servidor, escolher um aparelho conectado para editar.
+        var _restAp = document.getElementById("cfgRestaurarAp");
+        if (_restAp) _restAp.addEventListener("click", function() {
+            _restAp.disabled = true;
+            _fetchJSON("/api/config" + (_alvo ? "?aparelho=" + encodeURIComponent(_alvo) : ""), {
+                method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({restaurar: true})
+            }).then(function(d) {
+                if (d && d.ok) {
+                    if (!_alvo && typeof window.__aplicarPrefs === "function") window.__aplicarPrefs();
+                    toast("Preferências", _alvo ? "O aparelho voltou ao padrão do servidor." : "Este aparelho voltou ao padrão do servidor.");
+                    _fechar();
+                } else { _restAp.disabled = false; toast("Erro", (d && d.erro) || "Falha desconhecida."); }
+            }).catch(function(e) { _restAp.disabled = false; toast("Erro de rede", e.message || "Falha na conexão com o servidor."); });
+        });
+        var _apSel = document.getElementById("cfgApSel"), _apEd = document.getElementById("cfgApEditar");
+        if (_apSel && _apEd) {
+            _fetchJSON("/api/dispositivos", {cache: "no-store"}).then(function(d) {
+                var lista = (d && Array.isArray(d.dispositivos)) ? d.dispositivos.filter(function(x){ return x && x.chavePreferencias; }) : [];
+                if (!lista.length) { _apSel.options[0].textContent = "Nenhum aparelho conectado agora"; return; }
+                lista.forEach(function(x) {
+                    var o = document.createElement("option");
+                    o.value = String(x.chavePreferencias);
+                    o.textContent = (x.nome ? x.nome + " — " : "") + x.ip + " — " + [x.tipo, x.modelo].filter(Boolean).join(" ") +
+                        (Array.isArray(x.preferenciasProprias) && x.preferenciasProprias.length ? " (próprias: " + x.preferenciasProprias.join(", ") + ")" : " (padrão)");
+                    _apSel.appendChild(o);
+                });
+            }).catch(function(){ _apSel.options[0].textContent = "Não foi possível listar os aparelhos"; });
+            _apSel.addEventListener("change", function(){ _apEd.disabled = !_apSel.value; });
+            _apEd.addEventListener("click", function() {
+                var ch = _apSel.value; if (!ch) return;
+                _fechar();
+                setTimeout(function(){ __abrirModalConfig({aparelho: ch}); }, 360);
+            });
+        }
         _fileInp.addEventListener("change", function(){
             var f = _fileInp.files && _fileInp.files[0];
             if (!f) return;
@@ -7236,6 +7355,8 @@ var __abrirModalConfig = function() {
         document.getElementById("cfgSalvar").addEventListener("click", function() {
             var _btn = document.getElementById("cfgSalvar");
             var _st  = document.getElementById("cfgStatus");
+            var _aplTodosEl = document.getElementById("cfgAplicarTodos");
+            var aplTodos = !_soPrefs && !!(_aplTodosEl && _aplTodosEl.checked);
             var an   = String(document.getElementById("cfgAppName").value     || "").trim();
             var pi   = parseInt(document.getElementById("cfgPollInterval").value, 10) || 100;
             var ml   = parseInt(document.getElementById("cfgMaxLogLines").value, 10)  || 1000;
@@ -7243,32 +7364,55 @@ var __abrirModalConfig = function() {
             var jh   = parseInt(document.getElementById("cfgJanelaHora").value, 10);
             var fv   = String(document.getElementById("cfgFaviconPath").value || "").trim();
             var pr   = _formatarCfgPr();
-            var favFile = _fileInp.files && _fileInp.files[0];
+            var favFile = !_soPrefs && _fileInp.files && _fileInp.files[0];
 
-            if (!an) { toast("Erro", "O nome do sistema não pode estar vazio."); return; }
-            if (pi < 100) { toast("Erro", "Intervalo mínimo: 100 ms."); return; }
-            if (ml < 100) { toast("Erro", "Mínimo de 100 linhas de log."); return; }
-            if (td < 500) { toast("Erro", "Duração mínima de aviso: 500 ms."); return; }
-            if (!(jh >= 5 && jh <= 720)) { toast("Erro", "Janela de correção de horário: entre 5 e 720 minutos."); return; }
+            if (!_soPrefs && !an) { toast("Erro", "O nome do sistema não pode estar vazio."); return; }
+            if (!_soPrefs && pi < 100) { toast("Erro", "Intervalo mínimo: 100 ms."); return; }
+            if (!_soPrefs && ml < 100) { toast("Erro", "Mínimo de 100 linhas de log."); return; }
+            if (td < 500 || td > 60000) { toast("Erro", "Duração do aviso: entre 500 e 60000 ms."); return; }
+            if (!_soPrefs && !(jh >= 5 && jh <= 720)) { toast("Erro", "Janela de correção de horário: entre 5 e 720 minutos."); return; }
 
             _btn.disabled = true; _btn.textContent = "Salvando...";
             if (_st) _st.style.display = "block";
 
             var _doSave = function() {
-                _fetchJSON("/api/config", {
+                var _corpo = _soPrefs ? {} : {appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, janelaCorrecaoHoraMin: jh, proibidos: pr, teclasPersonalizadas: _teclasArr, aplicarTodos: aplTodos};
+                if (_soPrefs) {
+                    if (td !== _td) _corpo.toastDuration = td;
+                    if (JSON.stringify(pr.map(String)) !== _prOrig) _corpo.proibidos = pr;
+                    if (_normTeclas(_teclasArr) !== _teclasOrig) _corpo.teclasPersonalizadas = _teclasArr;
+                    if (!Object.keys(_corpo).length) {
+                        if (_st) _st.style.display = "none";
+                        _btn.disabled = false; _btn.textContent = "Salvar preferências";
+                        toast("Preferências", "Nada foi alterado.");
+                        _fechar();
+                        return;
+                    }
+                }
+                _fetchJSON("/api/config" + (_alvo ? "?aparelho=" + encodeURIComponent(_alvo) : ""), {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, janelaCorrecaoHoraMin: jh, proibidos: pr, teclasPersonalizadas: _teclasArr})
+                    body: JSON.stringify(_corpo)
                 })
                 .then(function(d){
                     if (_st) _st.style.display = "none";
-                    _btn.disabled = false; _btn.textContent = "Salvar configurações";
+                    _btn.disabled = false; _btn.textContent = _soPrefs ? "Salvar preferências" : "Salvar configurações";
                     if (d.ok) {
-                        // Aplica duração imediatamente
-                        window.__TOAST_MS = Math.max(500, td);
-                        // Aplica teclas de atalho imediatamente (sem recarregar)
-                        window.__teclasPersonalizadas = _teclasArr.filter(function(t){ return t.tecla && (t.comando || t.acao); });
-                        toast("Configurações salvas", "O relatório será atualizado em breve.");
+                        if (!_alvo) {
+                            // Aplica duração imediatamente
+                            window.__TOAST_MS = Math.max(500, td);
+                            // Aplica teclas de atalho imediatamente (sem recarregar)
+                            window.__teclasPersonalizadas = _teclasArr.filter(function(t){ return t.tecla && (t.comando || t.acao); });
+                        }
+                        if (_remoto) {
+                            // Sem regerar o relatório (vale só aqui): aplica a lista na hora.
+                            if (_corpo.proibidos) { try { setProibidosUser(pr); renderTabela(); } catch (_e) {} }
+                            toast("Preferências salvas", "Valem só para este aparelho.");
+                        } else if (_alvo) {
+                            toast("Preferências do aparelho salvas", "Aplicadas na tela dele agora.");
+                        } else {
+                            toast("Configurações salvas", aplTodos ? "Padrão aplicado a todos os aparelhos. O relatório será atualizado em breve." : "O relatório será atualizado em breve.");
+                        }
                         _fechar();
                     } else {
                         toast("Erro ao salvar", d.erro || "Falha desconhecida.");
@@ -7276,7 +7420,7 @@ var __abrirModalConfig = function() {
                 })
                 .catch(function(e){
                     if (_st) _st.style.display = "none";
-                    _btn.disabled = false; _btn.textContent = "Salvar configurações";
+                    _btn.disabled = false; _btn.textContent = _soPrefs ? "Salvar preferências" : "Salvar configurações";
                     toast("Erro de rede", e.message || "Falha na conexão com o servidor.");
                 });
             };

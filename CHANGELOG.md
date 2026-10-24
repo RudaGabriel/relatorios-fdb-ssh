@@ -7,10 +7,10 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.18.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.21.1 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.19.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.22.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
-| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.2 |
+| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.1.0 |
@@ -28,6 +28,18 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.19.0 — 2026-10-24 01:30
+
+**Preferências por aparelho.**
+
+- Cada aparelho da rede (celular, outro computador) tem as **suas** preferências: duração dos avisos, termos proibidos e teclas de atalho. Quando um muda, os outros não são afetados. Aparelho sem preferência própria segue o padrão do servidor.
+- Guardadas em `preferencias-aparelhos.json` na pasta do sistema (nunca no banco; o arquivo não é versionado). O aparelho é reconhecido por um cookie próprio (`fdb_ap`, só um identificador aleatório); quem não guarda cookie (ex.: `api.ps1`), pelo IP.
+- Só o **computador do servidor** (onde estão o launcher e o `servidor-relatorio.js`) muda o padrão de todos e as configurações do sistema (nome, intervalo, linhas do log, janela de correção, ícone) e troca o banco. De outro aparelho, esses campos são ignorados (e o ícone e o banco respondem 403).
+- O computador do servidor edita ou restaura as preferências de qualquer aparelho (`/api/config?aparelho=<chave>`, `{restaurar:true}`) e pode aplicar o padrão a todos (`aplicarTodos`). As telas do aparelho afetado recebem um aviso `prefs` pelo SSE e atualizam na hora.
+- A página de cada aparelho já vem com as preferências dele (`window.__APARELHO__`), sem mostrar o padrão antes. `/api/proibidos` e a nova `/api/preferencias` respondem por aparelho. `/api/dispositivos` (só para o computador do servidor) traz a chave e as preferências próprias de cada um.
+- "Editar configurações" (bandeja/`api.ps1`) abre o modal só nas telas do computador do servidor — antes abria também nos celulares.
+- Todos os registros vão para o log na categoria `[CONFIG]`, dizendo qual aparelho mudou o quê.
 
 ### 2.18.0 — 2026-10-23 22:00
 
@@ -200,6 +212,15 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.22.0 — 2026-10-24 01:30
+
+**Preferências por aparelho.**
+
+- Num aparelho da rede, "Configurações" vira **"Minhas preferências"**: duração dos avisos, proibidos e teclas de atalho, que valem só para ele. Só vai o que foi mexido, e o resto continua seguindo o padrão do servidor. Mostra o que é próprio e tem o botão "Voltar ao padrão do servidor". Nome, intervalo, log, janela e ícone ficam ocultos, porque só o computador do servidor altera.
+- No computador do servidor: o modal edita o **padrão de todos** e traz "Aplicar a TODOS os aparelhos" e a lista dos aparelhos conectados para editar as preferências de cada um. `/?cfgAparelho=<chave>` abre direto nas preferências de um aparelho; a bandeja usa isso.
+- As preferências do aparelho vêm embutidas na página, sem "piscar" o padrão, e são aplicadas ao vivo quando mudam (aviso `prefs`), inclusive em outra aba do mesmo aparelho.
+- A lista de proibidos de um aparelho vale mesmo vazia (antes, uma lista limpa no servidor não chegava às telas).
 
 ### 3.21.1 — 2026-10-23 23:30
 
@@ -537,6 +558,16 @@ Cliente de linha de comando.
 ## `iniciar-tray.ps1`
 
 Ícone da bandeja.
+
+### 1.6.0 — 2026-10-24 01:30
+
+**Preferências por aparelho na janela "Dispositivos conectados".**
+
+- Nova coluna **Preferências**: "padrão do servidor" ou "próprias: …".
+- Botão **"Configurações do aparelho..."** (ou duplo clique): abre o relatório nesta máquina já com as preferências daquele aparelho para editar. Botão **"Voltar ao padrão"** apaga as preferências próprias dele, com confirmação.
+- Rodapé refeito com layout automático. Os botões apareciam cortados e sem texto com a escala da tela em 125%/150%.
+- A seleção da lista é mantida entre as atualizações automáticas (a cada 5 s).
+- "Editar configurações..." abre o navegador quando nenhuma tela desta máquina recebe o pedido (os celulares não recebem mais).
 
 ### 1.5.2 — 2026-10-23 23:30
 
