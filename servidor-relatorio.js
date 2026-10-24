@@ -2,12 +2,13 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.19.0
+ * @version 2.19.1
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
+ *   2.19.1 - 2026-10-24 02:30 - /api/proibidos-servidor: lista padrão do servidor (importar).
  *   2.19.0 - 2026-10-24 01:30 - Preferências por aparelho.
  *     - Cada aparelho (cookie fdb_ap) tem as suas: duração dos avisos, proibidos e teclas, em
  *       preferencias-aparelhos.json (nunca no banco). Mudar num não afeta os outros.
@@ -21,7 +22,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.19.0";
+const SERVER_VERSION = "2.19.1";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -5992,6 +5993,12 @@ var server=http.createServer(function(req,res){
             });
         }
         sendJson({ok:true, total:_lista.length, dispositivos:_lista});
+        return;
+    }
+    // /api/proibidos-servidor — a lista PADRÃO do servidor (config.json), para um
+    // aparelho importar para a lista dele ("Importar do servidor"). v2.19.1.
+    if(rota==="/api/proibidos-servidor" && req.method==="GET"){
+        sendJson({ok:true, proibidos: Array.isArray(_config.proibidos) ? _config.proibidos : []});
         return;
     }
     // /api/preferencias — preferências efetivas de quem pede (a página recarrega
