@@ -43,10 +43,18 @@ function montarPasta(config, estado) {
 // Grava o estado do "banco" de forma atômica (arquivo temporário + rename): o
 // fast-poll lê o estado a cada ~15 ms e, com writeFileSync direto, podia pegar
 // o arquivo no meio da escrita (vazio) e ver uma venda "sumir" e voltar.
+// No Windows o rename falha com EPERM/EBUSY/EACCES enquanto o servidor está lendo o
+// arquivo naquele instante: tenta de novo por até ~2 s antes de desistir.
 const gravarEstado = (dir, st) => {
     const tmp = path.join(dir, "estado.json.tmp");
     fs.writeFileSync(tmp, JSON.stringify(st));
-    fs.renameSync(tmp, path.join(dir, "estado.json"));
+    const espera = new Int32Array(new SharedArrayBuffer(4));
+    for (let i = 0; ; i++) {
+        try { fs.renameSync(tmp, path.join(dir, "estado.json")); return; } catch (e) {
+            if (!["EPERM", "EBUSY", "EACCES"].includes(e.code) || i >= 200) throw e;
+            Atomics.wait(espera, 0, 0, 10);
+        }
+    }
 };
 const ambiente = dir => Object.assign({}, process.env, { MOCK_SENHA: SENHA, RELATORIO_FB_PASS: SENHA, MOCK_FB_DIR: dir });
 const lerSqlLog = dir => { try { return fs.readFileSync(path.join(dir, "sql.log"), "utf8"); } catch (_) { return ""; } };
@@ -198,12 +206,19 @@ test("gerador: visualização detalhada (painel com gráficos) e modo leve vêm 
     assert.ok(dados.vendas[0].formasValores && dados.vendas[0].formasValores.PIX === 30, "forma de pagamento chega ao painel");
 });
 
-test("padrão de fábrica: config.json do repositório sem dados de loja e sem proibidos embutidos", () => {
-    const cfg = JSON.parse(fs.readFileSync(path.join(RAIZ_PROJETO, "config.json"), "utf8"));
-    assert.strictEqual(cfg.appName, "Relatorios");
-    assert.deepStrictEqual(cfg.proibidos, []);
-    assert.deepStrictEqual(cfg.teclasPersonalizadas, []);
-    for (const k of ["fbHost", "fdbPath", "maquinaIP", "fbUser", "fbPass", "favicon"]) assert.strictEqual(cfg[k], "", k + " deveria estar vazio");
+test("padrão de fábrica: config.json do repositório sem dados de loja e sem proibidos embutidos", t => {
+    // Confere a versão VERSIONADA (git), não o config.json da pasta: numa instalação real
+    // ele já tem o nome da loja, o banco e os proibidos configurados — e está certo assim.
+    const g = spawnSync("git", ["show", "HEAD:config.json"], { cwd: RAIZ_PROJETO, encoding: "utf8", timeout: 15000 });
+    if (g.error || g.status !== 0 || !String(g.stdout || "").trim()) {
+        t.diagnostic("git indisponível ou pasta fora do repositório: config.json de fábrica não conferido (o da pasta é o da loja).");
+    } else {
+        const cfg = JSON.parse(g.stdout.replace(/^\uFEFF/, ""));
+        assert.strictEqual(cfg.appName, "Relatorios");
+        assert.deepStrictEqual(cfg.proibidos, []);
+        assert.deepStrictEqual(cfg.teclasPersonalizadas, []);
+        for (const k of ["fbHost", "fdbPath", "maquinaIP", "fbUser", "fbPass", "favicon"]) assert.strictEqual(cfg[k], "", k + " deveria estar vazio");
+    }
     // hora-fixada-cache.json não é versionado: o sistema o cria sozinho na primeira correção.
     // O gerador precisa funcionar sem ele (montarPasta não cria o arquivo).
     const html = gerar(montarPasta());

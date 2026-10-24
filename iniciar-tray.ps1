@@ -3,12 +3,12 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.5.1
+# @version 1.5.2
 # @author Ruda Gabriel
 # @changelog
 #   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-#   1.5.1 - 2026-10-23 22:00 - "Abrir no celular (QR code)...": abre a pagina /qr do
-#     servidor (QR code do endereco desta maquina na rede) para escanear com o celular.
+#   1.5.2 - 2026-10-23 23:30 - Cabecalho do menu: status e contagem (telas/aparelhos)
+#     em duas linhas e largura do menu recalculada; antes o texto saia cortado.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1066,9 +1066,16 @@ $imgCab = Get-Icone "servidor" "#2563EB"; if ($imgCab) { $cabTitulo.Image = $img
 $cabStatus = New-Object System.Windows.Forms.ToolStripLabel
 $cabStatus.Text = L "Verificando..."
 $cabStatus.ForeColor = [System.Drawing.Color]::FromArgb(107, 114, 128)
-$cabStatus.Padding = New-Object System.Windows.Forms.Padding(2, 0, 2, 6)
+$cabStatus.Padding = New-Object System.Windows.Forms.Padding(2, 0, 2, 0)
+# Contagem em linha propria (v1.5.2): numa linha so o texto ficava cortado no menu.
+$cabContagem = New-Object System.Windows.Forms.ToolStripLabel
+$cabContagem.Text = ""
+$cabContagem.ForeColor = [System.Drawing.Color]::FromArgb(107, 114, 128)
+$cabContagem.Padding = New-Object System.Windows.Forms.Padding(2, 0, 2, 6)
+$cabContagem.Visible = $false
 $menu.Items.Add($cabTitulo) | Out-Null
 $menu.Items.Add($cabStatus) | Out-Null
+$menu.Items.Add($cabContagem) | Out-Null
 $menu.Items.Add((New-Separador)) | Out-Null
 
 function Update-Cabecalho {
@@ -1077,14 +1084,19 @@ function Update-Cabecalho {
         if ($null -eq $db) {
             $cabStatus.Text = L "\u25cf Servidor fora do ar"
             $cabStatus.ForeColor = [System.Drawing.Color]::FromArgb(220, 38, 38)
-            return
+            $cabContagem.Visible = $false
+        } else {
+            $telas = 0; $sc = Invoke-Api "/api/sse-clients" -Timeout 1; if ($sc) { $telas = [int]$sc.clients }
+            $aparelhos = 0; $dv = Invoke-Api "/api/dispositivos" -Timeout 1; if ($dv) { $aparelhos = [int]$dv.total }
+            $bancoTxt = if ($db.ok) { L "banco conectado" } elseif ($db.scanning) { L "procurando o banco..." } else { L "banco sem conex\u00e3o" }
+            $cabStatus.Text = (L "\u25cf No ar \u00b7 ") + $bancoTxt
+            $cabStatus.ForeColor = if ($db.ok) { [System.Drawing.Color]::FromArgb(22, 163, 74) } else { [System.Drawing.Color]::FromArgb(217, 119, 6) }
+            $cabContagem.Text = [string]$telas + $(if ($telas -eq 1) { L " tela aberta" } else { L " telas abertas" }) + (L " \u00b7 ") + [string]$aparelhos + $(if ($aparelhos -eq 1) { L " aparelho na rede" } else { L " aparelhos na rede" })
+            $cabContagem.Visible = $true
         }
-        $telas = 0; $sc = Invoke-Api "/api/sse-clients" -Timeout 1; if ($sc) { $telas = [int]$sc.clients }
-        $aparelhos = 0; $dv = Invoke-Api "/api/dispositivos" -Timeout 1; if ($dv) { $aparelhos = [int]$dv.total }
-        $bancoTxt = if ($db.ok) { L "banco conectado" } elseif ($db.scanning) { L "procurando o banco..." } else { L "banco sem conex\u00e3o" }
-        $cabStatus.Text = (L "\u25cf No ar \u00b7 ") + $bancoTxt + (L " \u00b7 ") + $telas + $(if ($telas -eq 1) { L " tela" } else { L " telas" }) + (L " \u00b7 ") + $aparelhos + $(if ($aparelhos -eq 1) { L " aparelho na rede" } else { L " aparelhos na rede" })
-        $cabStatus.ForeColor = if ($db.ok) { [System.Drawing.Color]::FromArgb(22, 163, 74) } else { [System.Drawing.Color]::FromArgb(217, 119, 6) }
     } catch {}
+    # Recalcula a largura do menu com o texto novo (senao a linha sai cortada).
+    try { $menu.PerformLayout() } catch {}
 }
 $menu.Add_Opening({ Update-Cabecalho })
 

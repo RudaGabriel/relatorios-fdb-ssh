@@ -1,15 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.21.0
+ * @version 3.21.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.21.0 - 2026-10-23 22:00 - QR code para o celular; tamanho do texto no computador.
- *     - Botão "Celular" no topo (só no computador): janela com o QR code do endereço desta
- *       máquina na rede, o endereço e "Copiar endereço" (servidor 2.18.0+).
- *     - Menu Tema → "Tamanho do texto" agora também no computador (80% a 140%, salvo à
- *       parte do celular); a página continua ocupando a tela inteira.
+ *   3.21.1 - 2026-10-23 23:30 - Lista até o fim da tela no modo detalhado; voltar ao topo no celular.
+ *     - Com o painel de gráficos oculto (ou baixo), a lista cresce até o rodapé; a base de 78%
+ *       da tela agora é compensada pelo tamanho do texto (antes o zoom encolhia a lista).
+ *     - Celular: botão redondo "voltar ao topo" acima da barra de baixo, depois de descer bastante.
  */
 
 (function() {
@@ -17,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.21.0";
+    const SCRIPT_VERSION = "3.21.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2628,7 +2627,13 @@ html[data-theme="brasa"] tbody tr:hover { background: rgba(240, 132, 74, 0.06); 
 .dash { display: none; }
 html[data-vis="detalhada"] .content { overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 html[data-vis="detalhada"] .dash { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; flex: none; }
-html[data-vis="detalhada"] .tableWrap { height: min(78vh, 900px); min-height: 420px; flex: none; }
+/* v3.21.1: a lista ocupa o resto da tela até o rodapé (antes sobrava faixa vazia embaixo,
+   principalmente com o texto reduzido — o zoom também encolhia o 78vh). A base continua
+   78% da tela para rolar dentro da lista quando o painel de gráficos está aberto. */
+html[data-vis="detalhada"] .tableWrap { height: auto; flex: 1 0 min(calc(78vh / var(--zoom-pc, 1)), 900px); min-height: 420px; }
+/* Painel minimizado por inteiro ("Restaurar painel"): a lista ocupa exatamente o espaço que
+   sobra, sem rolagem extra da página (mínimo 420px em telas muito baixas). */
+@media (min-width: 681px) { html[data-vis="detalhada"] .content:has(.dshTopoBtn[data-acao="restaurar-tudo"]) .tableWrap { flex: 1 1 0; } }
 .dshCard { min-width: 0; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; position: relative; overflow: hidden; }
 .dshKpi { grid-column: span 1; min-height: 112px; }
 .dshW2 { grid-column: span 2; } .dshW3 { grid-column: span 3; } .dshW4 { grid-column: span 4; } .dshW6 { grid-column: span 6; }
@@ -3137,7 +3142,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   html, body { height: auto; min-height: 100%; overflow-x: hidden; overflow-y: auto; }
   .app { height: auto; max-height: none; min-height: 100vh; overflow: visible; display: block; }
   .main, .content, html[data-vis="detalhada"] .content { min-height: 0; overflow: visible; }
-  .tableWrap, html[data-vis="detalhada"] .tableWrap { height: auto; min-height: 0; overflow: visible; }
+  .tableWrap, html[data-vis="detalhada"] .tableWrap { height: auto; min-height: 0; flex: none; overflow: visible; }
   .cards { overflow: visible; padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px)); }
   .tableTop .btns { display: none; }
   .tableTitle { font-size: 20px; line-height: 1.25; }
@@ -3276,6 +3281,16 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .app { zoom: var(--zoom-pc, 1); height: calc(100vh / var(--zoom-pc, 1)); max-height: calc(100vh / var(--zoom-pc, 1)); }
   .ov .modal { zoom: var(--zoom-pc, 1); max-height: calc(90vh / var(--zoom-pc, 1)); }
   .tmMenu .tmZoom { display: block; }
+}
+/* Voltar ao topo (v3.21.1): só no celular, onde a página inteira rola. Fica preso à barra
+   de baixo (acima dela, no canto direito), então acompanha a barra em qualquer tamanho de
+   texto e na área do gesto do iPhone; aparece só depois de descer bastante. */
+.btnTopo { display: none; }
+@media (max-width: 680px) {
+  .mobileBar .btnTopo { display: flex; align-items: center; justify-content: center; position: absolute; right: 12px; bottom: calc(100% + 10px); width: 36px; height: 36px; padding: 0; border-radius: 50%; background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); cursor: pointer; -webkit-tap-highlight-color: transparent; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(12px) scale(0.85); transition: opacity 0.22s var(--easing), transform 0.22s var(--easing), visibility 0s linear 0.22s; }
+  .mobileBar .btnTopo.vis { opacity: 0.88; visibility: visible; pointer-events: auto; transform: none; transition: opacity 0.22s var(--easing), transform 0.22s var(--easing), visibility 0s; }
+  .mobileBar .btnTopo:active { opacity: 1; transform: scale(0.92); }
+  html[data-perf="leve"] .mobileBar .btnTopo { transition: none; }
 }
 /* QR code (v3.21.0): botão só no computador — no celular o relatório já está aberto. */
 @media (max-width: 680px) { #btnCelular { display: none !important; } }
@@ -3448,6 +3463,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 <div class="mobileBar" id="mobileBar">
 <button class="btn mbBtn" id="mbCopiar" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar</button>
 <button class="btn mbBtn" id="mbVendas" type="button" aria-label="Ir para a lista de vendas do dia"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="18"/><polyline points="6 12 12 18 18 12"/><line x1="5" y1="21" x2="19" y2="21"/></svg>Vendas</button>
+<button class="btnTopo" id="btnTopo" type="button" aria-label="Voltar ao topo" title="Voltar ao topo" aria-hidden="true" tabindex="-1"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>
 <button class="btn mbBtn mbMais" id="mbMais" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>Mais</button>
 </div>
 <script id="dados" type="application/json">${dadosJSON}</script>
@@ -6640,6 +6656,29 @@ const a8=qs("#aLimpar");if(a8)a8.addEventListener("click",()=>{_fnLimpar();fecha
 const mb1=qs("#mbCopiar");if(mb1)mb1.addEventListener("click",abrirCopiar);
 const mb2=qs("#mbVendas");if(mb2)mb2.addEventListener("click",irParaVendas);
 const mb3=qs("#mbMais");if(mb3)mb3.addEventListener("click",abrirAcoes);
+// Voltar ao topo no celular (v3.21.1): aparece depois de descer ~1,2 tela (mínimo 500px).
+(function(){
+    const bt=qs("#btnTopo"); if(!bt)return;
+    const mq=window.matchMedia("(max-width:680px)");
+    let pend=false, vis=false;
+    const atualizar=()=>{
+        pend=false;
+        const y=window.scrollY||document.documentElement.scrollTop||0;
+        const mostrar=mq.matches && y>Math.max(500,window.innerHeight*1.2);
+        if(mostrar===vis)return; vis=mostrar;
+        bt.classList.toggle("vis",mostrar);
+        bt.setAttribute("aria-hidden",mostrar?"false":"true");
+        bt.tabIndex=mostrar?0:-1;
+    };
+    const agendar=()=>{ if(pend)return; pend=true; requestAnimationFrame(atualizar); };
+    window.addEventListener("scroll",agendar,{passive:true});
+    window.addEventListener("resize",agendar);
+    bt.addEventListener("click",()=>{
+        const leve=document.documentElement.getAttribute("data-perf")==="leve";
+        try{ window.scrollTo({top:0,behavior:leve?"auto":"smooth"}); }catch(e){ window.scrollTo(0,0); }
+    });
+    atualizar();
+})();
 const vendQ=qs("#vendQ");if(vendQ)vendQ.addEventListener("input",e=>{vendFiltro=String(e.target.value||"");renderLista();});
 const btnVend=qs("#btnVend");if(btnVend)btnVend.addEventListener("click",()=>{renderLista();abrirVendedores();});
 const vendFechar=qs("#vendFechar");if(vendFechar)vendFechar.addEventListener("click",fecharVendedores);
