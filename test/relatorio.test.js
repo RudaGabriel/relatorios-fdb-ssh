@@ -529,6 +529,74 @@ test("servidor: controle remoto — temas, tema e aviso nas abas, info, log e pr
     } finally { try { ctrl.abort(); } catch (_) {} try { fs.unlinkSync(marca); } catch (_) {} srv.parar(); }
 });
 
+test("servidor: preferências por aparelho — uma não afeta a outra; só o computador do servidor muda para todos", async () => {
+    const dir = montarPasta({ toastDuration: 5000, proibidos: [] }, { nfce: [{ numero: "500", hora: horaHaMin(5) }] });
+    const json = r => r.json();
+    const cfgDisco = () => JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8"));
+    const prefsDisco = () => JSON.parse(fs.readFileSync(path.join(dir, "preferencias-aparelhos.json"), "utf8")).aparelhos;
+    // 1ª parte: localhost tratado como aparelho da rede (RELATORIO_DISP_LOCAL=1).
+    let srv = await iniciarServidor(dir, { RELATORIO_DISP_LOCAL: "1" });
+    let A, B;
+    try {
+        const cookieDe = async () => {
+            const r = await fetch(srv.base + "/api/db-status");
+            const m = String(r.headers.get("set-cookie") || "").match(/fdb_ap=([a-f0-9]{32})/);
+            assert.ok(m, "aparelho novo deveria ganhar o cookie fdb_ap");
+            return "fdb_ap=" + m[1];
+        };
+        A = await cookieDe(); B = await cookieDe();
+        assert.notStrictEqual(A, B, "cada aparelho tem o seu identificador");
+        const com = (c, extra) => Object.assign({ headers: Object.assign({ Cookie: c, "Content-Type": "application/json" }, (extra && extra.headers) || {}) }, extra || {}, { headers: Object.assign({ Cookie: c, "Content-Type": "application/json" }, (extra && extra.headers) || {}) });
+        const r1 = await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ toastDuration: 9000, proibidos: ["RACAO"], appName: "Invasor", pollInterval: 900 }) })).then(json);
+        assert.strictEqual(r1.ok, true); assert.strictEqual(r1.escopo, "aparelho");
+        assert.ok(r1.ignorados.includes("appName") && r1.ignorados.includes("pollInterval"), "configurações do sistema ignoradas para aparelho");
+        const cA = await fetch(srv.base + "/api/config", com(A)).then(json);
+        assert.strictEqual(cA.servidor, false); assert.strictEqual(cA.toastDuration, 9000); assert.deepStrictEqual(cA.proibidos, ["RACAO"]);
+        assert.strictEqual(cA.appName, "Teste", "nome do sistema não muda por aparelho");
+        const cB = await fetch(srv.base + "/api/config", com(B)).then(json);
+        assert.strictEqual(cB.toastDuration, 5000, "o outro aparelho continua no padrão"); assert.deepStrictEqual(cB.proibidos, []);
+        assert.strictEqual(cfgDisco().appName, "Teste"); assert.deepStrictEqual(cfgDisco().proibidos, [], "config.json não muda por aparelho");
+        assert.strictEqual(cfgDisco().pollInterval, 200);
+        // proibidos pelo editor da página (POST /api/proibidos) também só dele
+        assert.strictEqual((await fetch(srv.base + "/api/proibidos", com(B, { method: "POST", body: JSON.stringify(["GRANEL"]) })).then(json)).escopo, "aparelho");
+        assert.deepStrictEqual((await fetch(srv.base + "/api/proibidos", com(A)).then(json)).proibidos, ["RACAO"]);
+        const pB = await fetch(srv.base + "/api/proibidos", com(B)).then(json);
+        assert.deepStrictEqual(pB.proibidos, ["GRANEL"]); assert.strictEqual(pB.efetivo, true);
+        assert.deepStrictEqual(cfgDisco().proibidos, []);
+        // banco e ícone: só no computador do servidor
+        assert.strictEqual((await fetch(srv.base + "/api/salvar-fdb", com(A, { method: "POST", body: JSON.stringify({ caminho: "C:\\x.fdb" }) }))).status, 403);
+        assert.strictEqual((await fetch(srv.base + "/api/upload-favicon", com(A, { method: "POST", body: "x" }))).status, 403);
+        // a página do aparelho já vem com as preferências dele
+        let html = "";
+        for (let i = 0; i < 60 && !html.includes("window.__APARELHO__="); i++) { html = await fetch(srv.base + "/", com(A)).then(r => r.text()); if (!html.includes("window.__APARELHO__=")) await esperar(250); }
+        assert.match(html, /window\.__APARELHO__=\{"servidor":false,"prefs":\{"toastDuration":9000,"proibidos":\["RACAO"\]/);
+        const pf = await fetch(srv.base + "/api/preferencias", com(B)).then(json);
+        assert.deepStrictEqual(pf.prefs.proibidos, ["GRANEL"]); assert.strictEqual(pf.personalizado.toastDuration, false);
+    } finally { srv.parar(); }
+    await esperar(300);
+    // 2ª parte: o computador do servidor (localhost) edita um aparelho e muda para todos.
+    srv = await iniciarServidor(dir);
+    try {
+        const idA = A.split("=")[1], idB = B.split("=")[1];
+        const post = (rota, corpo) => fetch(srv.base + rota, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) }).then(json);
+        const c = await fetch(srv.base + "/api/config").then(json);
+        assert.strictEqual(c.servidor, true); assert.strictEqual(c.escopo, "servidor"); assert.strictEqual(c.toastDuration, 5000);
+        const e = await post("/api/config?aparelho=" + idA, { toastDuration: 7000 });
+        assert.strictEqual(e.ok, true); assert.strictEqual(e.escopo, "aparelho");
+        assert.strictEqual(prefsDisco()[idA].prefs.toastDuration, 7000); assert.deepStrictEqual(prefsDisco()[idA].prefs.proibidos, ["RACAO"]);
+        const vA = await fetch(srv.base + "/api/config?aparelho=" + idA).then(json);
+        assert.strictEqual(vA.escopo, "aparelho-editado"); assert.strictEqual(vA.toastDuration, 7000); assert.strictEqual(vA.personalizado.proibidos, true);
+        assert.strictEqual((await fetch(srv.base + "/api/config?aparelho=..%2Fx")).status, 400, "chave de aparelho inválida");
+        assert.strictEqual((await post("/api/config?aparelho=" + idA, { restaurar: true })).ok, true);
+        assert.strictEqual(prefsDisco()[idA], undefined, "restaurar apaga as preferências do aparelho");
+        // padrão novo aplicado a todos: B perde a lista própria
+        assert.strictEqual((await post("/api/config", { toastDuration: 6000, proibidos: ["PADRAO"], aplicarTodos: true })).ok, true);
+        assert.strictEqual(cfgDisco().toastDuration, 6000); assert.deepStrictEqual(cfgDisco().proibidos, ["PADRAO"]);
+        const vB = await fetch(srv.base + "/api/config?aparelho=" + idB).then(json);
+        assert.strictEqual(vB.toastDuration, 6000); assert.deepStrictEqual(vB.proibidos, ["PADRAO"]); assert.strictEqual(vB.personalizado.proibidos, false);
+    } finally { srv.parar(); }
+});
+
 test("servidor: dispositivos conectados — log com tipo, IP e nome, rotas, telas e /api/dispositivos", { timeout: 60000 }, async () => {
     const dir = montarPasta();
     // RELATORIO_DISP_LOCAL=1: trata 127.0.0.1 como um aparelho da rede (só para o teste).

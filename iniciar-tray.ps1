@@ -3,12 +3,14 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.5.2
+# @version 1.6.0
 # @author Ruda Gabriel
 # @changelog
 #   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-#   1.5.2 - 2026-10-23 23:30 - Cabecalho do menu: status e contagem (telas/aparelhos)
-#     em duas linhas e largura do menu recalculada; antes o texto saia cortado.
+#   1.6.0 - 2026-10-24 01:30 - Preferencias por aparelho: em "Dispositivos conectados",
+#     coluna Preferencias e botoes "Configuracoes do aparelho..." (abre o relatorio nesta
+#     maquina com as preferencias daquele aparelho) e "Voltar ao padrao"; rodape refeito
+#     com layout automatico (os botoes apareciam cortados e sem texto com a tela em 125%).
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -931,6 +933,9 @@ function Update-Dispositivos {
         $script:dispStatus.Text = (L "N\u00e3o foi poss\u00edvel consultar o servidor: ") + $script:ultimoErroApi
         return
     }
+    # Mantem a selecao entre as atualizacoes (a lista e refeita a cada 5 s).
+    $selAntes = ""
+    try { if ($lv.SelectedItems.Count -gt 0) { $selAntes = [string]$lv.SelectedItems[0].Tag } } catch {}
     $lv.BeginUpdate()
     try {
         $lv.Items.Clear()
@@ -941,14 +946,35 @@ function Update-Dispositivos {
             $tipo = (([string]$d.tipo) + " " + ([string]$d.modelo)).Trim()
             $rotas = ""
             try { $rotas = (@($d.rotas.PSObject.Properties) | ForEach-Object { "$($_.Name) x$($_.Value)" }) -join ", " } catch {}
-            foreach ($v in @([string]$d.ip, $tipo, [string]$d.sistema, [string]$d.navegador, [string]$d.telasAbertas, [string]$d.conectadoDesde, [string]$d.ultimaAtividade, [string]$d.requisicoes, $rotas)) {
+            $prefs = L "padr\u00e3o do servidor"
+            try { $pp = @($d.preferenciasProprias | Where-Object { $_ }); if ($pp.Count -gt 0) { $prefs = (L "pr\u00f3prias: ") + (($pp | ForEach-Object { [string]$_ }) -join ", ") } } catch {}
+            foreach ($v in @([string]$d.ip, $tipo, [string]$d.sistema, [string]$d.navegador, $prefs, [string]$d.telasAbertas, [string]$d.conectadoDesde, [string]$d.ultimaAtividade, [string]$d.requisicoes, $rotas)) {
                 $it.SubItems.Add($v) | Out-Null
             }
+            $it.Tag = [string]$d.chavePreferencias
             $lv.Items.Add($it) | Out-Null
+            if ($selAntes -and $it.Tag -eq $selAntes) { $it.Selected = $true }
         }
     } finally { $lv.EndUpdate() }
     $qtd = @($j.dispositivos).Count
-    $script:dispStatus.Text = "$qtd " + $(if ($qtd -eq 1) { L "aparelho" } else { L "aparelhos" }) + (L " na rede com o relat\u00f3rio aberto \u2014 atualizado \u00e0s ") + (Get-Date -Format "HH:mm:ss") + (L "  (a pr\u00f3pria m\u00e1quina do servidor n\u00e3o aparece)")
+    $script:dispStatus.Text = "$qtd " + $(if ($qtd -eq 1) { L "aparelho" } else { L "aparelhos" }) + (L " na rede \u2014 atualizado \u00e0s ") + (Get-Date -Format "HH:mm:ss") + (L " (esta m\u00e1quina n\u00e3o aparece)")
+    Update-BotoesDispositivos
+}
+# Botoes que dependem de um aparelho selecionado (v1.6.0).
+function Update-BotoesDispositivos {
+    try {
+        $tem = ($script:dispLista.SelectedItems.Count -gt 0) -and [string]$script:dispLista.SelectedItems[0].Tag
+        $script:dispBotaoCfg.Enabled = [bool]$tem
+        $script:dispBotaoPad.Enabled = [bool]$tem
+    } catch {}
+}
+function Get-AparelhoSelecionado {
+    try {
+        if ($script:dispLista.SelectedItems.Count -eq 0) { return $null }
+        $it = $script:dispLista.SelectedItems[0]
+        if (-not [string]$it.Tag) { return $null }
+        return @{ chave = [string]$it.Tag; texto = ([string]$it.Text + " (" + [string]$it.SubItems[1].Text + ")") }
+    } catch { return $null }
 }
 function Show-Dispositivos {
     if ($script:formDisp -and -not $script:formDisp.IsDisposed) { $script:formDisp.Activate(); Update-Dispositivos; return }
@@ -963,27 +989,66 @@ function Show-Dispositivos {
     $lv.View = [System.Windows.Forms.View]::Details
     $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
     $lv.Dock = [System.Windows.Forms.DockStyle]::Fill
-    foreach ($c in @(@("Nome do aparelho", 150), @("IP", 105), @("Tipo", 110), @("Sistema", 95), @("Navegador", 110), @("Telas", 50), @("Desde", 65), @("\u00daltima atividade", 105), @("Requisi\u00e7\u00f5es", 80), @("Rotas acessadas", 260))) {
+    foreach ($c in @(@("Nome do aparelho", 150), @("IP", 105), @("Tipo", 110), @("Sistema", 95), @("Navegador", 110), @("Prefer\u00eancias", 170), @("Telas", 50), @("Desde", 65), @("\u00daltima atividade", 105), @("Requisi\u00e7\u00f5es", 80), @("Rotas acessadas", 260))) {
         $lv.Columns.Add((L $c[0]), $c[1]) | Out-Null
     }
-    $rodape = New-Object System.Windows.Forms.Panel
-    $rodape.Dock = [System.Windows.Forms.DockStyle]::Bottom; $rodape.Height = 44
+    # Rodape (v1.6.0): TableLayoutPanel com botoes AutoSize \u2014 o layout acompanha a escala
+    # de DPI sozinho (antes as posicoes eram fixas em pixels e, com a tela em 125%/150%,
+    # os botoes ficavam cortados e sem texto).
+    $rodape = New-Object System.Windows.Forms.TableLayoutPanel
+    $rodape.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $rodape.AutoSize = $true; $rodape.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+    $rodape.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 6)
+    $rodape.ColumnCount = 5; $rodape.RowCount = 1
+    $rodape.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    for ($i = 0; $i -lt 4; $i++) { $rodape.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null }
     $st = New-Object System.Windows.Forms.Label
-    $st.AutoSize = $false; $st.Left = 10; $st.Top = 13; $st.Width = 700; $st.Height = 20
-    $st.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $st.AutoSize = $false; $st.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $st.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $st.AutoEllipsis = $true
     $st.ForeColor = [System.Drawing.Color]::FromArgb(75, 85, 99)
-    $bAt = New-Object System.Windows.Forms.Button
-    $bAt.Text = "Atualizar"; $bAt.Width = 100; $bAt.Height = 28; $bAt.Top = 8
-    $bAt.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-    $bAt.Left = $rodape.Width - 220
-    $bFe = New-Object System.Windows.Forms.Button
-    $bFe.Text = "Fechar"; $bFe.Width = 100; $bFe.Height = 28; $bFe.Top = 8
-    $bFe.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-    $bFe.Left = $rodape.Width - 110
-    $rodape.Controls.AddRange(@($st, $bAt, $bFe))
+    $novoBotao = {
+        param([string]$texto)
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text = L $texto
+        $b.AutoSize = $true; $b.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+        $b.MinimumSize = New-Object System.Drawing.Size(96, 30)
+        $b.Padding = New-Object System.Windows.Forms.Padding(8, 2, 8, 2)
+        $b.Margin = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
+        $b.UseVisualStyleBackColor = $true
+        return $b
+    }
+    $bCfg = & $novoBotao "Configura\u00e7\u00f5es do aparelho..."
+    $bPad = & $novoBotao "Voltar ao padr\u00e3o"
+    $bAt  = & $novoBotao "Atualizar"
+    $bFe  = & $novoBotao "Fechar"
+    $bCfg.Enabled = $false; $bPad.Enabled = $false
+    $rodape.Controls.Add($st, 0, 0); $rodape.Controls.Add($bCfg, 1, 0); $rodape.Controls.Add($bPad, 2, 0); $rodape.Controls.Add($bAt, 3, 0); $rodape.Controls.Add($bFe, 4, 0)
     $f.Controls.Add($lv); $f.Controls.Add($rodape)
-    $rodape.Add_Resize({ try { $script:dispBotaoAt.Left = $this.Width - 220; $script:dispBotaoFe.Left = $this.Width - 110; $script:dispStatus.Width = [math]::Max(100, $this.Width - 240) } catch {} })
-    $script:formDisp = $f; $script:dispLista = $lv; $script:dispStatus = $st; $script:dispBotaoAt = $bAt; $script:dispBotaoFe = $bFe
+    $f.MinimumSize = New-Object System.Drawing.Size(720, 260)
+    $script:formDisp = $f; $script:dispLista = $lv; $script:dispStatus = $st; $script:dispBotaoCfg = $bCfg; $script:dispBotaoPad = $bPad
+    $lv.Add_SelectedIndexChanged({ Update-BotoesDispositivos })
+    # Configuracoes do aparelho: abre o relatorio NESTA maquina com o modal das
+    # preferencias daquele aparelho (duracao dos avisos, proibidos, teclas).
+    $bCfg.Add_Click({
+        $ap = Get-AparelhoSelecionado
+        if ($null -eq $ap) { return }
+        try { Start-Process ("$ADDR_LOCAL/?cfgAparelho=" + [System.Uri]::EscapeDataString($ap.chave)) } catch {
+            Show-Mensagem ((L "N\u00e3o foi poss\u00edvel abrir o navegador: ") + $_.Exception.Message) $APP_NAME "Warning"
+        }
+    })
+    $lv.Add_DoubleClick({ try { $script:dispBotaoCfg.PerformClick() } catch {} })
+    $bPad.Add_Click({
+        $ap = Get-AparelhoSelecionado
+        if ($null -eq $ap) { return }
+        $resp = [System.Windows.Forms.MessageBox]::Show((L "Apagar as prefer\u00eancias pr\u00f3prias de ") + $ap.texto + (L "?`n`nEle volta a seguir o padr\u00e3o do servidor (dura\u00e7\u00e3o dos avisos, proibidos e teclas)."), $APP_NAME, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($resp -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        $r = Invoke-Api ("/api/config?aparelho=" + [System.Uri]::EscapeDataString($ap.chave)) -Metodo "POST" -Corpo @{ restaurar = $true } -Timeout 5
+        if ($null -eq $r -or -not $r.ok) {
+            Show-Mensagem ((L "N\u00e3o foi poss\u00edvel restaurar: ") + $(if ($r -and $r.erro) { [string]$r.erro } else { $script:ultimoErroApi })) $APP_NAME "Warning"
+        }
+        Update-Dispositivos
+    })
     $bAt.Add_Click({ Update-Dispositivos })
     $bFe.Add_Click({ try { $script:formDisp.Close() } catch {} })
     $script:dispTimer = New-Object System.Windows.Forms.Timer
@@ -1188,11 +1253,13 @@ $menu.Items.Add((New-Separador)) | Out-Null
 # --- Configuracoes ---
 $subCfg = New-ItemMenu "Configura\u00e7\u00f5es" "config" "#475569"
 $subCfg.DropDownItems.Add((New-ItemMenu "Editar configura\u00e7\u00f5es..." "config" "#475569" {
-    $clients = Get-SseClients
-    if ($clients -gt 0) {
-        try {
-            Invoke-WebRequest "$ADDR_LOCAL/api/navigate/config" -UseBasicParsing -TimeoutSec 2 | Out-Null
-        } catch {}
+    # v1.6.0: o servidor so abre o modal nas telas DESTA maquina (nao nos celulares);
+    # se nenhuma recebeu, abre a pagina de configuracoes no navegador.
+    $enviado = 0
+    $rn = Invoke-Api "/api/navigate/config" -Timeout 2
+    if ($rn -and $rn.clients) { $enviado = [int]$rn.clients }
+    if ($enviado -gt 0) {
+        try { Invoke-WebRequest "$ADDR_LOCAL/api/navigate/foco" -UseBasicParsing -TimeoutSec 1 | Out-Null } catch {}
     } else {
         try {
             Start-Process "$ADDR/config"

@@ -164,6 +164,7 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 - **Abrir no celular:** clique em **Celular** no topo do relatório (ou na bandeja → *Abrir no celular*) e aponte a câmera para o QR code. O celular precisa estar no **mesmo Wi-Fi**. O endereço é sempre o IP da máquina na rede (`http://IP:7734/`), e o QR code é gerado pelo próprio sistema, sem internet.
 - **Layout próprio:** a página rola inteira, cartões compactos, badges em pares "nome: valor", barra fixa com **Copiar** (todas as opções de cópia), **Vendas** (vai para a lista) e **Mais**.
 - **Quem está conectado:** cada celular ou computador que abre o relatório aparece no log (`[CONEXAO]`) e na janela *Dispositivos conectados* da bandeja — tipo, modelo, sistema, navegador, IP, **nome do aparelho** e rotas acessadas.
+- **Preferências de cada aparelho:** duração dos avisos, termos proibidos e teclas de atalho são **de cada aparelho** (em *Configurações → Minhas preferências*). Quando um muda, os outros não são afetados. Só o **computador do servidor** muda o padrão de todos, o nome, o intervalo, o log, a janela de correção, o ícone e o banco. Ele também edita ou restaura as preferências de qualquer aparelho conectado (bandeja → *Dispositivos conectados* → *Configurações do aparelho...* / *Voltar ao padrão*). Ficam em `preferencias-aparelhos.json`, na pasta do sistema, nunca no banco.
 
 <details>
 <summary><b>Como o nome do aparelho é descoberto</b></summary>
@@ -206,7 +207,7 @@ A caixa de busca aceita filtros combináveis; a ajuda completa fica no botão **
 <a id="configuracao"></a>
 ## ⚙️ Configuração (`config.json`)
 
-A maior parte pode ser editada pela própria tela (**Configurações**). As chaves:
+A maior parte pode ser editada pela própria tela (**Configurações**), no computador do servidor. Os outros aparelhos só mudam as **próprias** preferências (avisos, proibidos, teclas; veja [Celular](#celular)). As chaves:
 
 | Chave | Padrão | Para que serve |
 |---|---|---|
