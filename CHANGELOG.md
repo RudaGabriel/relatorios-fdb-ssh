@@ -8,9 +8,9 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.18.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.21.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.21.1 |
 | [`api.ps1`](#apips1) | 1.8.0 |
-| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.1 |
+| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.5.2 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.1.0 |
@@ -200,6 +200,14 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.21.1 — 2026-10-23 23:30
+
+**Lista até o fim da tela no modo detalhado; voltar ao topo no celular.**
+
+- Modo detalhado: com o painel de gráficos minimizado, a lista ocupa exatamente o espaço até o rodapé (antes sobrava uma faixa vazia embaixo, principalmente com o texto reduzido — o zoom também encolhia a altura de 78% da tela). Com o painel aberto, a lista continua com 78% da tela e cresce se sobrar espaço.
+- Celular: botão redondo pequeno "voltar ao topo" (36 px, levemente translúcido) acima da barra de baixo, no canto direito; aparece só depois de descer cerca de 1,2 tela e volta suave ao topo (instantâneo no modo leve). No computador não aparece.
+- Testes: `config.json` de fábrica conferido pela versão do git (o da pasta de uma loja instalada tem o nome e o banco dela); gravação do estado simulado tenta de novo quando o Windows recusa o rename (EPERM) por o arquivo estar em leitura.
 
 ### 3.21.0 — 2026-10-23 22:00
 
@@ -529,6 +537,12 @@ Cliente de linha de comando.
 ## `iniciar-tray.ps1`
 
 Ícone da bandeja.
+
+### 1.5.2 — 2026-10-23 23:30
+
+**Cabeçalho do menu sem corte.**
+
+- Status ("No ar · banco conectado") e contagem ("1 tela aberta · 0 aparelhos na rede") em duas linhas, e a largura do menu é recalculada depois de atualizar o texto — antes a linha única saía cortada.
 
 ### 1.5.1 — 2026-10-23 22:00
 
