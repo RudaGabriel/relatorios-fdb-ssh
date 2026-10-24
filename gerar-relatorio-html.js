@@ -1,10 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.22.0
+ * @version 3.22.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
+ *   3.22.1 - 2026-10-24 02:30 - Proibidos: "Importar do servidor" e "Juntar com os do servidor".
  *   3.22.0 - 2026-10-24 01:30 - Preferências por aparelho.
  *     - Num aparelho da rede, "Configurações" vira "Minhas preferências": duração dos avisos,
  *       proibidos e teclas de atalho valem só para ele (só o que foi mexido; o resto segue o
@@ -19,7 +20,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.22.0";
+    const SCRIPT_VERSION = "3.22.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -6459,6 +6460,40 @@ const irParaVendas=()=>{
     try{ alvo.scrollIntoView({behavior:leve?"auto":"smooth",block:"start"}); }catch(e){ alvo.scrollIntoView(true); }
 };
 
+// ── Importar proibidos do servidor (v3.22.1) ────────────────────────────────
+// Num aparelho com lista própria: traz a lista padrão do servidor para o editor.
+// "substituir" troca a lista; "juntar" acrescenta só os termos que faltam. Não
+// salva sozinho — a pessoa confere e clica em Salvar.
+const _BTN_IMPORTAR_PR = (id1, id2) =>
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+    + '<button class="btn" type="button" id="' + id1 + '" data-tip="Troca a lista deste aparelho pela lista padrão do servidor"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Importar do servidor</button>'
+    + '<button class="btn" type="button" id="' + id2 + '" data-tip="Acrescenta à lista deste aparelho os termos do servidor que ainda não estão nela"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Juntar com os do servidor</button>'
+    + '</div>';
+const _importarProibidosServidor = (ta, formatar, modo, botoes) => {
+    if (!ta) return;
+    (botoes || []).forEach(b => { if (b) b.disabled = true; });
+    const liberar = () => (botoes || []).forEach(b => { if (b) b.disabled = false; });
+    _fetchJSON("/api/proibidos-servidor", {cache: "no-store"}).then(d => {
+        liberar();
+        const srv = (d && Array.isArray(d.proibidos)) ? d.proibidos.map(s => String(s).trim()).filter(Boolean) : null;
+        if (!srv) { toast("Importar do servidor", (d && d.erro) || "Não foi possível ler a lista do servidor."); return; }
+        if (!srv.length) { toast("Importar do servidor", "O servidor não tem termos proibidos no padrão."); return; }
+        const atual = String(ta.value || "").split("\n").map(s => s.trim()).filter(Boolean);
+        let nova, novos;
+        if (modo === "juntar") {
+            const tem = new Set(atual.map(s => s.toLowerCase()));
+            const extra = srv.filter(s => { const k = s.toLowerCase(); if (tem.has(k)) return false; tem.add(k); return true; });
+            nova = atual.concat(extra); novos = extra.length;
+        } else {
+            nova = srv.slice(); novos = srv.filter(s => !atual.some(a => a.toLowerCase() === s.toLowerCase())).length;
+        }
+        if (nova.join("\n") === atual.join("\n")) { toast("Importar do servidor", "A lista já está igual à do servidor."); return; }
+        ta.value = nova.join("\n");
+        try { if (typeof formatar === "function") formatar(); } catch (_) {}
+        toast("Importar do servidor", (modo === "juntar" ? novos + " termo(s) acrescentado(s)" : srv.length + " termo(s) importado(s)") + " — confira e clique em Salvar.");
+    }).catch(e => { liberar(); toast("Importar do servidor", "Falha na conexão com o servidor" + (e && e.message ? ": " + e.message : ".")); });
+};
+
 const abrirEditorProibidos=()=>{
     // BUG MÉDIO CORRIGIDO: faltava esta guarda (os outros 2 modais dinâmicos,
     // __abrirModalPeriodo e __abrirModalConfig, já tinham). Sem ela, clicar no
@@ -6469,7 +6504,8 @@ const abrirEditorProibidos=()=>{
     // de memória progressivo).
     if (document.getElementById("ovProib")) return;
     const bg=document.createElement("div"); bg.className="ov"; bg.id="ovProib"; bg.setAttribute("aria-hidden","false");
-    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Colou separado por vírgula, ponto e vírgula, tabulação ou em lista? O formato é ajustado sozinho. Salvo no servidor (config.json).</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid var(--field-border);background:var(--field-bg);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prCont" aria-live="polite" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 2px 0;line-height:1.4"></div><div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
+    const _prRemoto = !!(window.__APARELHO__ && window.__APARELHO__.servidor === false);
+    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true"><div class="mhead"><div><div class="mtitle">Proibidos</div><div class="msub">Um por linha — nome do produto a ocultar. Colou separado por vírgula, ponto e vírgula, tabulação ou em lista? O formato é ajustado sozinho. '+(_prRemoto?'Vale só para este aparelho.':'Salvo no servidor (config.json) — padrão de todos os aparelhos.')+'</div></div><div class="btn" id="prFechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div></div><div class="mbody"><textarea id="prTa" spellcheck="false" style="width:100%;height:260px;resize:vertical;border-radius:14px;border:1px solid var(--field-border);background:var(--field-bg);/*color:#e6eaf2;*/padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,&quot;Liberation Mono&quot;,&quot;Courier New&quot;,monospace;font-size:12px;outline:none"></textarea><div id="prCont" aria-live="polite" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 2px 0;line-height:1.4"></div>'+(_prRemoto?_BTN_IMPORTAR_PR("prImportar","prJuntar"):'')+'<div id="prMsg" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 0"></div><div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><div class="btn" id="prCancelar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.42"/></svg>Restaurar padrão</div><div class="btn" id="prSalvar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Salvar</div></div></div></div>';
     document.body.appendChild(bg);
     // Fix de transição: className precisa entrar no DOM SEM "on" e ganhar a
     // classe depois (com reflow forçado no meio) — se "on" já vier junto no
@@ -6483,6 +6519,9 @@ const abrirEditorProibidos=()=>{
     ta.value=valoresProibidos.join("\n");
     const formatarPr=ligarEditorProibidos(ta,qs("#prCont",bg));
     const msg=qs("#prMsg",bg);
+    const _prImp=qs("#prImportar",bg), _prJun=qs("#prJuntar",bg);
+    if(_prImp)_prImp.addEventListener("click",()=>_importarProibidosServidor(ta,formatarPr,"substituir",[_prImp,_prJun]));
+    if(_prJun)_prJun.addEventListener("click",()=>_importarProibidosServidor(ta,formatarPr,"juntar",[_prImp,_prJun]));
     // BUG FIX (auditoria v2.5.0 — LEAK): "fechar" só removia o elemento do DOM
     // (bg.remove()) mas NUNCA removia o listener "keydown" de Escape — esse
     // listener só se auto-removia quando a tecla Escape era efetivamente
@@ -7091,6 +7130,7 @@ var __abrirModalConfig = function(opcoes) {
                 '<div class="k">Termos proibidos <span style="font-weight:400;text-transform:none;letter-spacing:0">(um por linha — oculta vendas com esses produtos; listas coladas em outro formato são ajustadas sozinhas)</span></div>' +
                 '<textarea id="cfgProibidos" spellcheck="false" style="width:100%;min-height:130px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg-app);color:var(--text-main);padding:10px 12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;transition:border-color .15s"></textarea>' +
                 '<div id="cfgProibCont" aria-live="polite" style="font-size:12px;color:var(--text-muted);min-height:18px;padding:4px 2px 0;line-height:1.4"></div>' +
+                (_soPrefs ? _BTN_IMPORTAR_PR("cfgPrImportar", "cfgPrJuntar") : '') +
               '</div>' +
               '<div class="kv" style="flex-direction:column;gap:8px">' +
                 '<div class="k">Teclas de atalho <span style="font-weight:400;text-transform:none;letter-spacing:0">(tecla → executa comando na caixa de busca)</span></div>' +
@@ -7122,6 +7162,9 @@ var __abrirModalConfig = function(opcoes) {
         _ta.addEventListener("blur",  function(){ _ta.style.borderColor = "var(--border)"; });
         // Contador de termos + ajuste automático do formato (um por linha).
         var _formatarCfgPr = ligarEditorProibidos(_ta, document.getElementById("cfgProibCont"));
+        var _cfgImp = document.getElementById("cfgPrImportar"), _cfgJun = document.getElementById("cfgPrJuntar");
+        if (_cfgImp) _cfgImp.addEventListener("click", function(){ _importarProibidosServidor(_ta, _formatarCfgPr, "substituir", [_cfgImp, _cfgJun]); });
+        if (_cfgJun) _cfgJun.addEventListener("click", function(){ _importarProibidosServidor(_ta, _formatarCfgPr, "juntar", [_cfgImp, _cfgJun]); });
 
         // ── Teclas de atalho ──────────────────────────────────────────────────
         var _teclasArr = Array.isArray(cfg.teclasPersonalizadas)

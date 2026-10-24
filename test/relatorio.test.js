@@ -563,6 +563,7 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
         const pB = await fetch(srv.base + "/api/proibidos", com(B)).then(json);
         assert.deepStrictEqual(pB.proibidos, ["GRANEL"]); assert.strictEqual(pB.efetivo, true);
         assert.deepStrictEqual(cfgDisco().proibidos, []);
+        assert.deepStrictEqual((await fetch(srv.base + "/api/proibidos-servidor", com(A)).then(json)).proibidos, [], "lista padrão do servidor (para importar)");
         // banco e ícone: só no computador do servidor
         assert.strictEqual((await fetch(srv.base + "/api/salvar-fdb", com(A, { method: "POST", body: JSON.stringify({ caminho: "C:\\x.fdb" }) }))).status, 403);
         assert.strictEqual((await fetch(srv.base + "/api/upload-favicon", com(A, { method: "POST", body: "x" }))).status, 403);
@@ -593,7 +594,8 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
         assert.strictEqual((await post("/api/config", { toastDuration: 6000, proibidos: ["PADRAO"], aplicarTodos: true })).ok, true);
         assert.strictEqual(cfgDisco().toastDuration, 6000); assert.deepStrictEqual(cfgDisco().proibidos, ["PADRAO"]);
         const vB = await fetch(srv.base + "/api/config?aparelho=" + idB).then(json);
-        assert.strictEqual(vB.toastDuration, 6000); assert.deepStrictEqual(vB.proibidos, ["PADRAO"]); assert.strictEqual(vB.personalizado.proibidos, false);
+        assert.strictEqual(vB.toastDuration, 6000); assert.deepStrictEqual(vB.proibidos, ["PADRAO"]);
+        assert.deepStrictEqual((await fetch(srv.base + "/api/proibidos-servidor").then(json)).proibidos, ["PADRAO"]); assert.strictEqual(vB.personalizado.proibidos, false);
     } finally { srv.parar(); }
 });
 

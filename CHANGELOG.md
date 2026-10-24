@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.19.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.22.0 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.19.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.22.1 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -28,6 +28,12 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.19.1 — 2026-10-24 02:30
+
+**Lista padrão do servidor para importar.**
+
+- `/api/proibidos-servidor`: devolve os termos proibidos do padrão do servidor (`config.json`), para um aparelho importar para a lista dele.
 
 ### 2.19.0 — 2026-10-24 01:30
 
@@ -212,6 +218,16 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.22.1 — 2026-10-24 02:30
+
+**Termos proibidos: importar do servidor.**
+
+- Em "Minhas preferências" (e quando o computador do servidor edita um aparelho) e no editor "Proibidos" de um aparelho da rede, há dois botões:
+  - **Importar do servidor**: troca a lista do aparelho pela lista padrão do servidor.
+  - **Juntar com os do servidor**: acrescenta só os termos que faltam, sem repetir (maiúsculas e minúsculas contam como iguais).
+- Nenhum dos dois salva sozinho. A pessoa confere a lista e clica em Salvar. Os avisos dizem quantos termos entraram, quando a lista já está igual e quando o servidor não tem termos.
+- O editor "Proibidos" diz se a lista vale só para este aparelho ou é o padrão de todos.
 
 ### 3.22.0 — 2026-10-24 01:30
 
