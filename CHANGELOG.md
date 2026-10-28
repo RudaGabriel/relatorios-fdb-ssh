@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.21.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.25.0 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.22.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.26.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -28,6 +28,13 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.22.0 — 2026-10-28 22:00
+
+**Recarga desligada: a venda nova entra do mesmo jeito.**
+
+- Com "Recarregar relatório ao detectar mudanças" desligado, a venda nova não fica mais só no aviso "Há vendas novas". A página troca os dados no lugar (`window.__atualizarSemRecarregar`, do gerador 3.26.0+), sem recarregar. O aviso continua só como reserva, se essa troca falhar ou com um gerador antigo.
+- O selo do canto mostra "↻ ao vivo" (desligado) ou "↻ auto" (ligado).
 
 ### 2.21.0 — 2026-10-28 21:00
 
@@ -242,6 +249,17 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.26.0 — 2026-10-28 22:00
+
+**Vendas novas entram sem recarregar a página.**
+
+- Com "Recarregar relatório ao detectar mudanças" desligado, cada venda nova aparece sozinha, como sempre; só a página não recarrega.
+  - O relatório novo é buscado em segundo plano, e só os dados são trocados: vendas, duplicatas (com as escolhas salvas), quantidades, totais, vendedores, painel detalhado e "Gerado em".
+  - Filtros, busca, rolagem, janelas abertas (inclusive a de detalhes de uma venda) e o painel ficam exatamente como estão.
+  - Se o relatório novo ainda estiver sendo gerado, espera e tenta de novo. Várias vendas seguidas são agrupadas numa atualização.
+- A preparação dos dados virou funções reutilizáveis, que rodam na carga e a cada atualização: `_prepararDados`, `_indexarVendas`, `_dupLerListas`/`_dupAplicarSalvas`/`_dupAtualizarBotao` e `_atualizarCabecalho`.
+- Textos da opção atualizados: "Desligado: as vendas novas continuam entrando sozinhas, mas a página não recarrega".
 
 ### 3.25.0 — 2026-10-28 21:00
 

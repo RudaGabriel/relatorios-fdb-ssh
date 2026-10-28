@@ -2,16 +2,15 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.21.0
+ * @version 2.22.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.21.0 - 2026-10-28 21:00 - Apelido do aparelho ("Celular do Ruda").
- *     - Guardado em preferencias-aparelhos.json (campo "apelido", até 40 caracteres, limpo);
- *       aparece no log, em /api/config e /api/dispositivos. O nome real não muda.
- *     - "Voltar ao padrão" e "aplicar a todos" mantêm o apelido.
+ *   2.22.0 - 2026-10-28 22:00 - Recarga desligada: a venda nova entra sem recarregar a página.
+ *     - Chama window.__atualizarSemRecarregar (gerador 3.26.0+); o aviso "Há vendas novas"
+ *       fica só para quando a troca falhar. Selo do canto: "ao vivo".
  */
 
 
@@ -19,7 +18,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.21.0";
+const SERVER_VERSION = "2.22.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2175,7 +2174,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "background:rgba(0,200,80,.18);border:1px solid rgba(0,200,80,.35);border-radius:6px;" +
             "padding:3px 8px;font-size:10px;color:rgba(0,220,80,.9);font-family:monospace;" +
             "pointer-events:none;transition:opacity .5s;opacity:1';" +
-            "_badge.textContent=(typeof window.__recargaAutoDesligada==='function'&&window.__recargaAutoDesligada())?'\\u23f8 manual':'\\u21bb auto';" +
+            "_badge.textContent=(typeof window.__recargaAutoDesligada==='function'&&window.__recargaAutoDesligada())?'\\u21bb ao vivo':'\\u21bb auto';" +
             "document.body.appendChild(_badge);" +
             "setTimeout(function(){_badge.style.opacity='0.18';},3000);" +
             "}catch(_){}" +
@@ -2228,11 +2227,19 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "x.onclick=function(){a.style.display='none';};a.appendChild(x);" +
             "document.body.appendChild(a);}catch(_){}};" +
             "var _recarregar=function(forcar){" +
-            "if(!forcar&&_recDesl()){_recAviso();return;}" +
+            // v2.22.0: desligada, a venda nova ENTRA do mesmo jeito — a página troca só os
+            // dados no lugar (window.__atualizarSemRecarregar, gerador 3.26.0+). O aviso
+            // "Há vendas novas" fica só para quando isso falhar (ou gerador antigo).
+            "if(!forcar&&_recDesl()){" +
+            "if(typeof window.__atualizarSemRecarregar==='function'){_loadTs=Date.now();" +
+            "Promise.resolve(window.__atualizarSemRecarregar()).then(function(ok){" +
+            "if(ok){_recPend=false;var na=document.getElementById('__srv_novas');if(na)na.style.display='none';}else{_recAviso();}" +
+            "}).catch(function(){_recAviso();});return;}" +
+            "_recAviso();return;}" +
             "try{if(typeof window.__antesRecarga==='function')window.__antesRecarga();}catch(_){}" +
             "window.location.replace(window.location.href);};" +
             // Chamada pelo menu ao trocar a opção: ligou com venda pendente → atualiza já.
-            "window.__srvRecargaMudou=function(lig){try{var bd=document.getElementById('__srv_badge');if(bd)bd.textContent=lig?'\\u21bb auto':'\\u23f8 manual';}catch(_){}" +
+            "window.__srvRecargaMudou=function(lig){try{var bd=document.getElementById('__srv_badge');if(bd)bd.textContent=lig?'\\u21bb auto':'\\u21bb ao vivo';}catch(_){}" +
             "if(lig&&_recPend)_recarregar(true);};" +
             // SSE (primário)
             "var _es=null,_connTry=0;" +

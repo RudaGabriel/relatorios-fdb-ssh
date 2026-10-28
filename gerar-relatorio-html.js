@@ -1,13 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.25.0
+ * @version 3.26.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.25.0 - 2026-10-28 21:00 - "Nome deste aparelho" em Minhas preferências (apelido).
- *     - Também ao editar um aparelho pelo computador do servidor; a lista de aparelhos mostra
- *       o apelido. O nome real do aparelho não muda.
+ *   3.26.0 - 2026-10-28 22:00 - Vendas novas entram sem recarregar (recarga desligada).
+ *     - __atualizarSemRecarregar: busca a página nova em segundo plano, troca só os dados
+ *       (vendas, duplicatas, totais, "Gerado em") e redesenha — filtros, busca, rolagem,
+ *       painel e janelas abertas ficam. Preparação dos dados virou funções reutilizáveis.
  */
 
 (function() {
@@ -15,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.25.0";
+    const SCRIPT_VERSION = "3.26.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3668,45 +3669,51 @@ if (dadosEl) {
 } else {
   DADOS = {};
 }
-if(!Array.isArray(DADOS.vendas))DADOS.vendas=[];
-if(!Array.isArray(DADOS.vendedores))DADOS.vendedores=[];
-if(!Array.isArray(DADOS.vendTotaisDia))DADOS.vendTotaisDia=[];
+// Preparação dos dados (v3.26.0: função — roda na carga e de novo a cada atualização
+// sem recarregar a página, ver __atualizarSemRecarregar).
+const _prepararDados = (D) => {
+    if(!Array.isArray(D.vendas))D.vendas=[];
+    if(!Array.isArray(D.vendedores))D.vendedores=[];
+    if(!Array.isArray(D.vendTotaisDia))D.vendTotaisDia=[];
 
-// ── Dedup cliente: pares modelo=99 ("Dinheiro NF-e") + modelo=55 mesmo número ──
-// O Node.js agrupa por chave exata — se o número vem zerado de um lado e sem zeros
-// do outro, os dois chegam ao cliente separados. Corrige aqui antes de renderizar.
-{
-  const _nfeMap = new Map(); // numero normalizado → índice da entrada modelo=55
-  DADOS.vendas.forEach((v, i) => {
-    if (Number(v?.modelo) === 55 && !v.is_recebimento) {
-      const _n = String(v.numero || "").replace(/^0+/, "") || "0";
-      _nfeMap.set(_n, i);
-    }
-  });
-  const _remover = new Set();
-  DADOS.vendas.forEach((v, i) => {
-    if (Number(v?.modelo) !== 99) return;
-    const _pag = String(v.pagamentos || "").toLowerCase();
-    if (!_pag.includes("nf-e") && !_pag.includes("nfe")) return;
-    const _n = String(v.numero || "").replace(/^0+/, "") || "0";
-    const iReal = _nfeMap.get(_n);
-    if (iReal !== undefined && iReal !== i) {
-      // Mescla dados úteis do stub (99) na entrada real (55)
-      const real = DADOS.vendas[iReal];
-      if (!real.vendedor || real.vendedor === "(sem vendedor)" || real.vendedor === "?") {
-        if (v.vendedor && v.vendedor !== "(sem vendedor)" && v.vendedor !== "?") real.vendedor = v.vendedor;
+    // ── Dedup cliente: pares modelo=99 ("Dinheiro NF-e") + modelo=55 mesmo número ──
+    // O Node.js agrupa por chave exata — se o número vem zerado de um lado e sem zeros
+    // do outro, os dois chegam ao cliente separados. Corrige aqui antes de renderizar.
+    {
+      const _nfeMap = new Map(); // numero normalizado → índice da entrada modelo=55
+      D.vendas.forEach((v, i) => {
+        if (Number(v?.modelo) === 55 && !v.is_recebimento) {
+          const _n = String(v.numero || "").replace(/^0+/, "") || "0";
+          _nfeMap.set(_n, i);
+        }
+      });
+      const _remover = new Set();
+      D.vendas.forEach((v, i) => {
+        if (Number(v?.modelo) !== 99) return;
+        const _pag = String(v.pagamentos || "").toLowerCase();
+        if (!_pag.includes("nf-e") && !_pag.includes("nfe")) return;
+        const _n = String(v.numero || "").replace(/^0+/, "") || "0";
+        const iReal = _nfeMap.get(_n);
+        if (iReal !== undefined && iReal !== i) {
+          // Mescla dados úteis do stub (99) na entrada real (55)
+          const real = D.vendas[iReal];
+          if (!real.vendedor || real.vendedor === "(sem vendedor)" || real.vendedor === "?") {
+            if (v.vendedor && v.vendedor !== "(sem vendedor)" && v.vendedor !== "?") real.vendedor = v.vendedor;
+          }
+          _remover.add(i);
+        }
+      });
+      if (_remover.size > 0) {
+        D.vendas = D.vendas.filter((_, i) => !_remover.has(i));
       }
-      _remover.add(i);
     }
-  });
-  if (_remover.size > 0) {
-    DADOS.vendas = DADOS.vendas.filter((_, i) => !_remover.has(i));
-  }
-}
 
-if(!DADOS.totais||typeof DADOS.totais!=="object")DADOS.totais={qtd:DADOS.vendas.length,total:DADOS.vendas.reduce((a,b)=>a+Number(b?.total||0),0)};
-if(typeof DADOS.totais.qtd!=="number")DADOS.totais.qtd=DADOS.vendas.length;
-if(typeof DADOS.totais.total!=="number")DADOS.totais.total=DADOS.vendas.reduce((a,b)=>a+Number(b?.total||0),0);
+    if(!D.totais||typeof D.totais!=="object")D.totais={qtd:D.vendas.length,total:D.vendas.reduce((a,b)=>a+Number(b?.total||0),0)};
+    if(typeof D.totais.qtd!=="number")D.totais.qtd=D.vendas.length;
+    if(typeof D.totais.total!=="number")D.totais.total=D.vendas.reduce((a,b)=>a+Number(b?.total||0),0);
+    return D;
+};
+_prepararDados(DADOS);
 
 const fmt=v=>new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(v||0));
 // Valor sem símbolo de moeda — usado na exibição de formas no modal
@@ -3847,7 +3854,7 @@ const _htmlPrefsTela = () => '<div class="tmPerf"><div class="tmHead tmPerfHead"
         + '</div>'
         + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Atualização</span><span class="tmAtual tmRecEstado"></span></div>'
         +   '<label class="tmRecLbl"><input type="checkbox" id="tmRecAuto"><span>Recarregar relatório ao detectar mudanças</span></label>'
-        +   '<div class="tmPerfDica">Desligado: a página não recarrega sozinha — filtros, busca, rolagem e janelas abertas ficam como estão. Quando entrar venda, aparece "Há vendas novas" com o botão Atualizar. Vale só para este aparelho.</div>'
+        +   '<div class="tmPerfDica">Desligado: as vendas novas continuam entrando sozinhas, mas a página não recarrega — filtros, busca, rolagem e janelas abertas ficam como estão. Vale só para este aparelho.</div>'
         + '</div>'
         + '<div class="tmPerf tmZoom"><div class="tmHead tmPerfHead"><span class="tmTitulo">Tamanho do texto</span><span class="tmAtual tmZoomEstado"></span></div>'
         +   '<div class="tmPerfOps tmZoomOps" role="group" aria-label="Tamanho do texto">'
@@ -4106,12 +4113,13 @@ window.addEventListener("resize", () => {
 const rmAcento=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
 const normP=v=>rmAcento(v).trim().toUpperCase().replace(/\s+/g," ");
 
-for(let i=0; i<DADOS.vendas.length; i++){
+const _indexarVendas = () => { for(let i=0; i<DADOS.vendas.length; i++){
     const x = DADOS.vendas[i];
     x._idx = i;
     // _busca inclui cliente e natureza para pesquisa full-text
     x._busca = rmAcento((x.vendedor||"")+" "+(x.tipo||"")+" "+(x.pagamentos||"")+" "+(x.itens||"")+" "+(x.caixa||"")+" "+(x.numero||"")+" "+(x.cliente||"")+" "+(x.natureza||"")).toLowerCase();
-}
+} };
+_indexarVendas();
 
 const LS_KEY="__cupons_proibidos__";
 // PADRÃO DE FÁBRICA (v3.3.1): vazio. Antes trazia uma lista fixa de marcas de
@@ -4349,9 +4357,13 @@ const _dupSalvarEscolha = (d, v) => {
     } catch(e) {}
 };
 
-const _dupConf = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.confirmadas)) ? DADOS.duplicatas.confirmadas : []).map(d => ({...d, _tipo: "confirmado"}));
-const _dupProv = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.provaveis))   ? DADOS.duplicatas.provaveis   : []).map(d => ({...d, _tipo: "provavel"}));
-const _dupTodas = [..._dupConf, ..._dupProv];
+let _dupConf = [], _dupProv = [], _dupTodas = [];
+const _dupLerListas = () => {
+    _dupConf = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.confirmadas)) ? DADOS.duplicatas.confirmadas : []).map(d => ({...d, _tipo: "confirmado"}));
+    _dupProv = ((DADOS.duplicatas && Array.isArray(DADOS.duplicatas.provaveis))   ? DADOS.duplicatas.provaveis   : []).map(d => ({...d, _tipo: "provavel"}));
+    _dupTodas = [..._dupConf, ..._dupProv];
+};
+_dupLerListas();
 
 // Reconstitui a linha da gerencial no formato de DADOS.vendas, para poder
 // exibi-la e somá-la quando o usuário escolhe mantê-la.
@@ -4487,12 +4499,17 @@ const _dupPendentes = [];
 // Precedência: a escolha ESPECÍFICA do par vence a GERAL ("manter todas"). É a
 // mesma regra do clique ao vivo em "Manter todas", que só atua sobre as
 // pendentes — assim carga e clique nunca divergem.
-for (const d of _dupTodas) {
-    const escSalva = _dupLerEscolha(d);
-    if (escSalva) { _dupAplicar(d, escSalva); continue; }
-    if (_dupManterTodasAtivo) { _dupAplicar(d, "todas"); continue; }
-    _dupPendentes.push(d); // sem decisão — vai pro modal
-}
+const _dupAplicarSalvas = () => {
+    _dupManterTodasAtivo = _dupLerManterTodas();
+    _dupPendentes.length = 0;
+    for (const d of _dupTodas) {
+        const escSalva = _dupLerEscolha(d);
+        if (escSalva) { _dupAplicar(d, escSalva); continue; }
+        if (_dupManterTodasAtivo) { _dupAplicar(d, "todas"); continue; }
+        _dupPendentes.push(d); // sem decisão — vai pro modal
+    }
+};
+_dupAplicarSalvas();
 
 // ── Rastro na tabela (v3.8.7) ──────────────────────────────────────────────
 // A linha que ficou na tabela ganha um chip "Duplicata" dizendo qual documento
@@ -4539,15 +4556,18 @@ const _DUP_ROTULO_ESCOLHA_CURTO = {
 };
 _dupMarcarLinhas();
 
-(function _initBtnDuplicatas(){
+const _dupAtualizarBotao = () => {
     const btn = document.getElementById("btnDuplicatas");
     if (!btn) return;
     if (_dupTodas.length > 0) {
         btn.style.display = "";
         const badge = document.getElementById("badgeDuplicatas");
         if (badge) badge.textContent = "(" + _dupTodas.length + ")";
+    } else {
+        btn.style.display = "none";
     }
-})();
+};
+_dupAtualizarBotao();
 
 const _DUP_ROTULO_ESCOLHA = { todas: "manter as duas", fiscal: "manter apenas o documento final", gerencial: "manter apenas o documento de origem" };
 
@@ -6289,7 +6309,7 @@ const _recMarcarMenu = () => {
 const _recEscolher = (ligar) => {
     try { localStorage.setItem("fdb_recarga_auto", ligar ? "1" : "0"); } catch (e) {}
     _recMarcarMenu();
-    toast("Atualização", ligar ? "A página recarrega sozinha quando entrar venda." : "A página não recarrega mais sozinha — use Atualizar quando aparecer “Há vendas novas”.");
+    toast("Atualização", ligar ? "A página recarrega sozinha quando entrar venda." : "As vendas novas continuam entrando, sem recarregar a página.");
     try { if (typeof window.__srvRecargaMudou === "function") window.__srvRecargaMudou(!!ligar); } catch (e) {}
 };
 const _visMarcarMenu = () => {
@@ -6659,64 +6679,70 @@ const _mostrar=(el,displayVal)=>{
 };
 const _ocultar=(el)=>{ if(!el)return; el.style.display="none"; el.classList.remove("reveal"); };
 
-// Contagens reais por modelo — fonte primária e confiável para visibilidade dos badges
-const _cntGer  = DADOS.vendas.filter(x=>Number(x&&x.modelo||0)===99).length;
-const _cntNfce = DADOS.vendas.filter(x=>Number(x&&x.modelo||0)===65).length;
-const _cntNfe  = DADOS.vendas.filter(x=>Number(x&&x.modelo||0)===55).length;
-const elQG=qs("#tQtdGer");    if(elQG)   elQG.textContent  = _cntGer;
-const elQN=qs("#tQtdNfce");   if(elQN)   elQN.textContent  = _cntNfce;
-const elQNfe=qs("#tQtdNfe");  if(elQNfe) elQNfe.textContent= _cntNfe;
-const td=DADOS.totaisDia;{
-    const b        = qs("#bDiaBrk");
-    const mini     = qs("#tDiaBrkMini");
-    // Badges de quantidade: exibe somente se houver vendas daquele tipo nos dados
-    const badgeNfce= qs("#badgeQtdNfce");
-    const badgeNfe = qs("#badgeNfe");
-    const nfceMini = qs("#tDiaNfceMini");
-    const nfeMini  = qs("#tDiaNfeMini");
-    // Visibilidade baseada em contagem real (independente de totaisDia.ok)
-    if(badgeNfce) { _cntNfce>0 ? _mostrar(badgeNfce,"inline") : _ocultar(badgeNfce); }
-    if(badgeNfe)  { _cntNfe>0  ? _mostrar(badgeNfe,"inline")  : _ocultar(badgeNfe);  }
-    if(nfceMini)  { _cntNfce>0 ? _mostrar(nfceMini,"inline")  : _ocultar(nfceMini);  }
-    if(nfeMini)   { _cntNfe>0  ? _mostrar(nfeMini,"inline")   : _ocultar(nfeMini);   }
-    if(td&&td.ok){
-        qs("#tDiaSel").textContent  = fmt(td.selecionado||0);
-        qs("#tDiaGer").textContent  = fmt(td.gerencial||0);
-        if(qs("#tDiaNfce")) qs("#tDiaNfce").textContent = fmt(td.nfce||0);
-        if(qs("#tDiaNfe"))  qs("#tDiaNfe").textContent  = fmt(td.nfe||0);
-        // Só mostra o breakdown (mini) quando há mais de um tipo de documento com valor
-        const _tiposComValor = [(td.gerencial||0)>0,(td.nfce||0)>0,(td.nfe||0)>0].filter(Boolean).length;
-        if(mini) { _tiposComValor > 1 ? _mostrar(mini,"inline") : _ocultar(mini); }
-        if(!Number(td.selecionado||0)){ _ocultar(b); } else { _mostrar(b,"inline-flex"); }
-    }else{
-        qs("#tDiaSel").textContent = fmt(DADOS.totais.total||0);
-        if(mini) _ocultar(mini);
-        if(b) _mostrar(b,"inline-flex");
+// Cabeçalho (quantidades, totais e filtros por tipo) — v3.26.0: função, roda na carga e
+// a cada atualização sem recarregar.
+const _atualizarCabecalho = () => {
+    // Contagens reais por modelo — fonte primária e confiável para visibilidade dos badges
+    const _cntGer  = DADOS.vendas.filter(x=>Number(x&&x.modelo||0)===99).length;
+    const _cntNfce = DADOS.vendas.filter(x=>Number(x&&x.modelo||0)===65).length;
+    const _cntNfe  = DADOS.vendas.filter(x=>Number(x&&x.modelo||0)===55).length;
+    const elQG=qs("#tQtdGer");    if(elQG)   elQG.textContent  = _cntGer;
+    const elQN=qs("#tQtdNfce");   if(elQN)   elQN.textContent  = _cntNfce;
+    const elQNfe=qs("#tQtdNfe");  if(elQNfe) elQNfe.textContent= _cntNfe;
+    const td=DADOS.totaisDia;
+    {
+        const b        = qs("#bDiaBrk");
+        const mini     = qs("#tDiaBrkMini");
+        // Badges de quantidade: exibe somente se houver vendas daquele tipo nos dados
+        const badgeNfce= qs("#badgeQtdNfce");
+        const badgeNfe = qs("#badgeNfe");
+        const nfceMini = qs("#tDiaNfceMini");
+        const nfeMini  = qs("#tDiaNfeMini");
+        // Visibilidade baseada em contagem real (independente de totaisDia.ok)
+        if(badgeNfce) { _cntNfce>0 ? _mostrar(badgeNfce,"inline") : _ocultar(badgeNfce); }
+        if(badgeNfe)  { _cntNfe>0  ? _mostrar(badgeNfe,"inline")  : _ocultar(badgeNfe);  }
+        if(nfceMini)  { _cntNfce>0 ? _mostrar(nfceMini,"inline")  : _ocultar(nfceMini);  }
+        if(nfeMini)   { _cntNfe>0  ? _mostrar(nfeMini,"inline")   : _ocultar(nfeMini);   }
+        if(td&&td.ok){
+            qs("#tDiaSel").textContent  = fmt(td.selecionado||0);
+            qs("#tDiaGer").textContent  = fmt(td.gerencial||0);
+            if(qs("#tDiaNfce")) qs("#tDiaNfce").textContent = fmt(td.nfce||0);
+            if(qs("#tDiaNfe"))  qs("#tDiaNfe").textContent  = fmt(td.nfe||0);
+            // Só mostra o breakdown (mini) quando há mais de um tipo de documento com valor
+            const _tiposComValor = [(td.gerencial||0)>0,(td.nfce||0)>0,(td.nfe||0)>0].filter(Boolean).length;
+            if(mini) { _tiposComValor > 1 ? _mostrar(mini,"inline") : _ocultar(mini); }
+            if(!Number(td.selecionado||0)){ _ocultar(b); } else { _mostrar(b,"inline-flex"); }
+        }else{
+            qs("#tDiaSel").textContent = fmt(DADOS.totais.total||0);
+            if(mini) _ocultar(mini);
+            if(b) _mostrar(b,"inline-flex");
+        }
     }
-}
-// Mostra/oculta radios conforme tipos presentes nos dados.
-// Se houver apenas um tipo, oculta o container inteiro (não faz sentido filtrar).
-// Se houver mais de um, exibe apenas os radios dos tipos presentes + "Todos".
-{
-    const temGer  = DADOS.vendas.some(x=>Number(x&&x.modelo||0)===99);
-    const temNfce = DADOS.vendas.some(x=>Number(x&&x.modelo||0)===65);
-    const temNfe  = DADOS.vendas.some(x=>Number(x&&x.modelo||0)===55);
-    const tiposPresentes = [temGer, temNfce, temNfe].filter(Boolean).length;
-    const radioBox = qs("#radioBusca");
-    const rGer   = qs("#radioLblGer");
-    const rNfce  = qs("#radioLblNfce");
-    const rNfe   = qs("#radioLblNfe");
-    if (tiposPresentes <= 1) {
-        // Apenas um tipo — esconde o seletor inteiro
-        if (radioBox) _ocultar(radioBox);
-    } else {
-        // Múltiplos tipos — exibe o container e apenas os radios presentes
-        if (radioBox) { radioBox.style.display = ""; }
-        if (rGer)  temGer  ? _mostrar(rGer,"")  : _ocultar(rGer);
-        if (rNfce) temNfce ? _mostrar(rNfce,"") : _ocultar(rNfce);
-        if (rNfe)  temNfe  ? _mostrar(rNfe,"")  : _ocultar(rNfe);
+    // Mostra/oculta radios conforme tipos presentes nos dados.
+    // Se houver apenas um tipo, oculta o container inteiro (não faz sentido filtrar).
+    // Se houver mais de um, exibe apenas os radios dos tipos presentes + "Todos".
+    {
+        const temGer  = DADOS.vendas.some(x=>Number(x&&x.modelo||0)===99);
+        const temNfce = DADOS.vendas.some(x=>Number(x&&x.modelo||0)===65);
+        const temNfe  = DADOS.vendas.some(x=>Number(x&&x.modelo||0)===55);
+        const tiposPresentes = [temGer, temNfce, temNfe].filter(Boolean).length;
+        const radioBox = qs("#radioBusca");
+        const rGer   = qs("#radioLblGer");
+        const rNfce  = qs("#radioLblNfce");
+        const rNfe   = qs("#radioLblNfe");
+        if (tiposPresentes <= 1) {
+            // Apenas um tipo — esconde o seletor inteiro
+            if (radioBox) _ocultar(radioBox);
+        } else {
+            // Múltiplos tipos — exibe o container e apenas os radios presentes
+            if (radioBox) { radioBox.style.display = ""; }
+            if (rGer)  temGer  ? _mostrar(rGer,"")  : _ocultar(rGer);
+            if (rNfce) temNfce ? _mostrar(rNfce,"") : _ocultar(rNfce);
+            if (rNfe)  temNfe  ? _mostrar(rNfe,"")  : _ocultar(rNfe);
+        }
     }
-}
+};
+_atualizarCabecalho();
 
 let debounceBusca;
 qs("#q").addEventListener("input",e=>{
@@ -6818,6 +6844,58 @@ const a8=qs("#aLimpar");if(a8)a8.addEventListener("click",()=>{_fnLimpar();fecha
 const mb1=qs("#mbCopiar");if(mb1)mb1.addEventListener("click",abrirCopiar);
 const mb2=qs("#mbVendas");if(mb2)mb2.addEventListener("click",irParaVendas);
 const mb3=qs("#mbMais");if(mb3)mb3.addEventListener("click",abrirAcoes);
+// ── Atualizar sem recarregar (v3.26.0) ─────────────────────────────────────
+// Com "Recarregar relatório ao detectar mudanças" DESLIGADO, venda nova continua
+// entrando sozinha — só que sem recarregar a página: busca a página nova em segundo
+// plano, troca só os dados e redesenha. Filtros, busca, rolagem, painel e janelas
+// abertas ficam como estão. Chamada pelo script do servidor no lugar do reload.
+(function(){
+    let rodando = false, deNovo = false;
+    const pegarDados = async () => {
+        for (let t = 0; t < 12; t++) {
+            const r = await fetch(location.pathname + location.search, { cache: "no-store", credentials: "same-origin" });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+            const el = doc.getElementById("dados");
+            if (el) return { dados: JSON.parse(el.textContent || "{}"), doc };
+            await new Promise(res => setTimeout(res, 700));   // ainda gerando ("Gerando relatório...")
+        }
+        throw new Error("o relatório novo não ficou pronto a tempo");
+    };
+    const aplicar = (novo, doc) => {
+        _prepararDados(novo);
+        DADOS = novo;
+        _indexarVendas();
+        _dupLerListas(); _dupAplicarSalvas(); _dupMarcarLinhas(); _dupAtualizarBotao();
+        _atualizarCabecalho();
+        try {   // "Gerado em" do relatório novo
+            const g = doc.querySelectorAll(".badgeHora"), a = document.querySelectorAll(".badgeHora");
+            a.forEach((el, i) => { if (g[i]) el.textContent = g[i].textContent; });
+        } catch (_) {}
+        _tdHtmlCache.clear(); _miniHtmlCache.clear();
+        _invalidarCtxCache(); _passaFiltroKeyCache = "";
+        somaKey = ""; calcSomaSel();
+        renderTudo();
+        try { if (_dshVisivel()) _dshRender(); } catch (_) {}
+        try { if (typeof window.__linhaUnica === "function") window.__linhaUnica(); } catch (_) {}
+    };
+    window.__atualizarSemRecarregar = async () => {
+        if (rodando) { deNovo = true; return true; }
+        rodando = true;
+        try {
+            const r = await pegarDados();
+            aplicar(r.dados, r.doc);
+            return true;
+        } catch (e) {
+            console.warn("[atualizar sem recarregar] " + (e && e.message || e));
+            return false;
+        } finally {
+            rodando = false;
+            if (deNovo) { deNovo = false; setTimeout(() => { window.__atualizarSemRecarregar(); }, 250); }
+        }
+    };
+})();
+
 // Voltar ao topo no celular (v3.21.1): aparece depois de descer ~1,2 tela (mínimo 500px).
 (function(){
     const bt=qs("#btnTopo"); if(!bt)return;
