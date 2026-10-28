@@ -1,10 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.24.0
+ * @version 3.24.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
+ *   3.24.1 - 2026-10-28 20:00 - Celular: "Duração das mensagens de aviso" sem campo espremido.
  *   3.24.0 - 2026-10-28 19:00 - Menu Tema só com os temas; o resto em Configurações → "Nesta tela".
  *     - Visualização, desempenho, atualização e tamanho do texto: seção "Nesta tela" no topo
  *       de Configurações (vale na hora, só neste aparelho; não aparece ao editar outro aparelho).
@@ -21,7 +22,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.24.0";
+    const SCRIPT_VERSION = "3.24.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3314,8 +3315,15 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 #ovConfig .mhead, #ovQr .mhead { flex-wrap: nowrap; align-items: flex-start; }
 #ovConfig .mhead > div:first-child, #ovQr .mhead > div:first-child { flex: 1 1 auto; min-width: 0; }
 #ovConfig .mhead > .btn, #ovQr .mhead > .btn { flex: none; }
-#ovConfig .kv { grid-template-columns: 200px minmax(0, 1fr); align-items: center; gap: 8px 16px; }
+/* Duas colunas só no computador — no celular (≤680px) o .kv empilha (rótulo em cima,
+   campo embaixo). v3.24.1: antes esta regra valia também no celular e espremia o campo
+   "Duração das mensagens de aviso" (vazio) com o botão "Padrão" passando da borda. */
+@media (min-width: 681px) {
+  #ovConfig .kv { grid-template-columns: 200px minmax(0, 1fr); align-items: center; gap: 8px 16px; }
+}
 #ovConfig .kv[style*="flex-direction:column"] { grid-template-columns: minmax(0, 1fr); align-items: stretch; gap: 8px; }
+#ovConfig .kv > div[style*="display:flex"] > .input { flex: 1 1 auto; min-width: 0; }
+#ovConfig .kv > div[style*="display:flex"] > .btn { flex: none; }
 #ovConfig .kv > div[style*="display:flex"] { min-width: 0; }
 #ovConfig .kv .k { line-height: 1.35; }
 #ovConfig #cfgApSel { min-width: 0; flex: 1 1 220px; }
@@ -3338,6 +3346,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .cfgTeclaLin .cfgTeclaAcao { grid-column: 1 / -1; grid-row: 3; }
   .cfgTeclaLin .input, .cfgTeclaLin .btn { height: 40px; }
 }
+.prImpBtns .btn { flex: 1 1 200px; justify-content: center; }
 #cfgTela { display: block; }
 #cfgTela > .k { margin-bottom: 2px; }
 #cfgTela .tmZoom { display: block; }
@@ -6538,7 +6547,7 @@ const irParaVendas=()=>{
 // "substituir" troca a lista; "juntar" acrescenta só os termos que faltam. Não
 // salva sozinho — a pessoa confere e clica em Salvar.
 const _BTN_IMPORTAR_PR = (id1, id2) =>
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+    '<div class="prImpBtns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
     + '<button class="btn" type="button" id="' + id1 + '" data-tip="Troca a lista deste aparelho pela lista padrão do servidor"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Importar do servidor</button>'
     + '<button class="btn" type="button" id="' + id2 + '" data-tip="Acrescenta à lista deste aparelho os termos do servidor que ainda não estão nela"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Juntar com os do servidor</button>'
     + '</div>';

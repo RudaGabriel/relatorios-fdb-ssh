@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.20.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.24.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.24.1 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -233,6 +233,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.24.1 — 2026-10-28 20:00
+
+**Correção no celular (Configurações).**
+
+- "Duração das mensagens de aviso" aparecia com o campo espremido (vazio) e o botão "Padrão (5s)" passando da borda. A regra de duas colunas da 3.24.0 valia também no celular; agora vale só no computador, e no celular o rótulo fica em cima e o campo embaixo.
+- Os botões "Importar do servidor" e "Juntar com os do servidor" dividem a largura por igual.
 
 ### 3.24.0 — 2026-10-28 19:00
 
