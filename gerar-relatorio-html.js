@@ -1,18 +1,19 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.22.1
+ * @version 3.24.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.22.1 - 2026-10-24 02:30 - Proibidos: "Importar do servidor" e "Juntar com os do servidor".
- *   3.22.0 - 2026-10-24 01:30 - Preferências por aparelho.
- *     - Num aparelho da rede, "Configurações" vira "Minhas preferências": duração dos avisos,
- *       proibidos e teclas de atalho valem só para ele (só o que foi mexido; o resto segue o
- *       padrão do servidor). Nome, intervalo, log, janela e ícone só no computador do servidor.
- *     - No computador do servidor: "Aplicar a todos os aparelhos" e editar as preferências de
- *       um aparelho conectado (também por /?cfgAparelho=, aberto pela bandeja).
- *     - As preferências do aparelho já vêm na página (sem piscar) e mudam ao vivo pelo SSE.
+ *   3.24.0 - 2026-10-28 19:00 - Menu Tema só com os temas; o resto em Configurações → "Nesta tela".
+ *     - Visualização, desempenho, atualização e tamanho do texto: seção "Nesta tela" no topo
+ *       de Configurações (vale na hora, só neste aparelho; não aparece ao editar outro aparelho).
+ *     - Modal de Configurações alinhado: mais largo, "Fechar" à direita, seções grandes na largura
+ *       toda e teclas de atalho em blocos (tecla | gravar | comando | × e a ação embaixo).
+ *   3.23.0 - 2026-10-28 18:00 - "Recarregar relatório ao detectar mudanças" e QR fora da loja.
+ *     - Atualização: caixa (por aparelho). Desligada, a página não recarrega
+ *       sozinha (filtros, busca, rolagem e janelas ficam); aparece "Há vendas novas".
+ *     - Janela "Abrir no celular": abas "Na loja (Wi-Fi)" e "Fora da loja" (Tailscale).
  */
 
 (function() {
@@ -20,7 +21,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.22.1";
+    const SCRIPT_VERSION = "3.24.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2307,6 +2308,9 @@
       try { var _z = parseFloat(localStorage.getItem("fdb_zoom_mob")); if (_z >= 0.8 && _z <= 1.4) { document.documentElement.style.setProperty("--zoom-mob", String(_z)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(_z, 1.2))); } } catch (e) {}
       // No computador (v3.21.0): "fdb_zoom_pc", separado do celular — cada tela pede um tamanho.
       try { var _zp = parseFloat(localStorage.getItem("fdb_zoom_pc")); if (_zp >= 0.8 && _zp <= 1.4) document.documentElement.style.setProperty("--zoom-pc", String(_zp)); } catch (e) {}
+      // RECARREGAR AO DETECTAR MUDANÇAS (v3.23.0): "fdb_recarga_auto" = "0" desliga neste
+      // aparelho (padrão: ligado). Lido pelo script do servidor antes de recarregar.
+      window.__recargaAutoDesligada = function() { try { return localStorage.getItem("fdb_recarga_auto") === "0"; } catch (e) { return false; } };
     </script>
 <style>
 :root {
@@ -3303,6 +3307,44 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .qrUrl { font: 600 15px 'JetBrains Mono', Consolas, monospace; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; text-align: center; word-break: break-all; }
 .qrDica { font-size: 12.5px; color: var(--text-muted); text-align: center; line-height: 1.5; }
 .tmZoomOps .tmPerfOp { flex: 1 1 0; }
+/* Configurações (v3.24.0): layout alinhado. Cabeçalho com "Fechar" sempre à direita;
+   campos simples em duas colunas (rótulo | campo); seções grandes (Nesta tela, ícone,
+   proibidos, teclas, aparelhos) em uma coluna na largura toda. No celular tudo empilha. */
+#ovConfig .cfgModal, #ovQr .modal { max-width: 640px; }
+#ovConfig .mhead, #ovQr .mhead { flex-wrap: nowrap; align-items: flex-start; }
+#ovConfig .mhead > div:first-child, #ovQr .mhead > div:first-child { flex: 1 1 auto; min-width: 0; }
+#ovConfig .mhead > .btn, #ovQr .mhead > .btn { flex: none; }
+#ovConfig .kv { grid-template-columns: 200px minmax(0, 1fr); align-items: center; gap: 8px 16px; }
+#ovConfig .kv[style*="flex-direction:column"] { grid-template-columns: minmax(0, 1fr); align-items: stretch; gap: 8px; }
+#ovConfig .kv > div[style*="display:flex"] { min-width: 0; }
+#ovConfig .kv .k { line-height: 1.35; }
+#ovConfig #cfgApSel { min-width: 0; flex: 1 1 220px; }
+/* Teclas de atalho: cada atalho é um bloco alinhado — tecla | gravar | comando | × e, embaixo, a ação.
+   No celular: tecla + gravar + × em cima, comando e ação embaixo, na largura toda. */
+.cfgTeclaLin { display: grid; grid-template-columns: 130px auto minmax(0, 1fr) 36px; gap: 6px; align-items: center; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
+.cfgTeclaLin .cfgTeclaAcao { grid-column: 1 / 4; grid-row: 2; }
+.cfgTeclaLin .input { width: 100%; min-width: 0; box-sizing: border-box; height: 36px; font-size: 12px; }
+.cfgTeclaLin .cfgTecla, .cfgTeclaLin .cfgTeclaCmd { font-family: ui-monospace, Consolas, monospace; }
+.cfgTeclaLin .cfgTecla { cursor: pointer; }
+.cfgTeclaLin .cfgTeclaAcao { cursor: pointer; }
+.cfgTeclaLin .btn { height: 36px; white-space: nowrap; font-size: 12px; justify-content: center; }
+.cfgTeclaLin .cfgTeclaRem { width: 36px; padding: 0; }
+@media (max-width: 680px) {
+  .cfgTeclaLin { grid-template-columns: minmax(0, 1fr) auto 40px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
+  .cfgTeclaLin .cfgTecla { grid-column: 1; grid-row: 1; }
+  .cfgTeclaLin .cfgTeclaGravar { grid-column: 2; grid-row: 1; }
+  .cfgTeclaLin .cfgTeclaRem { grid-column: 3; grid-row: 1; width: 40px; }
+  .cfgTeclaLin .cfgTeclaCmd { grid-column: 1 / -1; grid-row: 2; }
+  .cfgTeclaLin .cfgTeclaAcao { grid-column: 1 / -1; grid-row: 3; }
+  .cfgTeclaLin .input, .cfgTeclaLin .btn { height: 40px; }
+}
+#cfgTela { display: block; }
+#cfgTela > .k { margin-bottom: 2px; }
+#cfgTela .tmZoom { display: block; }
+#cfgTela > .k + .tmPerf { margin-top: 8px; border-top: 0; padding-top: 0; }
+.tmRecLbl { display: flex; align-items: flex-start; gap: 10px; padding: 8px 2px 2px; font-size: 13px; font-weight: 600; line-height: 1.35; cursor: pointer; color: var(--text-main); }
+.tmRecLbl input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+.qrAbas { display: flex; gap: 6px; } .qrAbas .qrAba { flex: 1 1 0; }
 .tmZoomOps .tmZoomOp[disabled] { opacity: 0.4; cursor: default; }
 .tmPerfDica { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 /* Menu auto-ajustável (v3.14.0): se não couber na altura da janela, o JS (_tmAjustar) aplica
@@ -3767,7 +3809,7 @@ const _perfMedir = () => {
     if (leve && _perfPref() === "auto" && !_perfEhLeve()) {
         document.documentElement.setAttribute("data-perf", "leve");
         document.documentElement.setAttribute("data-perf-motivo", "medido");
-        try { toast("Modo leve", "Este aparelho é mais lento: animações e efeitos foram reduzidos para não travar. Mude em Tema → Desempenho."); } catch (e) {}
+        try { toast("Modo leve", "Este aparelho é mais lento: animações e efeitos foram reduzidos para não travar. Mude em Configurações → Nesta tela → Desempenho."); } catch (e) {}
         try { _perfMarcarMenu(); } catch (e) {}
     }
 };
@@ -3782,8 +3824,53 @@ const _perfEscolher = (v) => {
     try { toast("Desempenho", _perfEstadoTxt() + "."); } catch (e) {}
 };
 // Menu Tema → seção "Desempenho": marca a opção atual e o estado efetivo.
+// ── Opções da tela (v3.24.0) ────────────────────────────────────────────────
+// Visualização, desempenho, atualização e tamanho do texto: antes no menu Tema,
+// agora em Configurações → "Nesta tela" (o menu Tema ficou só com os temas).
+// Valem na hora e só para este aparelho (localStorage).
+const _htmlPrefsTela = () => '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Visualização</span></div>'
+        +   '<div class="tmPerfOps" role="radiogroup" aria-label="Visualização">'
+        +     '<button type="button" class="tmPerfOp tmVisOp" role="radio" data-vis="simplificada">Simplificada</button>'
+        +     '<button type="button" class="tmPerfOp tmVisOp" role="radio" data-vis="detalhada">Detalhada</button>'
+        +   '</div>'
+        +   '<div class="tmPerfDica">Detalhada: indicadores e gráficos (faturamento por hora, tipos, vendedores, pagamentos e produtos) acima da tabela, seguindo os filtros.</div>'
+        + '</div>'
+        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Desempenho</span><span class="tmAtual tmPerfEstado"></span></div>'
+        +   '<div class="tmPerfOps" role="radiogroup" aria-label="Desempenho">'
+        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="auto">Automático</button>'
+        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="completo">Completo</button>'
+        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="leve">Leve</button>'
+        +   '</div>'
+        +   '<div class="tmPerfDica">Leve: sem animações, desfoque nem sombras pesadas — para computadores, notebooks e celulares mais fracos. O automático detecta sozinho.</div>'
+        + '</div>'
+        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Atualização</span><span class="tmAtual tmRecEstado"></span></div>'
+        +   '<label class="tmRecLbl"><input type="checkbox" id="tmRecAuto"><span>Recarregar relatório ao detectar mudanças</span></label>'
+        +   '<div class="tmPerfDica">Desligado: a página não recarrega sozinha — filtros, busca, rolagem e janelas abertas ficam como estão. Quando entrar venda, aparece "Há vendas novas" com o botão Atualizar. Vale só para este aparelho.</div>'
+        + '</div>'
+        + '<div class="tmPerf tmZoom"><div class="tmHead tmPerfHead"><span class="tmTitulo">Tamanho do texto</span><span class="tmAtual tmZoomEstado"></span></div>'
+        +   '<div class="tmPerfOps tmZoomOps" role="group" aria-label="Tamanho do texto">'
+        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="-1" aria-label="Diminuir o texto">A−</button>'
+        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="0" aria-label="Tamanho padrão">Padrão</button>'
+        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="1" aria-label="Aumentar o texto">A+</button>'
+        +   '</div>'
+        + '</div>';
+const _ligarPrefsTela = (raiz) => {
+    if (!raiz) return;
+    raiz.addEventListener("click", (e) => {
+        const alvo = e.target;
+        const oz = alvo && alvo.closest ? alvo.closest(".tmZoomOp") : null;
+        if (oz && raiz.contains(oz)) { _zoomPasso(parseInt(oz.getAttribute("data-zoom"), 10) || 0); return; }
+        const ov = alvo && alvo.closest ? alvo.closest(".tmVisOp") : null;
+        if (ov && raiz.contains(ov)) { _visEscolher(ov.getAttribute("data-vis")); return; }
+        const op = alvo && alvo.closest ? alvo.closest(".tmPerfOp[data-perf]") : null;
+        if (op && raiz.contains(op)) { _perfEscolher(op.getAttribute("data-perf")); return; }
+    });
+    const cb = raiz.querySelector("#tmRecAuto");
+    if (cb) cb.addEventListener("change", () => _recEscolher(cb.checked));
+    _perfMarcarMenu(); _visMarcarMenu(); _zoomMarcarMenu(); _recMarcarMenu();
+};
 const _perfMarcarMenu = () => {
-    const m = document.getElementById("tmMenu");
+    const m = document.getElementById("cfgTela");
     if (!m) return;
     const pref = _perfPref();
     m.querySelectorAll(".tmPerfOp:not(.tmVisOp)").forEach(b => b.setAttribute("aria-checked", b.getAttribute("data-perf") === pref ? "true" : "false"));
@@ -3836,37 +3923,9 @@ const _tmConstruir = () => {
     const m = document.createElement("div");
     m.id = "tmMenu"; m.className = "tmMenu";
     m.innerHTML = '<div class="tmHead"><span class="tmTitulo">Tema</span><span class="tmAtual"></span></div>'
-        + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>'
-        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Visualização</span></div>'
-        +   '<div class="tmPerfOps" role="radiogroup" aria-label="Visualização">'
-        +     '<button type="button" class="tmPerfOp tmVisOp" role="radio" data-vis="simplificada">Simplificada</button>'
-        +     '<button type="button" class="tmPerfOp tmVisOp" role="radio" data-vis="detalhada">Detalhada</button>'
-        +   '</div>'
-        +   '<div class="tmPerfDica">Detalhada: indicadores e gráficos (faturamento por hora, tipos, vendedores, pagamentos e produtos) acima da tabela, seguindo os filtros.</div>'
-        + '</div>'
-        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Desempenho</span><span class="tmAtual tmPerfEstado"></span></div>'
-        +   '<div class="tmPerfOps" role="radiogroup" aria-label="Desempenho">'
-        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="auto">Automático</button>'
-        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="completo">Completo</button>'
-        +     '<button type="button" class="tmPerfOp" role="radio" data-perf="leve">Leve</button>'
-        +   '</div>'
-        +   '<div class="tmPerfDica">Leve: sem animações, desfoque nem sombras pesadas — para computadores, notebooks e celulares mais fracos. O automático detecta sozinho.</div>'
-        + '</div>'
-        + '<div class="tmPerf tmZoom"><div class="tmHead tmPerfHead"><span class="tmTitulo">Tamanho do texto</span><span class="tmAtual tmZoomEstado"></span></div>'
-        +   '<div class="tmPerfOps tmZoomOps" role="group" aria-label="Tamanho do texto">'
-        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="-1" aria-label="Diminuir o texto">A−</button>'
-        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="0" aria-label="Tamanho padrão">Padrão</button>'
-        +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="1" aria-label="Aumentar o texto">A+</button>'
-        +   '</div>'
-        + '</div>';
+        + '<div class="tmGrid" role="menu" aria-label="Temas de cores">' + TEMAS.map(cardHtml).join("") + '</div>';
     m.addEventListener("click", (e) => {
         const alvo = e.target;
-        const oz = alvo && alvo.closest ? alvo.closest(".tmZoomOp") : null;
-        if (oz && m.contains(oz)) { _zoomPasso(parseInt(oz.getAttribute("data-zoom"), 10) || 0); return; }
-        const ov = alvo && alvo.closest ? alvo.closest(".tmVisOp") : null;
-        if (ov && m.contains(ov)) { _visEscolher(ov.getAttribute("data-vis")); return; }
-        const op = alvo && alvo.closest ? alvo.closest(".tmPerfOp") : null;
-        if (op && m.contains(op)) { _perfEscolher(op.getAttribute("data-perf")); return; }
         const c = alvo && alvo.closest ? alvo.closest(".tmCard") : null;
         if (!c || !m.contains(c)) return;
         _escolherTema(c.getAttribute("data-tema"));
@@ -3875,9 +3934,6 @@ const _tmConstruir = () => {
     document.body.appendChild(m);
     _tmMenu = m;
     _tmMarcarAtual();
-    _perfMarcarMenu();
-    _visMarcarMenu();
-    _zoomMarcarMenu();
     return m;
 };
 // Posição: abaixo do botão, borda direita alinhada com a dele e sempre dentro da janela; se abaixo
@@ -3953,6 +4009,7 @@ const _tmAbrir = () => {
     _perfMarcarMenu();
     _visMarcarMenu();
     _zoomMarcarMenu();
+    _recMarcarMenu();
     _tmAberto = true;
     _tmAtualizarBotao();
     _tmPosicionar();
@@ -6208,7 +6265,7 @@ const _zoomPasso = (dir) => {
     try { if (typeof window.__linhaUnica === "function") window.__linhaUnica(); } catch (e) {}
 };
 const _zoomMarcarMenu = () => {
-    const m = document.getElementById("tmMenu"); if (!m) return;
+    const m = document.getElementById("cfgTela"); if (!m) return;
     const z = _zoomAtual();
     const est = m.querySelector(".tmZoomEstado"); if (est) est.textContent = Math.round(z * 100) + "%";
     m.querySelectorAll(".tmZoomOp").forEach(b => {
@@ -6217,8 +6274,24 @@ const _zoomMarcarMenu = () => {
         if (d === 0) b.setAttribute("aria-pressed", z === 1 ? "true" : "false");
     });
 };
+// ── Recarregar ao detectar mudanças (v3.23.0) ──────────────────────────────
+// Por aparelho (localStorage). Desligado: o script do servidor mostra "Há vendas
+// novas" + Atualizar em vez de recarregar (ver window.__recargaAutoDesligada no <head>).
+const _recLigada = () => !(typeof window.__recargaAutoDesligada === "function" && window.__recargaAutoDesligada());
+const _recMarcarMenu = () => {
+    const m = document.getElementById("cfgTela"); if (!m) return;
+    const lig = _recLigada();
+    const cb = m.querySelector("#tmRecAuto"); if (cb) cb.checked = lig;
+    const est = m.querySelector(".tmRecEstado"); if (est) est.textContent = lig ? "Automática" : "Manual";
+};
+const _recEscolher = (ligar) => {
+    try { localStorage.setItem("fdb_recarga_auto", ligar ? "1" : "0"); } catch (e) {}
+    _recMarcarMenu();
+    toast("Atualização", ligar ? "A página recarrega sozinha quando entrar venda." : "A página não recarrega mais sozinha — use Atualizar quando aparecer “Há vendas novas”.");
+    try { if (typeof window.__srvRecargaMudou === "function") window.__srvRecargaMudou(!!ligar); } catch (e) {}
+};
 const _visMarcarMenu = () => {
-    const m = document.getElementById("tmMenu"); if (!m) return;
+    const m = document.getElementById("cfgTela"); if (!m) return;
     const v = _visPref();
     m.querySelectorAll(".tmVisOp").forEach(b => b.setAttribute("aria-checked", b.getAttribute("data-vis") === v ? "true" : "false"));
 };
@@ -6994,10 +7067,15 @@ var __abrirModalQr = function() {
           '<div class="msub">Aponte a câmera do celular para o código.</div></div>' +
           '<button class="btn" id="qrFechar" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</button></div>' +
           '<div class="mbody" style="gap:12px;padding:16px 18px 20px">' +
+            // v3.23.0: "Fora da loja" = endereço do Tailscale (rede privada; funciona no 4G/outro Wi-Fi).
+            '<div class="tmPerfOps qrAbas" role="tablist" aria-label="Onde o celular está">' +
+              '<button type="button" class="tmPerfOp qrAba" role="tab" data-aba="loja" aria-checked="true">Na loja (Wi-Fi)</button>' +
+              '<button type="button" class="tmPerfOp qrAba" role="tab" data-aba="fora" aria-checked="false">Fora da loja</button>' +
+            '</div>' +
             '<div class="qrCaixa"><img id="qrImg" alt="QR code do endereço do relatório" src="/qr.svg?t=' + Date.now() + '"></div>' +
             '<div class="qrUrl" id="qrUrl">…</div>' +
             '<button class="btn" id="qrCopiar" type="button" style="width:100%;justify-content:center;min-height:42px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar endereço</button>' +
-            '<div class="qrDica">O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.</div>' +
+            '<div class="qrDica" id="qrDica">O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.</div>' +
           '</div>' +
         '</div>';
     document.body.appendChild(_bg);
@@ -7012,11 +7090,30 @@ var __abrirModalQr = function() {
     _img.addEventListener("error", function() {
         var cx = _img.parentNode; if (cx) cx.innerHTML = '<div class="qrDica" style="padding:90px 10px">Não foi possível gerar o QR code — o servidor está ligado?</div>';
     });
+    var _qrDados = { url: location.origin + "/", externo: null };
+    var _DICA_LOJA = 'O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.';
+    var _DICA_FORA = 'Funciona em qualquer lugar (4G, outro Wi-Fi) com o app <b>Tailscale</b> ligado no celular, na <b>mesma conta</b> desta máquina. Rede privada e criptografada — só os seus aparelhos entram.';
+    var _DICA_SEM_TS = '<b>Para acessar fora da loja:</b><br>1. Instale o <b>Tailscale</b> nesta máquina (tailscale.com/download) e entre com uma conta.<br>2. Instale o app <b>Tailscale</b> no celular e entre com a <b>mesma conta</b>.<br>3. Abra esta janela de novo: aparece o QR code para usar em qualquer lugar.<br>Grátis, criptografado e sem abrir porta no roteador.';
+    var _abaQr = "loja";
+    var _mostrarAba = function(aba) {
+        _abaQr = aba;
+        _bg.querySelectorAll(".qrAba").forEach(function(b) { b.setAttribute("aria-checked", b.getAttribute("data-aba") === aba ? "true" : "false"); });
+        var u = document.getElementById("qrUrl"), d = document.getElementById("qrDica"), cx = _img.parentNode, cp = document.getElementById("qrCopiar");
+        var fora = aba === "fora", end = fora ? _qrDados.externo : _qrDados.url;
+        if (cx) cx.style.display = end ? "" : "none";
+        if (u) { u.style.display = end ? "" : "none"; u.textContent = end || ""; }
+        if (cp) cp.style.display = end ? "" : "none";
+        if (end) _img.src = "/qr.svg?" + (fora ? "externo=1&" : "") + "t=" + Date.now();
+        if (d) d.innerHTML = fora ? (end ? _DICA_FORA : _DICA_SEM_TS) : _DICA_LOJA;
+    };
+    _bg.querySelectorAll(".qrAba").forEach(function(b) { b.addEventListener("click", function() { _mostrarAba(b.getAttribute("data-aba")); }); });
     _fetchJSON("/api/qr", {cache: "no-store"}).then(function(r) {
-        var u = document.getElementById("qrUrl"); if (u) u.textContent = (r && r.url) ? r.url : location.origin + "/";
+        if (r && r.url) _qrDados.url = r.url;
+        _qrDados.externo = (r && r.externo) ? String(r.externo) : null;
+        var u = document.getElementById("qrUrl"); if (u && _abaQr === "loja") u.textContent = _qrDados.url;
     }).catch(function() { var u = document.getElementById("qrUrl"); if (u) u.textContent = location.origin + "/"; });
     document.getElementById("qrCopiar").addEventListener("click", function() {
-        var u = document.getElementById("qrUrl"); if (!u) return;
+        var u = document.getElementById("qrUrl"); if (!u || !u.textContent) return;
         copiarTexto(u.textContent); toast("Copiado", "Endereço do relatório: " + u.textContent);
     });
 };
@@ -7075,7 +7172,7 @@ var __abrirModalConfig = function(opcoes) {
         if (!_alvo) window.__TOAST_MS = Math.max(500, _td);
 
         _bg.innerHTML =
-          '<div class="modal" role="dialog" aria-modal="true" style="max-width:480px">' +
+          '<div class="modal cfgModal" role="dialog" aria-modal="true">' +
             '<div class="mhead">' +
               '<div>' +
                 '<div class="mtitle">' + (_alvo ? 'Preferências do aparelho' : (_remoto ? 'Minhas preferências' : 'Editar configurações')) + '</div>' +
@@ -7089,6 +7186,11 @@ var __abrirModalConfig = function(opcoes) {
               '<button class="btn" id="cfgFechar" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</button>' +
             '</div>' +
             '<div class="mbody" style="gap:14px;padding-bottom:24px">' +
+              (_alvo ? '' :
+              '<div class="kv" id="cfgTela" style="flex-direction:column;align-items:stretch;gap:0">' +
+                '<div class="k">Nesta tela <span style="font-weight:400;text-transform:none;letter-spacing:0">(só neste aparelho — vale na hora, sem salvar)</span></div>' +
+                _htmlPrefsTela() +
+              '</div>') +
               '<div class="kv"' + _escondeSrv + '>' +
                 '<div class="k">Nome do sistema</div>' +
                 '<input type="text" id="cfgAppName" value="' + _pn + '" class="input" placeholder="ex: Minha Loja" style="flex:1">' +
@@ -7153,6 +7255,9 @@ var __abrirModalConfig = function(opcoes) {
 
         document.body.appendChild(_bg);
 
+        // Opções da tela (visualização, desempenho, atualização, texto) — v3.24.0
+        _ligarPrefsTela(document.getElementById("cfgTela"));
+
         // Popula textarea de proibidos
         document.getElementById("cfgProibidos").value = _prArr.join("\n");
 
@@ -7191,7 +7296,7 @@ var __abrirModalConfig = function(opcoes) {
         var _renderTeclaRow = function(i) {
             var t = _teclasArr[i];
             var row = document.createElement("div");
-            row.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap";
+            row.className = "cfgTeclaLin";
             row.setAttribute("data-tecla-idx", i);
 
             var inpTecla = document.createElement("input");
@@ -7199,25 +7304,25 @@ var __abrirModalConfig = function(opcoes) {
             inpTecla.readOnly = true;
             inpTecla.placeholder = "Clique → pressione";
             inpTecla.value = t.tecla || "";
-            inpTecla.style.cssText = "width:140px;min-width:100px;cursor:pointer;font-family:ui-monospace,Consolas,monospace;font-size:12px";
+            inpTecla.className = "input cfgTecla";
             inpTecla.title = "Clique aqui e pressione a tecla de atalho";
 
             var btnGravar = document.createElement("button");
             btnGravar.className = "btn";
             btnGravar.type = "button";
             btnGravar.textContent = "Gravar tecla";
-            btnGravar.style.cssText = "white-space:nowrap;font-size:12px";
+            btnGravar.classList.add("cfgTeclaGravar");
 
             var inpCmd = document.createElement("input");
             inpCmd.className = "input";
             inpCmd.placeholder = "ex: [-proibidos,dinheiro]>150";
             inpCmd.value = t.comando || "";
-            inpCmd.style.cssText = "flex:1;min-width:120px;font-family:ui-monospace,Consolas,monospace;font-size:12px";
+            inpCmd.className = "input cfgTeclaCmd";
             inpCmd.title = "Comando executado na caixa de busca ao pressionar a tecla (opcional se houver ação)";
 
             var selAcao = document.createElement("select");
             selAcao.className = "input";
-            selAcao.style.cssText = "min-width:170px;max-width:220px;font-size:12px;cursor:pointer";
+            selAcao.className = "input cfgTeclaAcao";
             selAcao.title = "Ação opcional disparada antes do comando";
             ACOES_DISPONIVEIS.forEach(function(a) {
                 var opt = document.createElement("option");
@@ -7234,7 +7339,7 @@ var __abrirModalConfig = function(opcoes) {
             btnRem.type = "button";
             btnRem.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
             btnRem.title = "Remover este atalho";
-            btnRem.style.cssText = "flex-shrink:0";
+            btnRem.classList.add("cfgTeclaRem");
 
             // Atualiza teclasArr ao editar comando
             inpCmd.addEventListener("input", function() {

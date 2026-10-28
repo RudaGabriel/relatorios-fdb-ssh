@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.19.1 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.22.1 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.20.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.24.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -28,6 +28,21 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.20.0 — 2026-10-28 18:00
+
+**Acesso de qualquer lugar (Tailscale) e recarga automática opcional.**
+
+- **Fora da loja com o Tailscale.** O Tailscale cria uma rede privada e criptografada entre a máquina da loja e o celular (cada um com o app, na mesma conta), sem abrir porta no roteador e sem expor nada à internet.
+  - Os endereços dele (`100.64.0.0/10` e `fd7a:115c:a1e0::/48`) passam a valer como rede local.
+  - O IP do Tailscale desta máquina conta como o próprio computador do servidor.
+  - O IP do Tailscale nunca vira o "IP da loja" (`maquinaIP`) nem entra na busca do banco pela rede.
+- `/qr` ganhou a seção **"Fora da loja"**: mostra o QR code do endereço do Tailscale, ou o passo a passo para ativar. `/api/qr` traz o campo `externo`, e `/qr.svg?externo=1` gera a imagem.
+- **Segurança com túnel ou proxy** (cloudflared, ngrok, proxy reverso nesta máquina): um pedido com `X-Forwarded-For`, `Forwarded`, `CF-Connecting-IP`, `X-Real-IP` ou `True-Client-IP` chega de `127.0.0.1`, mas vem da internet. Ele nunca é tratado como o computador do servidor nem como rede local. Antes, ganharia acesso total.
+- **Correção na página `/config`:** ela exigia intervalo mínimo de 200 ms, mas o servidor aceita a partir de 100 ms e a própria página diz "De 100 ms". Salvar 100 dava "Intervalo mínimo é 200 ms". Agora usa os mesmos limites do servidor (100 a 60000).
+- **Recarga automática respeita o aparelho.** Com a opção desligada (gerador 3.23.0+), a página não recarrega sozinha. Aparece o aviso fixo "● Há vendas novas" com o botão **Atualizar** (e × para ocultar). O selo vira "⏸ manual".
+  - Religar a opção com venda pendente atualiza na hora.
+  - A volta do servidor depois de uma queda continua recarregando sempre.
 
 ### 2.19.1 — 2026-10-24 02:30
 
@@ -218,6 +233,27 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.24.0 — 2026-10-28 19:00
+
+**Menu Tema só com os temas.**
+
+- O botão **Tema** agora mostra só os temas de cores.
+- Visualização, Desempenho, Atualização ("Recarregar relatório ao detectar mudanças") e Tamanho do texto foram para **Configurações**, na seção **"Nesta tela"**, no topo. Lá, valem na hora, sem precisar salvar, e só neste aparelho. A seção funciona no computador e no celular e não aparece quando o computador do servidor edita as preferências de outro aparelho.
+- Modal de Configurações reorganizado no computador e no celular:
+  - mais largo (640 px), com "Fechar" sempre à direita do título;
+  - campos simples em duas colunas alinhadas (rótulo | campo);
+  - seções grandes na largura toda: Nesta tela, ícone, proibidos, teclas e aparelhos. Antes ficavam espremidas na coluna do rótulo; a lista de aparelhos aparecia minúscula.
+- Teclas de atalho em blocos alinhados: tecla, Gravar, comando e × numa linha, com a ação embaixo. No celular, o comando e a ação ocupam a largura toda. Antes os campos caíam desencontrados um embaixo do outro.
+
+### 3.23.0 — 2026-10-28 18:00
+
+**"Recarregar relatório ao detectar mudanças" e QR code fora da loja.**
+
+- Menu **Tema → Atualização** ganhou a caixa **"Recarregar relatório ao detectar mudanças"**. É ligada por padrão e vale só para este aparelho (`fdb_recarga_auto`).
+  - Desligada, a página não recarrega sozinha: filtros, busca, rolagem, painel e janelas abertas ficam como estão.
+  - Quando entra venda, aparece "Há vendas novas" com o botão Atualizar. Ao atualizar, busca e filtros são restaurados como na recarga automática.
+- Janela **"Abrir no celular"** ganhou duas abas: **Na loja (Wi-Fi)** e **Fora da loja**. A segunda mostra o QR code do endereço do Tailscale, ou o passo a passo para ativar.
 
 ### 3.22.1 — 2026-10-24 02:30
 

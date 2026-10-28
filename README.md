@@ -164,6 +164,13 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 - **Abrir no celular:** clique em **Celular** no topo do relatório (ou na bandeja → *Abrir no celular*) e aponte a câmera para o QR code. O celular precisa estar no **mesmo Wi-Fi**. O endereço é sempre o IP da máquina na rede (`http://IP:7734/`), e o QR code é gerado pelo próprio sistema, sem internet.
 - **Layout próprio:** a página rola inteira, cartões compactos, badges em pares "nome: valor", barra fixa com **Copiar** (todas as opções de cópia), **Vendas** (vai para a lista) e **Mais**.
 - **Quem está conectado:** cada celular ou computador que abre o relatório aparece no log (`[CONEXAO]`) e na janela *Dispositivos conectados* da bandeja — tipo, modelo, sistema, navegador, IP, **nome do aparelho** e rotas acessadas.
+- **Acessar de qualquer lugar (fora da loja, 4G, outro Wi-Fi):** com o **Tailscale** (gratuito). Ele cria uma rede privada e criptografada só entre os seus aparelhos, sem abrir porta no roteador e sem deixar o relatório exposto na internet.
+  1. Na máquina do servidor, instale o Tailscale (<https://tailscale.com/download>) e entre com uma conta (Google, Microsoft ou Apple).
+  2. No celular, instale o app **Tailscale** e entre com a **mesma conta**. Deixe-o ligado.
+  3. No relatório, clique em **Celular → Fora da loja** (ou bandeja → *Abrir no celular*) e escaneie o QR code. O endereço é `http://100.x.y.z:7734/` e funciona de qualquer lugar.
+  - Para outras pessoas, convide-as para a sua rede no painel do Tailscale. Só quem você autorizar entra.
+  - Túneis públicos (cloudflared, ngrok) não são recomendados, porque deixam o endereço aberto na internet. Se usar um, o sistema trata quem chega por ele como aparelho externo: sem configurações do sistema, sem trocar o banco, sem reiniciar.
+- **Recarregar ao detectar mudanças:** *Configurações → Nesta tela → Atualização*. Desligado, a página não recarrega sozinha (filtros, busca e rolagem ficam); aparece "Há vendas novas" com o botão Atualizar. Vale para cada aparelho.
 - **Preferências de cada aparelho:** duração dos avisos, termos proibidos e teclas de atalho são **de cada aparelho** (em *Configurações → Minhas preferências*). Quando um muda, os outros não são afetados. Só o **computador do servidor** muda o padrão de todos, o nome, o intervalo, o log, a janela de correção, o ícone e o banco. Ele também edita ou restaura as preferências de qualquer aparelho conectado (bandeja → *Dispositivos conectados* → *Configurações do aparelho...* / *Voltar ao padrão*). Ficam em `preferencias-aparelhos.json`, na pasta do sistema, nunca no banco.
 
 <details>

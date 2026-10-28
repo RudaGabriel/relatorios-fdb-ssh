@@ -599,6 +599,26 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
     } finally { srv.parar(); }
 });
 
+test("servidor: acesso de fora — túnel/proxy nunca vale como o computador do servidor; /api/qr traz o endereço externo", async () => {
+    const dir = montarPasta({}, { nfce: [{ numero: "600", hora: horaHaMin(5) }] });
+    const srv = await iniciarServidor(dir);
+    try {
+        const local = await fetch(srv.base + "/api/config").then(r => r.json());
+        assert.strictEqual(local.servidor, true, "localhost sem proxy = computador do servidor");
+        for (const h of [{ "X-Forwarded-For": "203.0.113.9" }, { "CF-Connecting-IP": "203.0.113.9" }, { "Forwarded": "for=203.0.113.9" }, { "X-Real-IP": "203.0.113.9" }]) {
+            const c = await fetch(srv.base + "/api/config", { headers: h }).then(r => r.json());
+            assert.strictEqual(c.servidor, false, "via proxy (" + Object.keys(h)[0] + ") não é o computador do servidor");
+            assert.strictEqual((await fetch(srv.base + "/api/dispositivos", { headers: h })).status, 403, "via proxy não é rede local");
+            const sv = await fetch(srv.base + "/api/salvar-fdb", { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, h), body: JSON.stringify({ caminho: "C:\\x.fdb" }) });
+            assert.strictEqual(sv.status, 403, "via proxy não troca o banco");
+        }
+        const q = await fetch(srv.base + "/api/qr").then(r => r.json());
+        assert.ok(q.ok && /^http:\/\//.test(q.url) && "externo" in q, "/api/qr traz url e externo (Tailscale ou null)");
+        const pg = await fetch(srv.base + "/qr").then(r => r.text());
+        assert.match(pg, /Fora da loja/);
+    } finally { srv.parar(); }
+});
+
 test("servidor: dispositivos conectados — log com tipo, IP e nome, rotas, telas e /api/dispositivos", { timeout: 60000 }, async () => {
     const dir = montarPasta();
     // RELATORIO_DISP_LOCAL=1: trata 127.0.0.1 como um aparelho da rede (só para o teste).
