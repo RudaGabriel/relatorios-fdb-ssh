@@ -1,14 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.26.0
+ * @version 3.26.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.26.0 - 2026-10-28 22:00 - Vendas novas entram sem recarregar (recarga desligada).
- *     - __atualizarSemRecarregar: busca a página nova em segundo plano, troca só os dados
- *       (vendas, duplicatas, totais, "Gerado em") e redesenha — filtros, busca, rolagem,
- *       painel e janelas abertas ficam. Preparação dos dados virou funções reutilizáveis.
+ *   3.26.1 - 2026-10-28 23:00 - Exemplos neutros (sem nomes de pessoas ou empresas) na ajuda e nos placeholders.
  */
 
 (function() {
@@ -16,7 +13,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.26.0";
+    const SCRIPT_VERSION = "3.26.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -414,7 +411,7 @@
                     const dm = minutos(d.hora);
                     if (usados.has(i) || dm === null || d._dtKey !== g._dtKey) continue;
                     if (Math.abs(Number(d.total) - Number(g.total)) > 0.01 || dm - gm < 0 || dm - gm > toleranciaMin) continue;
-                    if (vendedoresDiferentes(g.vendedor, d.vendedor)) continue; // ex.: RICHARD × GERENCIA — vendas distintas
+                    if (vendedoresDiferentes(g.vendedor, d.vendedor)) continue; // ex.: VENDEDOR A × VENDEDOR B — vendas distintas
                     if (itensIncompativeis(g, d)) continue; // itens sem nada em comum — vendas distintas
                     usados.add(i);
                     pares.push("gerencial " + g.numero + " × " + d.tipo + " " + d.numero + " (" + reais(g.total) + ")");
@@ -2072,8 +2069,8 @@
 			}
 
 			// ── NFC-e reemitida como NF-e (v3.8.4) ───────────────────────────────────
-			// Caso real: NFC-e 125636 (Casimiro, 16:17, crédito, R$ 453,35) e NF-e 000307
-			// (cliente ELANE, sem vendedor, R$ 453,35) com os MESMOS 3 itens — o cliente
+			// Caso real: NFC-e 125636 (vendedor A, 16:17, crédito, R$ 453,35) e NF-e 000307
+			// (cliente identificado, sem vendedor, R$ 453,35) com os MESMOS 3 itens — o cliente
 			// pediu nota com nome/CPF e a venda foi refeita como NF-e. As duas eram
 			// somadas. Diferente da gerencial, aqui os DOIS são documentos fiscais e a
 			// emissão da NF-e pode ser bem depois; por isso a régua é mais forte:
@@ -5090,7 +5087,7 @@ const matchGlobAncorado = (pat, campo) => {
 //   hora               → x.hora
 //   natureza / nat     → x.natureza
 //   tipo               → x.tipo  (gerencial | nfce | nfe)
-// Suporta glob no valor: item:*RACAO* , vendedor:MARIA* , hora:14*
+// Suporta glob no valor: item:*RACAO* , vendedor:FULANO* , hora:14*
 // Retorna true/false, ou null se o alias não for reconhecido (cai busca geral).
 const _CAMPO_ALIAS = {
     vendedor:"vendedor", vend:"vendedor",
@@ -5113,8 +5110,8 @@ const matchCampo = (alias, valor, x) => {
 
 // ── SPLIT RESPEITANDO ASPAS ───────────────────────────────────────────────
 // Divide pelo separador sep, mas ignora separadores dentro de "…"
-// Ex: splitRespeitandoAspas('"ração gato"+vendedor:maria', '+')
-//       → ['"ração gato"', 'vendedor:maria']
+// Ex: splitRespeitandoAspas('"ração gato"+vendedor:fulano', '+')
+//       → ['"ração gato"', 'vendedor:fulano']
 const splitRespeitandoAspas = (str, sep) => {
     const parts = []; let cur = ""; let inQ = false;
     for (let i = 0; i < str.length; i++) {
@@ -5133,7 +5130,7 @@ const splitRespeitandoAspas = (str, sep) => {
 //   1. OR  ( dinheiro|pix )
 //   2. Frase exata  ( "ração gato" )
 //   3. Prefixo de modo  ( ~cont , =exato )
-//   4. Campo específico  ( vendedor:MARIA , item:*RACAO* )
+//   4. Campo específico  ( vendedor:FULANO , item:*RACAO* )
 //   5. Valor numérico   ( >100 , 50-200 , 1* )
 //   6. Glob textual     ( *RACAO* , RACAO* )
 //   7. Exato / Contém / Token  (comportamento original)
@@ -5160,7 +5157,7 @@ const _testTerm = (raw, x, totalNum, getHay, getToks) => {
     else if (it[0] === "=") { modo = "eq";   it = it.slice(1).trim(); }
     if (!it) return true;
 
-    // 4. CAMPO:VALOR — ex: vendedor:MARIA, item:*RACAO*, hora:14, cx:001
+    // 4. CAMPO:VALOR — ex: vendedor:FULANO, item:*RACAO*, hora:14, cx:001
     const cIdx = it.indexOf(":");
     if (cIdx > 0 && cIdx < it.length - 1 && /^[a-zA-Z]+$/.test(it.slice(0, cIdx))) {
         const r = matchCampo(it.slice(0, cIdx), it.slice(cIdx + 1).trim(), x);
@@ -6515,11 +6512,11 @@ const abrirAjuda=()=>{
     add("A|B|C","Mais de dois. Ex: granel|entrega|desconto  (funciona em inclusão e em exclusão)");
 
     sep("Campo específico — NOVO");
-    add("vendedor:NOME","Filtra pelo vendedor exato (ou glob). Ex: vendedor:MARIA  vend:JOAO*");
+    add("vendedor:NOME","Filtra pelo vendedor exato (ou glob). Ex: vendedor:FULANO  vend:BELTRANO*");
     add("item:PRODUTO","Filtra por item comprado. Ex: item:*RACAO*  item:GRANEL");
     add("caixa:001","Filtra pelo caixa. Aliases: cx:1  caixa:001");
     add("numero:123","Filtra pelo número do cupom/NF. Alias: num:123");
-    add("cliente:NOME","Filtra pelo nome do cliente. Alias: cli:MARIA*");
+    add("cliente:NOME","Filtra pelo nome do cliente. Alias: cli:FULANO*");
     add("hora:14","Filtra pelo horário. Ex: hora:14*  hora:08  (compara no campo hora)");
     add("pag:PIX","Filtra pela forma de pagamento. Aliases: pagamento:DINHEIRO  forma:CREDITO");
     add("nat:VENDA","Filtra pela natureza da operação. Alias: natureza:*VENDA*");
@@ -7270,7 +7267,7 @@ var __abrirModalConfig = function(opcoes) {
               (_soPrefs
                 ? '<div class="kv" style="flex-direction:column;gap:8px">' +
                     '<div class="k">' + (_alvo ? 'Nome do aparelho' : 'Nome deste aparelho') + ' <span style="font-weight:400;text-transform:none;letter-spacing:0">(apelido para reconhecer na lista de aparelhos e no log' + (cfg.aparelho && cfg.aparelho.nome ? ' — o nome real "' + esc(cfg.aparelho.nome) + '" não muda' : ' — não muda o nome real do aparelho') + ')</span></div>' +
-                    '<input type="text" id="cfgApelido" class="input" maxlength="40" autocomplete="off" placeholder="ex.: Celular do Ruda" value="' + esc(String((cfg.aparelho && cfg.aparelho.apelido) || "")) + '">' +
+                    '<input type="text" id="cfgApelido" class="input" maxlength="40" autocomplete="off" placeholder="ex.: Celular do Caixa 1" value="' + esc(String((cfg.aparelho && cfg.aparelho.apelido) || "")) + '">' +
                   '</div>'
                 : '') +
               (_alvo ? '' :

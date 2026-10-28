@@ -26,7 +26,7 @@
 ' CHANGELOG 1.1.0 - 2026-10-07 22:30 - launcher.path lido em UTF-8.
 '   O instalador roda com "chcp 65001" e grava o arquivo em UTF-8; aqui ele era
 '   lido como ANSI, e um caminho com acento (C:\Relatorios com acento, perfil
-'   "Joao" com til) nunca era encontrado: o servidor nao subia no logon. Le em
+'   "Usuario" com acento) nunca era encontrado: o servidor nao subia no logon. Le em
 '   UTF-8 (ADODB.Stream) e, se o arquivo nao existir assim, tenta tambem a
 '   leitura antiga (ANSI) - cobre launcher.path gravado por versoes anteriores.
 ' =============================================================================
