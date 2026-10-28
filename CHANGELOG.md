@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.22.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.26.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.26.1 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -40,8 +40,8 @@ Servidor.
 
 **Apelido do aparelho.**
 
-- Cada aparelho pode ganhar um apelido (ex.: "Celular do Ruda"). Ele é guardado em `preferencias-aparelhos.json`, no campo `apelido`, com até 40 caracteres e sem caracteres de controle, aspas ou `< >`. O nome real descoberto na rede (Bonjour/NetBIOS/DNS) não muda.
-- O apelido aparece no log (`"Celular do Ruda" — iphone-xr (100.103.59.92)`), em `/api/config` (`aparelho.apelido`) e em `/api/dispositivos` (`apelido`).
+- Cada aparelho pode ganhar um apelido (ex.: "Celular do Caixa 1"). Ele é guardado em `preferencias-aparelhos.json`, no campo `apelido`, com até 40 caracteres e sem caracteres de controle, aspas ou `< >`. O nome real descoberto na rede (Bonjour/NetBIOS/DNS) não muda.
+- O apelido aparece no log (`"Celular do Caixa 1" — iphone-xr (100.103.59.92)`), em `/api/config` (`aparelho.apelido`) e em `/api/dispositivos` (`apelido`).
 - O próprio aparelho define o apelido em "Minhas preferências", e o computador do servidor pode definir ao editar o aparelho (`apelido` no POST de `/api/config`; vazio tira o apelido).
 - "Voltar ao padrão do servidor" e "Aplicar a todos os aparelhos" mantêm o apelido, porque ele não é preferência do relatório.
 
@@ -90,7 +90,7 @@ Servidor.
 
 **Dispositivos conectados no log; recarregamento sem piscar.**
 
-- Nova categoria de log `[CONEXAO]`: cada celular ou computador da rede que abre o relatório aparece com tipo, modelo, sistema e navegador, IP e o **nome do aparelho**. O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergunta ao próprio aparelho pela rede — Bonjour/mDNS (iPhone, iPad, Mac e muitos Android; no iPhone o nome local vem do nome em "Sobre", ex.: "iPhone de Ruda" → `iPhone-de-Ruda`), NetBIOS (computadores Windows) e, como reserva, o DNS do roteador. Busca em paralelo, até ~1,6 s, com cache de 10 min.
+- Nova categoria de log `[CONEXAO]`: cada celular ou computador da rede que abre o relatório aparece com tipo, modelo, sistema e navegador, IP e o **nome do aparelho**. O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergunta ao próprio aparelho pela rede — Bonjour/mDNS (iPhone, iPad, Mac e muitos Android; no iPhone o nome local vem do nome em "Sobre", ex.: "iPhone do Caixa" → `iPhone-do-Caixa`), NetBIOS (computadores Windows) e, como reserva, o DNS do roteador. Busca em paralelo, até ~1,6 s, com cache de 10 min.
 - Cada rota acessada pelo aparelho (página e `/api`) vira uma linha com método, rota, resultado e tempo (`[API]` para `/api`). As chamadas automáticas (status, pronto, events, db-status, hora-usuario) não geram uma linha cada: entram num resumo a cada 10 min. Telas em tempo real (SSE) abertas/fechadas são registradas; fechar e reabrir em até 8 s (o recarregamento automático a cada venda) só conta no resumo. Sem atividade por 3 min e sem tela aberta: "Dispositivo saiu", com tempo conectado e rotas. A própria máquina do servidor fica de fora; o `api.ps1` aparece com o nome do computador que ele envia.
 - `/api/dispositivos` (só rede local): aparelhos com o relatório aberto agora.
 - O recarregamento automático chama `window.__antesRecarga` (gerador 3.19.0+) antes de recarregar: a tela volta no mesmo ponto e com os mesmos filtros, sem piscar.
@@ -250,6 +250,19 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 
 Gerador do relatório.
 
+### 3.26.1 — 2026-10-28 23:00
+
+**Exemplos neutros.**
+
+- Placeholder do apelido: "ex.: Celular do Caixa 1".
+- Ajuda de busca: `vendedor:FULANO`, `vend:BELTRANO*`, `cli:FULANO*`.
+- Comentários do código: vendedor A/B e "cliente identificado".
+- Também ficaram neutros:
+  - README e CHANGELOG ("iPhone do Caixa", "Atendente Número 1", VENDEDOR A/B);
+  - os testes (vendedores "VENDEDOR A…D", produtos genéricos no lugar de marcas);
+  - comentários do servidor e do `bootstrap.vbs`.
+- Mantidos: a autoria (`@author`, "Desenvolvido por", `package.json`) e o nome do sistema de origem (Small Commerce/SmallSoft), usado nos caminhos de instalação para achar o banco.
+
 ### 3.26.0 — 2026-10-28 22:00
 
 **Vendas novas entram sem recarregar a página.**
@@ -265,7 +278,7 @@ Gerador do relatório.
 
 **"Nome deste aparelho" em Minhas preferências.**
 
-- Novo campo no topo de "Minhas preferências" para dar um apelido ao aparelho (ex.: "Celular do Ruda"). O texto explica que o nome real (ex.: "iphone-xr") não muda. Salvar só o apelido também funciona.
+- Novo campo no topo de "Minhas preferências" para dar um apelido ao aparelho (ex.: "Celular do Caixa 1"). O texto explica que o nome real (ex.: "iphone-xr") não muda. Salvar só o apelido também funciona.
 - O campo aparece também quando o computador do servidor edita um aparelho. A lista de aparelhos conectados no modal mostra o apelido.
 
 ### 3.24.1 — 2026-10-28 20:00
@@ -466,16 +479,16 @@ Gerador do relatório.
 
 ### 3.8.5 — 2026-10-16 19:30
 
-**Nomes com acento saem certos ("Thiago Paraíba").**
+**Nomes com acento saem certos ("Atendente Número 1").**
 
-- O SmallSoft grava nomes em colunas sem charset (NONE) com bytes Windows-1252; pedidos como texto numa conexão UTF8, o "í" chegava como U+FFFD ("Para�ba"). Vendedor, cliente, natureza, status, formas de pagamento e descrição dos itens (NFCE, ALTERACA, PAGAMENT, VENDAS, ITENS001) agora são lidos como bytes (CHARACTER SET OCTETS) e decodificados no Node: UTF-8 válido como está, senão Windows-1252 (latin1 se o Node não tiver ICU completo). Testado no Firebird 3 com node-firebird 1.1.9, 1.1.10, 2.0.0 e 2.18.2 e colunas NONE/UTF8/WIN1252.
+- O SmallSoft grava nomes em colunas sem charset (NONE) com bytes Windows-1252; pedidos como texto numa conexão UTF8, o "í" chegava como U+FFFD ("N�mero"). Vendedor, cliente, natureza, status, formas de pagamento e descrição dos itens (NFCE, ALTERACA, PAGAMENT, VENDAS, ITENS001) agora são lidos como bytes (CHARACTER SET OCTETS) e decodificados no Node: UTF-8 válido como está, senão Windows-1252 (latin1 se o Node não tiver ICU completo). Testado no Firebird 3 com node-firebird 1.1.9, 1.1.10, 2.0.0 e 2.18.2 e colunas NONE/UTF8/WIN1252.
 - Firebird que recusar a conversão: a consulta é refeita do jeito antigo (aviso "AVISO TEXTO" no log) — a geração nunca cai por causa disso.
 
 ### 3.8.4 — 2026-10-16 18:00
 
 **NFC-e reemitida como NF-e conta uma vez só.**
 
-- NFC-e 125636 (Casimiro, crédito) e NF-e 000307 (cliente, sem vendedor), ambas de R$ 453,35 com os mesmos 3 itens, eram somadas — a venda aparecia em dobro no total. Nova reconciliação NFC-e → NF-e: mesma data, mesmo valor e a MESMA lista de itens (os dois lados com itens), sem vendedores ou clientes diferentes, NF-e não anterior à NFC-e. A NF-e prevalece e herda vendedor, hora e formas de pagamento que não tiver; a NFC-e vira "convertida" no hora-fixada-cache.json.
+- NFC-e 125636 (vendedor A, crédito) e NF-e 000307 (cliente, sem vendedor), ambas de R$ 453,35 com os mesmos 3 itens, eram somadas — a venda aparecia em dobro no total. Nova reconciliação NFC-e → NF-e: mesma data, mesmo valor e a MESMA lista de itens (os dois lados com itens), sem vendedores ou clientes diferentes, NF-e não anterior à NFC-e. A NF-e prevalece e herda vendedor, hora e formas de pagamento que não tiver; a NFC-e vira "convertida" no hora-fixada-cache.json.
 - Painel Duplicatas também lista esses pares: "Manter apenas NF-e" (padrão), "Manter as duas", "Manter apenas a NFC-e" e "Perguntar depois".
 
 ### 3.8.3 — 2026-10-08 19:30
@@ -489,7 +502,7 @@ Gerador do relatório.
 
 **Vendedores diferentes não são a mesma venda.**
 
-- O aviso POSSIVEL_DUPLICIDADE (gerencial × NFC-e/NF-e de mesmo valor, até 20 min depois) comparava só valor e horário: gerencial 063538 (RICHARD) × NFC-e 125319 (GERENCIA) era apontada como possível duplicidade. Agora, se os DOIS vendedores são conhecidos e diferentes, o par é descartado. Vendedor vazio, "?" ou "(aguardando autorização)" — a NFC-e convertida só ganha vendedor depois da SEFAZ — não descarta.
+- O aviso POSSIVEL_DUPLICIDADE (gerencial × NFC-e/NF-e de mesmo valor, até 20 min depois) comparava só valor e horário: gerencial 063538 (VENDEDOR A) × NFC-e 125319 (VENDEDOR B) era apontada como possível duplicidade. Agora, se os DOIS vendedores são conhecidos e diferentes, o par é descartado. Vendedor vazio, "?" ou "(aguardando autorização)" — a NFC-e convertida só ganha vendedor depois da SEFAZ — não descarta.
 - A mesma regra vale na reconciliação gerencial → NF-e da tabela VENDAS, que absorve a gerencial e muda o total do dia: com vendedores diferentes, não absorve.
 
 ### 3.8.1 — 2026-10-07 23:00
@@ -654,7 +667,7 @@ Cliente de linha de comando.
 
 ### 1.6.1 — 2026-10-28 21:00
 
-- Dispositivos conectados: a coluna "Nome do aparelho" mostra o apelido, com o nome real entre parênteses (ex.: `Celular do Ruda (iphone-xr)`).
+- Dispositivos conectados: a coluna "Nome do aparelho" mostra o apelido, com o nome real entre parênteses (ex.: `Celular do Caixa 1 (iphone-xr)`).
 
 ### 1.6.0 — 2026-10-24 01:30
 
@@ -788,7 +801,7 @@ Bootstrap do logon.
 
 **launcher.path lido em UTF-8.**
 
-O instalador roda com "chcp 65001" e grava o arquivo em UTF-8; aqui ele era lido como ANSI, e um caminho com acento (C:\Relatorios com acento, perfil "Joao" com til) nunca era encontrado: o servidor nao subia no logon. Le em UTF-8 (ADODB.Stream) e, se o arquivo nao existir assim, tenta tambem a leitura antiga (ANSI) - cobre launcher.path gravado por versoes anteriores.
+O instalador roda com "chcp 65001" e grava o arquivo em UTF-8; aqui ele era lido como ANSI, e um caminho com acento (C:\Relatorios com acento, perfil "Usuário" com acento) nunca era encontrado: o servidor nao subia no logon. Le em UTF-8 (ADODB.Stream) e, se o arquivo nao existir assim, tenta tambem a leitura antiga (ANSI) - cobre launcher.path gravado por versoes anteriores.
 
 ### 1.0.0 — 2026-08-12 22:30
 

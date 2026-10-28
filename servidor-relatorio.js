@@ -4437,7 +4437,7 @@ var _qrEndereco = function(req) {
 // perguntado ao próprio aparelho pela rede, em paralelo e sem travar nada:
 //   1. Bonjour/mDNS (iPhone, iPad, Mac e muitos Android): o nome local que o
 //      aparelho anuncia na rede — no iPhone, derivado do nome em "Sobre"
-//      (ex.: "iPhone de Ruda" → "iPhone-de-Ruda").
+//      (ex.: "iPhone do Caixa" → "iPhone-do-Caixa").
 //   2. NetBIOS (computadores Windows): o nome do computador.
 //   3. DNS reverso do roteador (o nome que o aparelho informou ao pegar o IP).
 // Também registra cada rota acessada (página e /api) com resultado e tempo, as
@@ -4501,7 +4501,7 @@ var _dispDescrever = function(uaBruto) {
 var _dispLimparNome = function(n) {
     var s = String(n || "").trim().replace(/\.$/, "");
     if (!s || /^\d+\.\d+\.\d+\.\d+$/.test(s) || /in-addr\.arpa$/i.test(s)) return "";
-    s = s.split(".")[0];                       // "iPhone-de-Ruda.local" → "iPhone-de-Ruda"
+    s = s.split(".")[0];                       // "iPhone-do-Caixa.local" → "iPhone-do-Caixa"
     s = s.replace(/[^\w\-À-ÿ ]/g, "").slice(0, 60);
     return /^(localhost|_gateway|gateway|router)$/i.test(s) ? "" : s;
 };

@@ -171,20 +171,20 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
   - Para outras pessoas, convide-as para a sua rede no painel do Tailscale. Só quem você autorizar entra.
   - Túneis públicos (cloudflared, ngrok) não são recomendados, porque deixam o endereço aberto na internet. Se usar um, o sistema trata quem chega por ele como aparelho externo: sem configurações do sistema, sem trocar o banco, sem reiniciar.
 - **Recarregar ao detectar mudanças:** *Configurações → Nesta tela → Atualização*. Desligado, as vendas novas continuam aparecendo sozinhas, mas a página não recarrega: filtros, busca, rolagem e janelas abertas ficam como estão. Vale para cada aparelho.
-- **Nome do aparelho:** em *Configurações → Minhas preferências → Nome deste aparelho*, dê um apelido (ex.: "Celular do Ruda"). Ele aparece no log e na lista de dispositivos; o nome real do aparelho não muda.
+- **Nome do aparelho:** em *Configurações → Minhas preferências → Nome deste aparelho*, dê um apelido (ex.: "Celular do Caixa 1"). Ele aparece no log e na lista de dispositivos; o nome real do aparelho não muda.
 - **Preferências de cada aparelho:** duração dos avisos, termos proibidos e teclas de atalho são **de cada aparelho** (em *Configurações → Minhas preferências*). Quando um muda, os outros não são afetados. Só o **computador do servidor** muda o padrão de todos, o nome, o intervalo, o log, a janela de correção, o ícone e o banco. Ele também edita ou restaura as preferências de qualquer aparelho conectado (bandeja → *Dispositivos conectados* → *Configurações do aparelho...* / *Voltar ao padrão*). Ficam em `preferencias-aparelhos.json`, na pasta do sistema, nunca no banco.
 
 <details>
 <summary><b>Como o nome do aparelho é descoberto</b></summary>
 
-O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergunta ao próprio aparelho pela rede: **Bonjour/mDNS** (iPhone, iPad, Mac e muitos Android — no iPhone o nome vem do nome em "Sobre", ex.: "iPhone de Ruda" → `iPhone-de-Ruda`), **NetBIOS** (computadores Windows) e, como reserva, o **DNS do roteador**. Sem resposta (rede de visitantes, roteador que bloqueia Bonjour), aparece "não informado pelo aparelho".
+O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergunta ao próprio aparelho pela rede: **Bonjour/mDNS** (iPhone, iPad, Mac e muitos Android — no iPhone o nome vem do nome em "Sobre", ex.: "iPhone do Caixa" → `iPhone-do-Caixa`), **NetBIOS** (computadores Windows) e, como reserva, o **DNS do roteador**. Sem resposta (rede de visitantes, roteador que bloqueia Bonjour), aparece "não informado pelo aparelho".
 
 ```
-[CONEXAO] Novo dispositivo conectado: Celular iPhone (iOS 17.5, Safari 17.5) | IP 192.168.1.50 | nome: iPhone-de-Ruda (Bonjour)
-[CONEXAO] Acesso: GET / ← iPhone-de-Ruda (192.168.1.50) → 200 (3 ms)
-[API]     API: GET /api/itens-venda?data=2026-10-23&numero=064759 ← iPhone-de-Ruda (192.168.1.50) → 200 (41 ms)
-[CONEXAO] Atividade de iPhone-de-Ruda nos últimos 10 min — chamadas automáticas: /api/status ×1200, recarregamentos automáticos ×4
-[CONEXAO] Dispositivo saiu: iPhone-de-Ruda (192.168.1.50) — conectado das 16:20 às 16:49 (30 min) | rotas: / ×5, /api/itens-venda ×2
+[CONEXAO] Novo dispositivo conectado: Celular iPhone (iOS 17.5, Safari 17.5) | IP 192.168.1.50 | nome: iPhone-do-Caixa (Bonjour)
+[CONEXAO] Acesso: GET / ← iPhone-do-Caixa (192.168.1.50) → 200 (3 ms)
+[API]     API: GET /api/itens-venda?data=2026-10-23&numero=064759 ← iPhone-do-Caixa (192.168.1.50) → 200 (41 ms)
+[CONEXAO] Atividade de iPhone-do-Caixa nos últimos 10 min — chamadas automáticas: /api/status ×1200, recarregamentos automáticos ×4
+[CONEXAO] Dispositivo saiu: iPhone-do-Caixa (192.168.1.50) — conectado das 16:20 às 16:49 (30 min) | rotas: / ×5, /api/itens-venda ×2
 ```
 
 </details>
@@ -208,7 +208,7 @@ A caixa de busca aceita filtros combináveis; a ajuda completa fica no botão **
 | `-termo` | Exclui | `cartao-credito-debito` |
 | `[a,~b,=c]` | Lista de exclusão (token, contém, exato) | `[granel,~entrega,=pix]` |
 | `[proibidos]` / `[-proibidos]` | Oculta / isola vendas com itens proibidos | `[-p]` |
-| `vendedor:` `item:` `caixa:` `numero:` `cliente:` `hora:` `pag:` `nat:` `tipo:` | Por campo | `vend:MARIA`, `tipo:nfce` |
+| `vendedor:` `item:` `caixa:` `numero:` `cliente:` `hora:` `pag:` `nat:` `tipo:` | Por campo | `vend:FULANO`, `tipo:nfce` |
 
 ---
 

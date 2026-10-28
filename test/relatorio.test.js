@@ -171,7 +171,7 @@ test("gerador: janela de correção de horário — padrão 3 h e valor configur
 });
 
 test("gerador: aviso de possível duplicidade ignora gerencial e NFC-e de vendedores diferentes", () => {
-    // Caso real: gerencial 063538 (RICHARD) × NFC-e 125319 (GERENCIA), mesmo
+    // Caso real: gerencial 063538 (VENDEDOR A) × NFC-e 125319 (VENDEDOR B), mesmo
     // valor e 5 min depois — são duas vendas, não uma convertida.
     const codigos = estado => {
         const html = gerar(montarPasta({}, estado));
@@ -182,13 +182,13 @@ test("gerador: aviso de possível duplicidade ignora gerencial e NFC-e de vended
         { numero: "63538", hora: "10:00:00", modelo: 99, total: 19, vendedor: vg },
         { numero: "125319", hora: "10:05:00", modelo: 65, total: 19, vendedor: vn }
     ] });
-    assert.ok(!codigos(venda("RICHARD", "GERENCIA")).includes("POSSIVEL_DUPLICIDADE"), "vendedores diferentes: não é duplicidade");
+    assert.ok(!codigos(venda("VENDEDOR A", "VENDEDOR B")).includes("POSSIVEL_DUPLICIDADE"), "vendedores diferentes: não é duplicidade");
     // v3.8.3: mesmo vendedor (ou NFC-e ainda sem vendedor) = conversão — a
     // reconciliação final resolve sozinha e o aviso não sobra.
-    assert.ok(!codigos(venda("RICHARD", "RICHARD")).includes("POSSIVEL_DUPLICIDADE"), "mesmo vendedor: absorvida, sem aviso pendente");
-    assert.ok(!codigos(venda("RICHARD", "")).includes("POSSIVEL_DUPLICIDADE"), "NFC-e sem vendedor: absorvida, sem aviso pendente");
+    assert.ok(!codigos(venda("VENDEDOR A", "VENDEDOR A")).includes("POSSIVEL_DUPLICIDADE"), "mesmo vendedor: absorvida, sem aviso pendente");
+    assert.ok(!codigos(venda("VENDEDOR A", "")).includes("POSSIVEL_DUPLICIDADE"), "NFC-e sem vendedor: absorvida, sem aviso pendente");
     // Itens dos dois lados sem nenhum em comum: são duas vendas — nem absorve, nem avisa.
-    const comItens = venda("RICHARD", "RICHARD");
+    const comItens = venda("VENDEDOR A", "VENDEDOR A");
     comItens.alt = [{ pedido: "63538", desc: "CANETA AZUL", qtd: 1, total: 19 }, { pedido: "125319", desc: "CADERNO", qtd: 1, total: 19 }];
     const htmlItens = gerar(montarPasta({}, comItens));
     const dItens = JSON.parse(htmlItens.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
@@ -243,11 +243,11 @@ test("gerador: gerencial convertida sem vínculo é absorvida pelo documento fis
     // só o auto-teste. Agora o documento fiscal prevalece automaticamente.
     const dir = montarPasta({}, {
         nfce: [
-            { numero: "62418", hora: "10:00:00", modelo: 99, total: 1000, vendedor: "RICHARD" },
-            { numero: "306", hora: "10:07:00", modelo: 65, total: 1215.51, vendedor: "RICHARD" },
+            { numero: "62418", hora: "10:00:00", modelo: 99, total: 1000, vendedor: "VENDEDOR A" },
+            { numero: "306", hora: "10:07:00", modelo: 65, total: 1215.51, vendedor: "VENDEDOR A" },
             // Mesmo valor e janela, vendedores diferentes: duas vendas — fica tudo.
-            { numero: "63538", hora: "11:00:00", modelo: 99, total: 19, vendedor: "RICHARD" },
-            { numero: "125319", hora: "11:03:00", modelo: 65, total: 19, vendedor: "GERENCIA" }
+            { numero: "63538", hora: "11:00:00", modelo: 99, total: 19, vendedor: "VENDEDOR A" },
+            { numero: "125319", hora: "11:03:00", modelo: 65, total: 19, vendedor: "VENDEDOR B" }
         ],
         alt: [
             { pedido: "62418", desc: "PRODUTO A", qtd: 1, total: 1000 },
@@ -295,20 +295,20 @@ test("gerador: gerencial absorvida pelos valores finais vira \"convertida\" no h
 
 // ---------------------------------------------------------------------------
 test("gerador: NFC-e reemitida como NF-e (mesmos itens e valor) conta uma vez só e a NF-e prevalece", () => {
-    // Caso real (v3.8.4): NFC-e 125636 (CASIMIRO, 16:17) e NF-e 000307 (cliente,
+    // Caso real (v3.8.4): NFC-e 125636 (VENDEDOR C, 16:17) e NF-e 000307 (cliente,
     // sem vendedor) com os mesmos 3 itens e R$ 453,35 — eram somadas as duas.
     const itens = p => [
-        { pedido: p, desc: "FN CAES VET HIPOALERGENICA RMG 10KG", qtd: 1, total: 300 },
-        { pedido: p, desc: "FLAMAVET ECONOMICA 0,2MG AGENER", qtd: 1, total: 53.35 },
-        { pedido: p, desc: "DOXIFIN TABS ECONOMICO 50MG OURO FINO", qtd: 1, total: 100 }
+        { pedido: p, desc: "RACAO CAES HIPOALERGENICA 10KG", qtd: 1, total: 300 },
+        { pedido: p, desc: "ANTIPULGAS 0,2MG", qtd: 1, total: 53.35 },
+        { pedido: p, desc: "ANTIBIOTICO 50MG COMPRIMIDOS", qtd: 1, total: 100 }
     ];
     const dir = montarPasta({}, {
         nfce: [
-            { numero: "125636", hora: "16:17:00", modelo: 65, total: 453.35, vendedor: "CASIMIRO" },
+            { numero: "125636", hora: "16:17:00", modelo: 65, total: 453.35, vendedor: "VENDEDOR C" },
             // Hora da NF-e (saída) ANTES da NFC-e: não pode impedir (v3.8.6).
             { numero: "307", hora: "08:00:00", modelo: 55, total: 453.35, vendedor: "" },
             // Mesmo valor, itens diferentes: duas vendas — ficam as duas.
-            { numero: "125700", hora: "16:30:00", modelo: 65, total: 80, vendedor: "ANA" },
+            { numero: "125700", hora: "16:30:00", modelo: 65, total: 80, vendedor: "VENDEDOR D" },
             { numero: "308", hora: "16:40:00", modelo: 55, total: 80, vendedor: "" }
         ],
         // A NFC-e tem a linha de desconto (5%); a NF-e não — v3.8.6 ignora descontos.
@@ -322,7 +322,7 @@ test("gerador: NFC-e reemitida como NF-e (mesmos itens e valor) conta uma vez s�
     assert.ok(!dados.vendas.some(v => num(v) === "125636"), "NFC-e reemitida continuou na tabela");
     const nfe = dados.vendas.find(v => num(v) === "307");
     assert.ok(nfe && nfe.modelo === 55, "a NF-e tem que continuar");
-    assert.strictEqual(nfe.vendedor, "CASIMIRO", "NF-e sem vendedor herda o da NFC-e");
+    assert.strictEqual(nfe.vendedor, "VENDEDOR C", "NF-e sem vendedor herda o da NFC-e");
     assert.ok(Math.abs(dados.totaisDia.geral - (453.35 + 80 + 80)) < 0.001, "a venda não pode ser contada duas vezes");
     assert.ok(dados.vendas.some(v => num(v) === "125700") && dados.vendas.some(v => num(v) === "308"), "itens diferentes: as duas ficam");
     const par = dados.duplicatas.provaveis.find(d => num({ numero: d.gerencial }) === "125636");
@@ -333,15 +333,15 @@ test("gerador: NFC-e reemitida como NF-e (mesmos itens e valor) conta uma vez s�
 });
 
 test("gerador: nome com acento em coluna sem charset sai certo (lido como bytes)", () => {
-    // Caso real (v3.8.5): "Thiago Paraíba" aparecia como "Thiago Para\uFFFDba".
-    const estado = { nfce: [{ numero: "500", hora: "10:00:00", modelo: 65, total: 30, vendedor: "THIAGO PARAÍBA" }] };
+    // Caso real (v3.8.5): "Atendente Número 1" aparecia como "Atendente N\uFFFDmero 1".
+    const estado = { nfce: [{ numero: "500", hora: "10:00:00", modelo: 65, total: 30, vendedor: "ATENDENTE NÚMERO 1" }] };
     const ler = html => JSON.parse(html.match(/<script id="dados" type="application\/json">([\s\S]*?)<\/script>/)[1]);
     const d1 = ler(gerar(montarPasta({}, estado)));
-    assert.strictEqual(d1.vendas[0].vendedor, "THIAGO PARAÍBA");
+    assert.strictEqual(d1.vendas[0].vendedor, "ATENDENTE NÚMERO 1");
     // Firebird que recusa OCTETS: a geração não cai, só volta ao comportamento antigo.
     const d2 = ler(gerar(montarPasta({}, Object.assign({ semOctets: true }, estado))));
     assert.strictEqual(d2.vendas.length, 1, "a venda continua no relatório");
-    assert.strictEqual(d2.vendas[0].vendedor, "THIAGO PARA\uFFFDBA");
+    assert.strictEqual(d2.vendas[0].vendedor, "ATENDENTE N\uFFFDMERO 1");
 });
 
 test("servidor: somente leitura — nenhuma escrita no banco; hora corrigida só na tela, com linha de base", { timeout: 60000 }, async (t) => {
@@ -572,11 +572,11 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
         for (let i = 0; i < 60 && !html.includes("window.__APARELHO__="); i++) { html = await fetch(srv.base + "/", com(A)).then(r => r.text()); if (!html.includes("window.__APARELHO__=")) await esperar(250); }
         assert.match(html, /window\.__APARELHO__=\{"servidor":false,"prefs":\{"toastDuration":9000,"proibidos":\["RACAO"\]/);
         // apelido do aparelho: só dele, limpo de caracteres perigosos, sem virar "preferência própria"
-        const rAp = await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ apelido: '  Celular do <b>Ruda</b>  ' }) })).then(json);
+        const rAp = await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ apelido: '  Celular do <b>Caixa 1</b>  ' }) })).then(json);
         assert.strictEqual(rAp.ok, true); assert.deepStrictEqual(rAp.alterados, ["apelido"]);
-        assert.strictEqual((await fetch(srv.base + "/api/config", com(A)).then(json)).aparelho.apelido, "Celular do b Ruda /b");
+        assert.strictEqual((await fetch(srv.base + "/api/config", com(A)).then(json)).aparelho.apelido, "Celular do b Caixa 1 /b");
         assert.strictEqual((await fetch(srv.base + "/api/config", com(B)).then(json)).aparelho.apelido, "", "o outro aparelho não ganha o apelido");
-        assert.strictEqual((await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ apelido: "Celular do Ruda" }) })).then(json)).ok, true);
+        assert.strictEqual((await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ apelido: "Celular do Caixa 1" }) })).then(json)).ok, true);
         const pf = await fetch(srv.base + "/api/preferencias", com(B)).then(json);
         assert.deepStrictEqual(pf.prefs.proibidos, ["GRANEL"]); assert.strictEqual(pf.personalizado.toastDuration, false);
     } finally { srv.parar(); }
@@ -594,10 +594,10 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
         const vA = await fetch(srv.base + "/api/config?aparelho=" + idA).then(json);
         assert.strictEqual(vA.escopo, "aparelho-editado"); assert.strictEqual(vA.toastDuration, 7000); assert.strictEqual(vA.personalizado.proibidos, true);
         assert.strictEqual((await fetch(srv.base + "/api/config?aparelho=..%2Fx")).status, 400, "chave de aparelho inválida");
-        assert.strictEqual(vA.aparelho.apelido, "Celular do Ruda", "o computador do servidor vê o apelido");
+        assert.strictEqual(vA.aparelho.apelido, "Celular do Caixa 1", "o computador do servidor vê o apelido");
         assert.strictEqual((await post("/api/config?aparelho=" + idA, { restaurar: true })).ok, true);
         assert.deepStrictEqual(prefsDisco()[idA].prefs, {}, "restaurar apaga as preferências do aparelho");
-        assert.strictEqual(prefsDisco()[idA].apelido, "Celular do Ruda", "restaurar mantém o apelido");
+        assert.strictEqual(prefsDisco()[idA].apelido, "Celular do Caixa 1", "restaurar mantém o apelido");
         assert.strictEqual((await post("/api/config?aparelho=" + idA, { apelido: "" })).ok, true);
         assert.strictEqual(prefsDisco()[idA], undefined, "sem apelido e sem preferências, o aparelho sai do arquivo");
         // padrão novo aplicado a todos: B perde a lista própria
@@ -722,10 +722,10 @@ test("gerador: proibidos colados em outro formato viram um termo por linha", () 
         'const _isValorProib=v=>{const s=String(v||"").trim();return /^(>=|<=|>|<)[0-9]/.test(s)||/^\\d[\\d.,]*$/.test(s);};';
     const formatar = new Function(deps + html.slice(ini, fim) + "return formatarProibidos;")();
     const casos = [
-        ["COCA\nPEPSI", ["COCA", "PEPSI"], false],
-        ["COCA, PEPSI;FANTA\tSPRITE | KUAT", ["COCA", "PEPSI", "FANTA", "SPRITE", "KUAT"], true],
-        ['["COCA","coca","PEPSI"]', ["COCA", "PEPSI"], true],
-        ['- "COCA"\n1. COCÁ\n2) AGUA   1,5L', ["COCA", "AGUA 1,5L"], true],
+        ["SUCO\nCHA", ["SUCO", "CHA"], false],
+        ["SUCO, CHA;CAFE\tLEITE | MEL", ["SUCO", "CHA", "CAFE", "LEITE", "MEL"], true],
+        ['["SUCO","suco","CHA"]', ["SUCO", "CHA"], true],
+        ['- "CHA"\n1. CHÁ\n2) AGUA   1,5L', ["CHA", "AGUA 1,5L"], true],
         [">100=6578,96\n6578,96", [">100=6578,96", "6578,96"], false],
         ["", [], false]
     ];
@@ -744,7 +744,7 @@ test("gerador: venda com desconto ganha o chip vermelho com o percentual", () =>
     const dir = montarPasta({}, {
         nfce: [{ numero: "101", hora: "10:00:00" }, { numero: "102", hora: "10:05:00" }],
         alt: [
-            { pedido: "101", desc: "COCA", qtd: 2, total: 20 }, { pedido: "101", desc: "PAO", qtd: 5, total: 5 },
+            { pedido: "101", desc: "REFRIGERANTE", qtd: 2, total: 20 }, { pedido: "101", desc: "PAO", qtd: 5, total: 5 },
             { pedido: "101", desc: "LEITE", qtd: 1, total: 6 }, { pedido: "101", desc: "CAFE", qtd: 1, total: 19 },
             { pedido: "101", desc: "DESCONTO", qtd: 1, total: -5 },
             { pedido: "102", desc: "AGUA", qtd: 1, total: 3 }
@@ -774,7 +774,7 @@ test("servidor: fast-poll completo detecta mudanças que não alteram quantidade
     // PAGAMENT na complementar.
     const dir = montarPasta({}, {
         indices: ["NFCE.DATA"],
-        nfce: [{ numero: "101", hora: horaHaMin(0.1), vendedor: "ANA", modelo: 65 }],
+        nfce: [{ numero: "101", hora: horaHaMin(0.1), vendedor: "VENDEDOR D", modelo: 65 }],
         pag:  [{ numero: "101", hora: horaHaMin(0.1) }]
     });
     const srv = await iniciarServidor(dir);
