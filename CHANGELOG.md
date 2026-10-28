@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.20.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.23.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.24.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -39,6 +39,7 @@ Servidor.
   - O IP do Tailscale nunca vira o "IP da loja" (`maquinaIP`) nem entra na busca do banco pela rede.
 - `/qr` ganhou a seção **"Fora da loja"**: mostra o QR code do endereço do Tailscale, ou o passo a passo para ativar. `/api/qr` traz o campo `externo`, e `/qr.svg?externo=1` gera a imagem.
 - **Segurança com túnel ou proxy** (cloudflared, ngrok, proxy reverso nesta máquina): um pedido com `X-Forwarded-For`, `Forwarded`, `CF-Connecting-IP`, `X-Real-IP` ou `True-Client-IP` chega de `127.0.0.1`, mas vem da internet. Ele nunca é tratado como o computador do servidor nem como rede local. Antes, ganharia acesso total.
+- **Correção na página `/config`:** ela exigia intervalo mínimo de 200 ms, mas o servidor aceita a partir de 100 ms e a própria página diz "De 100 ms". Salvar 100 dava "Intervalo mínimo é 200 ms". Agora usa os mesmos limites do servidor (100 a 60000).
 - **Recarga automática respeita o aparelho.** Com a opção desligada (gerador 3.23.0+), a página não recarrega sozinha. Aparece o aviso fixo "● Há vendas novas" com o botão **Atualizar** (e × para ocultar). O selo vira "⏸ manual".
   - Religar a opção com venda pendente atualiza na hora.
   - A volta do servidor depois de uma queda continua recarregando sempre.
@@ -232,6 +233,18 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.24.0 — 2026-10-28 19:00
+
+**Menu Tema só com os temas.**
+
+- O botão **Tema** agora mostra só os temas de cores.
+- Visualização, Desempenho, Atualização ("Recarregar relatório ao detectar mudanças") e Tamanho do texto foram para **Configurações**, na seção **"Nesta tela"**, no topo. Lá, valem na hora, sem precisar salvar, e só neste aparelho. A seção funciona no computador e no celular e não aparece quando o computador do servidor edita as preferências de outro aparelho.
+- Modal de Configurações reorganizado no computador e no celular:
+  - mais largo (640 px), com "Fechar" sempre à direita do título;
+  - campos simples em duas colunas alinhadas (rótulo | campo);
+  - seções grandes na largura toda: Nesta tela, ícone, proibidos, teclas e aparelhos. Antes ficavam espremidas na coluna do rótulo; a lista de aparelhos aparecia minúscula.
+- Teclas de atalho em blocos alinhados: tecla, Gravar, comando e × numa linha, com a ação embaixo. No celular, o comando e a ação ocupam a largura toda. Antes os campos caíam desencontrados um embaixo do outro.
 
 ### 3.23.0 — 2026-10-28 18:00
 

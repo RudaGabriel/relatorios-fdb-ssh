@@ -5666,7 +5666,9 @@ var server=http.createServer(function(req,res){
             "var pr=praw.split('\\n').map(function(s){return s.trim();}).filter(function(s){return s.length>0;});"+
             "var favFile=document.getElementById('favFile').files&&document.getElementById('favFile').files[0];"+
             "if(!an){showMsg('O nome do sistema nao pode estar vazio.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
-            "if(pi<200){showMsg('Intervalo minimo e 200 ms.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
+            // BUG FIX (v2.20.0): exigia 200 ms, mas o servidor aceita a partir de POLL_INTERVAL_MIN
+            // (100) e a própria página diz "De 100 ms" — salvar 100 dava "Intervalo mínimo é 200 ms".
+            "if(!(pi>="+POLL_INTERVAL_MIN+"&&pi<="+POLL_INTERVAL_MAX+")){showMsg('Intervalo deve ficar entre "+POLL_INTERVAL_MIN+" e "+POLL_INTERVAL_MAX+" ms.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(ml<100){showMsg('Maximo de linhas minimo e 100.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(td<500||td>60000){showMsg('Duracao do toast deve estar entre 500 e 60 000 ms.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
             "if(!(jh>="+JANELA_HORA_MIN_MIN+"&&jh<="+JANELA_HORA_MAX_MIN+")){showMsg('Janela de correcao de horario deve ficar entre "+JANELA_HORA_MIN_MIN+" e "+JANELA_HORA_MAX_MIN+" minutos.','er');btn.disabled=false;btn.textContent='Salvar configuracoes';return;}"+
