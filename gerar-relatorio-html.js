@@ -1,11 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.26.1
+ * @version 3.26.2
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.26.1 - 2026-10-28 23:00 - Exemplos neutros (sem nomes de pessoas ou empresas) na ajuda e nos placeholders.
+ *   3.26.2 - 2026-10-29 10:00 - Botões "Importar" e "Juntar" (proibidos) sempre lado a lado.
  */
 
 (function() {
@@ -13,7 +13,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.26.1";
+    const SCRIPT_VERSION = "3.26.2";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3337,7 +3337,12 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
   .cfgTeclaLin .cfgTeclaAcao { grid-column: 1 / -1; grid-row: 3; }
   .cfgTeclaLin .input, .cfgTeclaLin .btn { height: 40px; }
 }
-.prImpBtns .btn { flex: 1 1 200px; justify-content: center; }
+/* Importar / Juntar (v3.26.2): sempre lado a lado, dividindo a largura — no celular o
+   texto quebra em duas linhas dentro do botão em vez de um botão cair para baixo do outro. */
+.prImpBtns { flex-wrap: nowrap !important; }
+.prImpBtns > .btn, #ovConfig .kv > div.prImpBtns > .btn { flex: 1 1 0 !important; min-width: 0; justify-content: center; text-align: center; white-space: normal; line-height: 1.25; height: auto; min-height: 40px; padding-top: 8px; padding-bottom: 8px; }
+.prImpBtns .btn svg { flex: none; }
+@media (max-width: 400px) { .prImpExtra { display: none; } }
 #cfgTela { display: block; }
 #cfgTela > .k { margin-bottom: 2px; }
 #cfgTela .tmZoom { display: block; }
@@ -6558,8 +6563,8 @@ const irParaVendas=()=>{
 // salva sozinho — a pessoa confere e clica em Salvar.
 const _BTN_IMPORTAR_PR = (id1, id2) =>
     '<div class="prImpBtns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
-    + '<button class="btn" type="button" id="' + id1 + '" data-tip="Troca a lista deste aparelho pela lista padrão do servidor"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Importar do servidor</button>'
-    + '<button class="btn" type="button" id="' + id2 + '" data-tip="Acrescenta à lista deste aparelho os termos do servidor que ainda não estão nela"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Juntar com os do servidor</button>'
+    + '<button class="btn" type="button" id="' + id1 + '" data-tip="Troca a lista deste aparelho pela lista padrão do servidor"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Importar<span class="prImpExtra"> do servidor</span></span></button>'
+    + '<button class="btn" type="button" id="' + id2 + '" data-tip="Acrescenta à lista deste aparelho os termos do servidor que ainda não estão nela"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Juntar<span class="prImpExtra"> com os do servidor</span></span></button>'
     + '</div>';
 const _importarProibidosServidor = (ta, formatar, modo, botoes) => {
     if (!ta) return;

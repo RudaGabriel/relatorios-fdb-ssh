@@ -4,13 +4,14 @@
 
 ### Painel de vendas em tempo real para lojas que usam o Small Commerce (Firebird)
 
-<img alt="servidor: v2.18.0" src="https://img.shields.io/badge/servidor-v2.18.0-2563EB?style=flat">
-<img alt="gerador: v3.21.0" src="https://img.shields.io/badge/gerador-v3.21.0-2563EB?style=flat">
+<img alt="servidor: v2.22.0" src="https://img.shields.io/badge/servidor-v2.22.0-2563EB?style=flat">
+<img alt="gerador: v3.26.2" src="https://img.shields.io/badge/gerador-v3.26.2-2563EB?style=flat">
+<img alt="bandeja: v1.6.1" src="https://img.shields.io/badge/bandeja-v1.6.1-2563EB?style=flat">
 <img alt="plataforma: Windows 10 | 11" src="https://img.shields.io/badge/plataforma-Windows%2010%20%7C%2011-0078D4?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nd2hpdGUnPjxyZWN0IHg9JzMnIHk9JzMnIHdpZHRoPSc4JyBoZWlnaHQ9JzgnLz48cmVjdCB4PScxMycgeT0nMycgd2lkdGg9JzgnIGhlaWdodD0nOCcvPjxyZWN0IHg9JzMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPHJlY3QgeD0nMTMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPC9zdmc%2B&logoColor=white">
 <img alt="idioma: pt-BR" src="https://img.shields.io/badge/idioma-pt--BR-16A34A?style=flat">
 <img alt="banco: somente leitura" src="https://img.shields.io/badge/banco-somente%20leitura-DC2626?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nbm9uZScgc3Ryb2tlPSd3aGl0ZScgc3Ryb2tlLXdpZHRoPScyLjInIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCc%2BPHBhdGggZD0nTTEyIDIyczgtNCA4LTEwVjVsLTgtMy04IDN2N2MwIDYgOCAxMCA4IDEweicvPjxwYXRoIGQ9J205IDEyIDIgMiA0LTQnLz48L3N2Zz4%3D&logoColor=white">
 <img alt="funciona: sem internet" src="https://img.shields.io/badge/funciona-sem%20internet-0891B2?style=flat">
-<img alt="testes: 26 passando" src="https://img.shields.io/badge/testes-26%20passando-22C55E?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nbm9uZScgc3Ryb2tlPSd3aGl0ZScgc3Ryb2tlLXdpZHRoPScyLjInIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCc%2BPHBhdGggZD0nTTkgMnY2TDQgMTlhMiAyIDAgMCAwIDEuOCAzaDEyLjRhMiAyIDAgMCAwIDEuOC0zTDE1IDhWMicvPjxwYXRoIGQ9J004IDJoOCcvPjxwYXRoIGQ9J003IDE1aDEwJy8%2BPC9zdmc%2B&logoColor=white">
+<img alt="testes: 28 passando" src="https://img.shields.io/badge/testes-28%20passando-22C55E?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nbm9uZScgc3Ryb2tlPSd3aGl0ZScgc3Ryb2tlLXdpZHRoPScyLjInIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCc%2BPHBhdGggZD0nTTkgMnY2TDQgMTlhMiAyIDAgMCAwIDEuOCAzaDEyLjRhMiAyIDAgMCAwIDEuOC0zTDE1IDhWMicvPjxwYXRoIGQ9J004IDJoOCcvPjxwYXRoIGQ9J003IDE1aDEwJy8%2BPC9zdmc%2B&logoColor=white">
 <img alt="licença: proprietária" src="https://img.shields.io/badge/licen%C3%A7a-propriet%C3%A1ria-6B7280?style=flat">
 
 <img alt="Node.js: 18+" src="https://img.shields.io/badge/Node.js-18%2B-339933?style=flat&logo=nodedotjs&logoColor=white">
@@ -25,10 +26,12 @@
 <img alt="Lucide: ícones" src="https://img.shields.io/badge/Lucide-%C3%ADcones-F56565?style=flat&logo=lucide&logoColor=white">
 <img alt="QR code: gerador próprio" src="https://img.shields.io/badge/QR%20code-gerador%20pr%C3%B3prio-111827?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nbm9uZScgc3Ryb2tlPSd3aGl0ZScgc3Ryb2tlLXdpZHRoPScyLjInIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCc%2BPHJlY3QgeD0nMycgeT0nMycgd2lkdGg9JzUnIGhlaWdodD0nNScgcng9JzEnLz48cmVjdCB4PScxNicgeT0nMycgd2lkdGg9JzUnIGhlaWdodD0nNScgcng9JzEnLz48cmVjdCB4PSczJyB5PScxNicgd2lkdGg9JzUnIGhlaWdodD0nNScgcng9JzEnLz48cGF0aCBkPSdNMjEgMTZoLTNhMiAyIDAgMCAwLTIgMnYzJy8%2BPHBhdGggZD0nTTEyIDd2M2EyIDIgMCAwIDEtMiAySDcnLz48cGF0aCBkPSdNMTYgMTJoMScvPjxwYXRoIGQ9J00xMiAyMXYtMScvPjwvc3ZnPg%3D%3D&logoColor=white">
 <img alt="node:test" src="https://img.shields.io/badge/node%3Atest-testes%20nativos-5FA04E?style=flat&logo=nodedotjs&logoColor=white">
+<img alt="Tailscale: acesso de qualquer lugar" src="https://img.shields.io/badge/Tailscale-acesso%20de%20qualquer%20lugar-242424?style=flat&logo=tailscale&logoColor=white">
+<img alt="WinForms: bandeja" src="https://img.shields.io/badge/WinForms-bandeja%20do%20Windows-512BD4?style=flat&logo=dotnet&logoColor=white">
 
-**As vendas do dia na tela, atualizadas a cada venda · No computador e no celular · Nunca escreve no banco · Funciona sem internet**
+**As vendas do dia na tela, atualizadas a cada venda · No computador e no celular · Na loja ou de qualquer lugar · Nunca escreve no banco · Funciona sem internet**
 
-[Instalar](#instalacao) · [Usar](#uso) · [Recursos](#recursos) · [Celular](#celular) · [Configurar](#configuracao) · [API](#api) · [Problemas](#problemas)
+[Instalar](#instalacao) · [Usar](#uso) · [Recursos](#recursos) · [Celular](#celular) · [Fora da loja](#fora) · [Aparelhos](#aparelhos) · [Configurar](#configuracao) · [API](#api) · [Problemas](#problemas)
 
 </div>
 
@@ -42,8 +45,10 @@ Roda em segundo plano no Windows, com ícone na bandeja: inicia com o logon, se 
 
 | | |
 |---|---|
-| ⚡ **Tempo real** | Venda nova aparece em ~0,3 s, sem apertar nada |
+| ⚡ **Tempo real** | Venda nova aparece em ~0,3 s, sem apertar nada — com ou sem recarregar a página |
 | 📱 **Computador e celular** | Layout próprio para cada tela; abre no celular por QR code |
+| 🌍 **De qualquer lugar** | Pelo Tailscale (grátis): 4G ou outro Wi-Fi, sem abrir porta no roteador e sem expor nada na internet |
+| 👤 **Cada aparelho do seu jeito** | Avisos, proibidos, teclas, apelido e opções de tela por aparelho — só o computador do servidor muda para todos |
 | 🔒 **Somente leitura** | Nenhum `INSERT`, `UPDATE` ou `DELETE` — o banco do caixa nunca é alterado |
 | 🌐 **Sem internet** | Tudo local: gráficos, ícones e QR code são gerados pelo próprio sistema |
 | 🛟 **Se cuida sozinho** | Watchdog, reconexão automática com o banco e aviso na tela quando o servidor cai |
@@ -96,13 +101,16 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 |---|---|
 | Ver as vendas de hoje | Duplo clique no ícone da bandeja · `gerar_relatorio_do_dia.bat` · `http://IP:7734/` |
 | Abrir no celular | Botão **Celular** no topo (mostra um QR code) · bandeja → *Abrir no celular (QR code)* |
+| Abrir fora da loja (4G, outro Wi-Fi) | **Celular → Fora da loja** (com o Tailscale — veja [Fora da loja](#fora)) |
 | Ver uma data | `gerar_relatorio_por_data.bat` (aceita `D/M`, `DD/MM` ou `DD/MM/AA[AA]`) |
 | Ver um período | Botão **Por período** · `gerar_relatorio_intervalo.bat` · `http://IP:7734/periodo` |
 | Forçar atualização | Botão **Atualizar** · bandeja → *Atualizar dados de hoje* |
-| Mudar tema, visualização ou tamanho do texto | Botão **Tema** |
+| Mudar o tema de cores | Botão **Tema** |
+| Visualização, desempenho, recarregar ou não, tamanho do texto | **Configurações → Nesta tela** (vale na hora, só neste aparelho) |
+| Dar um nome ao aparelho, mudar avisos/proibidos/teclas só dele | **Configurações → Minhas preferências** (veja [Aparelhos](#aparelhos)) |
 | Trocar o banco | Bandeja → *Configurações → Selecionar banco (FDB)* · `http://IP:7734/selecionar-fdb` |
 | Configurar | Botão **Configurações** · `http://IP:7734/config` |
-| Ver quem está conectado | Bandeja → *Dispositivos conectados* |
+| Ver quem está conectado / editar um aparelho | Bandeja → *Dispositivos conectados* (*Configurações do aparelho...*, *Voltar ao padrão*) |
 | Reiniciar | Bandeja → *Reiniciar servidor* · `api.ps1 -Endpoint restart` |
 
 <details>
@@ -132,10 +140,14 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 ### 🎨 Interface
 - **7 temas:** Escuro e Claro + 5 de estilo (HUD Ciano, Índigo Neon, Executivo, Âmbar Vidro e Brasa Noturna), que mudam também cantos, bordas, brilho e fundo.
 - **Visualização detalhada:** indicadores e gráficos — faturamento e vendas por hora, participação por tipo, ranking de vendedores, pagamentos e produtos — acima da tabela, seguindo os filtros.
-- **Desempenho:** *Completo* (animações de entrada e saída em tudo) ou *Leve* (sem animações, para máquinas fracas); o *Automático* detecta sozinho.
-- **Tamanho do texto** de 80% a 140%, no computador e no celular (salvos separados).
+- **Menu Tema** só com os temas; as demais opções da tela ficam em **Configurações → Nesta tela**:
+  - **Visualização:** *Simplificada* (só a tabela) ou *Detalhada* (com o painel de gráficos).
+  - **Desempenho:** *Completo* (animações de entrada e saída em tudo) ou *Leve* (sem animações, para máquinas fracas); o *Automático* detecta sozinho.
+  - **Atualização:** *Recarregar relatório ao detectar mudanças*. Ligado, a página recarrega a cada venda. Desligado, a venda nova entra **sem recarregar** — filtros, busca, rolagem e janelas abertas ficam como estão.
+  - **Tamanho do texto** de 80% a 140%, no computador e no celular (salvos separados).
 - **Busca avançada** com coringas (veja [abaixo](#busca)), **filtro de proibidos**, **chip de desconto** nos itens, **ferramentas de cópia** e **teclas de atalho** personalizáveis.
-- **Recarregamento sem piscar:** quando entra uma venda, a tela volta no mesmo ponto da lista e com os mesmos filtros.
+- **Recarregamento sem piscar:** quando a página recarrega, ela volta no mesmo ponto da lista e com os mesmos filtros.
+- **Celular:** botão **voltar ao topo** depois de descer bastante; modo detalhado com a lista indo até o fim da tela no computador.
 
 ### 🛠️ Operação
 - **Bandeja do Windows** com menu completo e ícones: status ao vivo, abrir, atualizar, período, telas abertas (trazer para frente, recarregar, enviar aviso, tema), dispositivos conectados, configurações, ferramentas (informações, copiar endereço, pasta, log, log ao vivo, `api.ps1`, programas), reiniciar e sair.
@@ -163,16 +175,8 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 
 - **Abrir no celular:** clique em **Celular** no topo do relatório (ou na bandeja → *Abrir no celular*) e aponte a câmera para o QR code. O celular precisa estar no **mesmo Wi-Fi**. O endereço é sempre o IP da máquina na rede (`http://IP:7734/`), e o QR code é gerado pelo próprio sistema, sem internet.
 - **Layout próprio:** a página rola inteira, cartões compactos, badges em pares "nome: valor", barra fixa com **Copiar** (todas as opções de cópia), **Vendas** (vai para a lista) e **Mais**.
-- **Quem está conectado:** cada celular ou computador que abre o relatório aparece no log (`[CONEXAO]`) e na janela *Dispositivos conectados* da bandeja — tipo, modelo, sistema, navegador, IP, **nome do aparelho** e rotas acessadas.
-- **Acessar de qualquer lugar (fora da loja, 4G, outro Wi-Fi):** com o **Tailscale** (gratuito). Ele cria uma rede privada e criptografada só entre os seus aparelhos, sem abrir porta no roteador e sem deixar o relatório exposto na internet.
-  1. Na máquina do servidor, instale o Tailscale (<https://tailscale.com/download>) e entre com uma conta (Google, Microsoft ou Apple).
-  2. No celular, instale o app **Tailscale** e entre com a **mesma conta**. Deixe-o ligado.
-  3. No relatório, clique em **Celular → Fora da loja** (ou bandeja → *Abrir no celular*) e escaneie o QR code. O endereço é `http://100.x.y.z:7734/` e funciona de qualquer lugar.
-  - Para outras pessoas, convide-as para a sua rede no painel do Tailscale. Só quem você autorizar entra.
-  - Túneis públicos (cloudflared, ngrok) não são recomendados, porque deixam o endereço aberto na internet. Se usar um, o sistema trata quem chega por ele como aparelho externo: sem configurações do sistema, sem trocar o banco, sem reiniciar.
-- **Recarregar ao detectar mudanças:** *Configurações → Nesta tela → Atualização*. Desligado, as vendas novas continuam aparecendo sozinhas, mas a página não recarrega: filtros, busca, rolagem e janelas abertas ficam como estão. Vale para cada aparelho.
-- **Nome do aparelho:** em *Configurações → Minhas preferências → Nome deste aparelho*, dê um apelido (ex.: "Celular do Caixa 1"). Ele aparece no log e na lista de dispositivos; o nome real do aparelho não muda.
-- **Preferências de cada aparelho:** duração dos avisos, termos proibidos e teclas de atalho são **de cada aparelho** (em *Configurações → Minhas preferências*). Quando um muda, os outros não são afetados. Só o **computador do servidor** muda o padrão de todos, o nome, o intervalo, o log, a janela de correção, o ícone e o banco. Ele também edita ou restaura as preferências de qualquer aparelho conectado (bandeja → *Dispositivos conectados* → *Configurações do aparelho...* / *Voltar ao padrão*). Ficam em `preferencias-aparelhos.json`, na pasta do sistema, nunca no banco.
+- **Quem está conectado:** cada celular ou computador que abre o relatório aparece no log (`[CONEXAO]`) e na janela *Dispositivos conectados* da bandeja — tipo, modelo, sistema, navegador, IP, **nome do aparelho** (e o apelido, se tiver), preferências e rotas acessadas.
+- **Fora da loja** e **preferências por aparelho**: veja [Acesso fora da loja](#fora) e [Preferências de cada aparelho](#aparelhos).
 
 <details>
 <summary><b>Como o nome do aparelho é descoberto</b></summary>
@@ -188,6 +192,38 @@ O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergu
 ```
 
 </details>
+
+---
+
+<a id="fora"></a>
+## 🌍 Acesso fora da loja (Tailscale)
+
+Para abrir o relatório no 4G ou em outro Wi-Fi, use o **Tailscale** (gratuito). Ele cria uma rede **privada e criptografada** só entre os seus aparelhos: não abre porta no roteador e o relatório não fica exposto na internet. Só quem entra na sua conta (ou quem você convida) acessa.
+
+1. **No computador do servidor:** instale o Tailscale (<https://tailscale.com/download>) e entre com uma conta (Google, Microsoft ou Apple). No ícone dele, ative **Preferences → Run unattended**. No painel <https://login.tailscale.com/admin/machines>, em **⋯ → Disable key expiry** no computador da loja, para ele não se desconectar sozinho depois de 180 dias.
+2. **No celular:** instale o app **Tailscale**, entre com a **mesma conta**, permita a configuração de VPN e deixe-o ligado (no iPhone dá para ativar "VPN On Demand").
+3. **No relatório:** **Celular → aba "Fora da loja"** (ou bandeja → *Abrir no celular*) e escaneie o QR code. O endereço é `http://100.x.y.z:7734/`.
+
+Não precisa reiniciar o servidor nem mexer no roteador: o sistema detecta o Tailscale sozinho, e a regra de firewall do instalador já vale para essa rede. Para outras pessoas, convide-as em <https://login.tailscale.com/admin/users>.
+
+> ⚠️ Túneis públicos (cloudflared, ngrok) deixam o endereço aberto na internet e não são recomendados. Se usar um, quem chega por ele é tratado como aparelho externo: não muda configurações do sistema, não troca o banco nem o ícone, não reinicia o servidor.
+
+---
+
+<a id="aparelhos"></a>
+## 👤 Preferências de cada aparelho
+
+Cada celular ou computador tem as **suas** preferências. Quando um muda, os outros não são afetados:
+
+| Onde | O quê |
+|---|---|
+| **Configurações → Nesta tela** | Visualização, desempenho, recarregar ou não ao detectar mudanças, tamanho do texto (salvas no próprio navegador) |
+| **Configurações → Minhas preferências** | **Nome deste aparelho** (apelido, ex.: "Celular do Caixa 1" — o nome real não muda), duração dos avisos, termos proibidos (com **Importar do servidor** / **Juntar com os do servidor**) e teclas de atalho |
+
+- Só vai o que foi mexido: o resto continua seguindo o **padrão do servidor**. "Voltar ao padrão do servidor" desfaz (o apelido fica).
+- O **computador do servidor** (onde estão o launcher e o `servidor-relatorio.js`) é o único que muda o padrão de todos, as configurações do sistema (nome, intervalo, log, janela de correção, ícone) e o banco. Ele também pode **aplicar o padrão a todos os aparelhos** e editar ou restaurar um aparelho conectado — pelo próprio modal ou pela bandeja (*Dispositivos conectados → Configurações do aparelho...* / *Voltar ao padrão*).
+- O apelido aparece no log (`"Celular do Caixa 1" — iphone-xr (100.103.59.92)`), na janela *Dispositivos conectados* e na lista de aparelhos.
+- Ficam em `preferencias-aparelhos.json`, na pasta do sistema — **nunca no banco**. Cada aparelho é reconhecido por um cookie com um código aleatório (`fdb_ap`); apagar os dados do navegador faz o aparelho voltar ao padrão.
 
 ---
 
@@ -226,15 +262,15 @@ A maior parte pode ser editada pela própria tela (**Configurações**), no comp
 | `maquinaIP` | automático | IP desta máquina na rede (atualizado a cada início) |
 | `pollInterval` | `100` | Verificação de reserva do navegador (ms, mín. 100) |
 | `spawnTimeoutMs` | `120000` | Tempo máximo de geração (30 s a 600 s) — aumente para períodos longos |
-| `toastDuration` | `5000` | Duração dos avisos na tela (ms) |
+| `toastDuration` | `5000` | Duração dos avisos na tela (ms) — padrão; cada aparelho pode ter a sua |
 | `janelaCorrecaoHoraMin` | `180` | Janela da correção de horário, de 5 a 720 min ([detalhes](#horario)) |
 | `maxLogLines` / `logDebug` | `5000` / `false` | Tamanho do `relatorio.log` / detalhes de rotina |
 | `favicon` | `""` | Ícone personalizado (arquivo da pasta do sistema) |
-| `proibidos` | `[]` | Termos do filtro de proibidos |
-| `teclasPersonalizadas` | `[]` | Atalhos: `{ "tecla": "F2", "comando": "[-proibidos]>150", "acao": "" }` |
+| `proibidos` | `[]` | Termos do filtro de proibidos — padrão; cada aparelho pode ter a sua lista |
+| `teclasPersonalizadas` | `[]` | Atalhos: `{ "tecla": "F2", "comando": "[-proibidos]>150", "acao": "" }` — padrão; cada aparelho pode ter os seus |
 | `programas` | `[]` | Programas que a bandeja e o `api.ps1` podem abrir: `{ "nome": "Small Commerce", "caminho": "C:\\Small\\Small.exe", "args": "" }` (só editável neste arquivo) |
 
-> `hora-fixada-cache.json`, `relatorio.log` e `favicon.png` são criados e mantidos pelo próprio sistema.
+> `hora-fixada-cache.json`, `preferencias-aparelhos.json`, `relatorio.log` e `favicon.png` são criados e mantidos pelo próprio sistema (nenhum deles vai para o banco).
 
 ---
 
@@ -255,7 +291,9 @@ Verificado num Firebird 3 em uso: milhares de transações observadas em `MON$TR
 - Proteção contra **XSS** (JSON embutido escapado; textos do usuário escapados).
 - Validação de todas as entradas da API (listas, datas, tamanhos, caminhos de ícone restritos à pasta).
 - Log de erros do navegador **sem quebras de linha forjáveis**.
-- Reinício remoto, leitura do log, lista de dispositivos e abertura de programas **só da rede local**. Programas: pela rede só se escolhe **um nome** da lista do `config.json` — nunca caminho ou comando livre.
+- Reinício remoto, leitura do log, lista de dispositivos e abertura de programas **só da rede local** (inclui a rede privada do Tailscale). Programas: pela rede só se escolhe **um nome** da lista do `config.json` — nunca caminho ou comando livre.
+- Configurações do sistema, troca do banco e do ícone **só do computador do servidor**; os outros aparelhos mudam só as próprias preferências.
+- Pedido que chega por **túnel ou proxy** nesta máquina (`X-Forwarded-For`, `CF-Connecting-IP` etc.) nunca é tratado como o computador do servidor nem como rede local.
 - Gravação **atômica** de `config.json`, cache de horas e relatórios.
 - O instalador do Node.js confere o **SHA-256** oficial (ou a assinatura digital) antes de executar.
 
@@ -303,22 +341,24 @@ Tudo responde na porta configurada (padrão `7734`). O **`api.ps1`** (PowerShell
 | `/periodo?i=AAAA-MM-DD&f=AAAA-MM-DD` | GET | Relatório de um período (sem parâmetros: formulário) |
 | `/atualizar` | GET | Descarta o cache de hoje e regenera |
 | `/config` · `/selecionar-fdb` | GET | Páginas de configurações e de seleção do banco |
-| `/qr` · `/qr.svg` · `/api/qr` | GET | QR code do endereço desta máquina na rede (página, imagem, texto) |
+| `/qr` · `/qr.svg` · `/api/qr` | GET | QR code do endereço desta máquina na rede (página, imagem, texto); `/qr.svg?externo=1` e o campo `externo` de `/api/qr` = endereço do Tailscale |
 | `/pronto?k=CHAVE` | GET | Estado de uma geração em andamento |
 | `/api/status` | GET | Quantidade e total do dia, por tipo, e avisos de correção |
 | `/api/db-status` | GET | Estado da conexão com o banco |
 | `/api/events` | GET | Fluxo SSE (tempo real) |
-| `/api/config` · `/api/proibidos` | GET/POST | Lê e salva configurações / lista de proibidos |
-| `/api/salvar-fdb` | POST | Define o banco: `{ "caminho": "C:\\...\\SMALL.FDB" }` ou `"IP:C:\\...\\SMALL.FDB"` |
+| `/api/config` · `/api/proibidos` | GET/POST | Lê e salva configurações / lista de proibidos. De outro aparelho: só as preferências dele. Do computador do servidor: o padrão (`aplicarTodos`), ou um aparelho com `?aparelho=CHAVE` (`restaurar`, `apelido`) |
+| `/api/preferencias` | GET | Preferências efetivas de quem pede (as do aparelho por cima do padrão) |
+| `/api/proibidos-servidor` | GET | Lista padrão de proibidos do servidor (para "Importar do servidor") |
+| `/api/salvar-fdb` | POST | (Só no computador do servidor) define o banco: `{ "caminho": "C:\\...\\SMALL.FDB" }` ou `"IP:C:\\...\\SMALL.FDB"` |
 | `/api/abrir-picker-fdb` | GET | Abre o seletor de arquivos do Windows na máquina servidora |
-| `/api/upload-favicon` | POST | Envia um ícone PNG/ICO/JPEG (até 2 MB) |
+| `/api/upload-favicon` | POST | (Só no computador do servidor) envia um ícone PNG/ICO/JPEG (até 2 MB) |
 | `/api/navigate/hoje` · `/config` · `/selecionar-fdb` · `/periodo/INI/FIM` · `/hash/{config\|periodo}` · `/foco` · `/recarregar` | GET | Comandam as telas abertas via SSE |
 | `/api/navigate/tema/ID` · `/api/temas` | GET | Troca o tema das telas abertas / lista os temas |
 | `/api/navigate/aviso` | POST | Aviso nas telas abertas: `{ "msg": "texto", "segundos": 12 }` |
 | `/api/sse-clients` | GET | Número de telas conectadas |
 | `/api/info` | GET | Versões, máquina, banco, memória e tempo ligado |
 | `/api/log?linhas=N&filtro=texto` | GET | Últimas linhas do `relatorio.log` (rede local) |
-| `/api/dispositivos` | GET | Aparelhos com o relatório aberto: nome, IP, tipo, rotas (rede local) |
+| `/api/dispositivos` | GET | Aparelhos com o relatório aberto: nome, apelido, IP, tipo, rotas; para o computador do servidor, também a chave e as preferências próprias (rede local) |
 | `/api/programas` · `/api/programas/abrir` | GET/POST | Lista / abre um programa da lista do `config.json` (rede local) |
 | `/api/restart` · `/api/encerrar` | GET | Reinicia / encerra de forma ordenada (rede local) |
 | `/api/log-error` · `/api/hora-usuario` | POST | Uso interno do navegador |
@@ -342,15 +382,33 @@ Tudo vai para **`relatorio.log`**, na pasta do sistema, no formato `[DD-MM-AAAA]
 | `[SERVIDOR]` | Início, parada e reinício |
 | `[CONEXAO]` / `[API]` | Aparelhos da rede (nome, IP, rotas) / chamadas `/api` de outros aparelhos |
 | `[NAVEGADOR]` | Erros enviados pela tela do relatório |
-| `[CONFIG]` · `[REDE]` | Configurações e ícone · IP da máquina |
+| `[CONFIG]` · `[REDE]` | Configurações, ícone e preferências de cada aparelho · IP da máquina |
 | `[TRAY]` · `[INSTALL]` · `[REMOVER]` | Bandeja, instalador e removedor |
 | `[DEBUG]` · `[SISTEMA]` | Detalhes (com `"logDebug": true`) · demais mensagens |
 
 ```
-[07-10-2026] [08:00:01] [SERVIDOR] === Servidor iniciado 07/10/2026 === Servidor v2.18.0 | Gerador v3.21.0
+[07-10-2026] [08:00:01] [SERVIDOR] === Servidor iniciado 07/10/2026 === Servidor v2.22.0 | Gerador v3.26.2
 [07-10-2026] [08:00:06] [BANCO] Índices: NFCE.DATA, PAGAMENT.DATA — ok (consultas rápidas).
 [07-10-2026] [12:43:31] [VENDAS] FastPoll: Gerencial: vendas 30 → 31 (↑ +1) ... → regerando.
 ```
+
+---
+
+## 🧰 Tecnologias e bibliotecas
+
+Uma única biblioteca externa — o resto é do próprio Node.js, do Windows ou feito aqui mesmo (por isso funciona sem internet).
+
+| Parte | Tecnologia | Para quê |
+|---|---|---|
+| Servidor e gerador | **Node.js 18+** (módulos nativos `http`, `child_process`, `fs`, `crypto`, `dns`, `dgram`, `net`, `os`) | Servidor HTTP/SSE, geração em subprocesso, cookie dos aparelhos, nome dos aparelhos (mDNS/NetBIOS/DNS), detecção do banco na rede |
+| Banco | **[node-firebird](https://www.npmjs.com/package/node-firebird)** — única dependência externa, instalada sozinha | Leitura do Firebird do Small Commerce, só em transações somente leitura |
+| Tela do relatório | **HTML5, CSS e JavaScript** puros (sem framework) | Interface, temas, busca, painel detalhado, atualização sem recarregar |
+| Tempo real | **SSE** (Server-Sent Events) + polling HTTP de reserva | Aviso de venda nova em menos de um segundo |
+| Gráficos e ícones | **SVG** gerado pelo próprio sistema; ícones no estilo **Lucide** embutidos | Painel detalhado, botões e menu da bandeja |
+| QR code | **Gerador próprio** (ISO/IEC 18004, correção M) | QR do endereço na loja e fora dela |
+| Bandeja do Windows | **PowerShell 5.1** + **WinForms/.NET** (com trechos em C#) e **VBScript** | Ícone, menu, watchdog, janela *Dispositivos conectados*, inicialização automática |
+| Acesso de fora (opcional) | **[Tailscale](https://tailscale.com)** (app externo, grátis) | Rede privada entre a loja e os celulares — nada fica exposto na internet |
+| Testes | **`node:test`** (nativo) + Firebird simulado em `test/mock-firebird` | `npm test`, sem precisar de banco real |
 
 ---
 
@@ -362,7 +420,7 @@ Rodam **sem Firebird real** — um banco simulado em `test/mock-firebird` respon
 npm test
 ```
 
-No Windows: duplo clique em **`test\executar-testes.bat`**. Os 26 testes cobrem a garantia de **somente leitura**, a atualização numa rajada de vendas, XSS, o cache de horas, o painel de duplicatas, a correção de horário, os dispositivos conectados, o controle remoto e a validação das rotas.
+No Windows: duplo clique em **`test\executar-testes.bat`**. Os 28 testes cobrem a garantia de **somente leitura**, a atualização numa rajada de vendas, XSS, o cache de horas, o painel de duplicatas, a correção de horário, os dispositivos conectados, o controle remoto, a validação das rotas, as **preferências por aparelho** (isolamento, apelido, edição pelo servidor, aplicar a todos) e a proteção contra **túnel/proxy**. Alguns testes de horário são pulados de propósito logo depois da meia-noite.
 
 ---
 
@@ -375,7 +433,7 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 26 testes cobrem 
                                                                   ├─ fast-poll ──────┐
                                                                   ├─ verificação     ├─▶ Firebird (SMALL.FDB) — SOMENTE LEITURA
                                                                   └─ node gerar-relatorio-html.js ─┘
- Navegador (computador ou celular da rede) ◀── HTTP :7734 + SSE
+ Navegador (computador ou celular da rede ou via Tailscale) ◀── HTTP :7734 + SSE
 ```
 
 <details>
@@ -383,18 +441,20 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 26 testes cobrem 
 
 | Arquivo | Função |
 |---|---|
-| `servidor-relatorio.js` | Servidor HTTP/SSE: detecta o banco, monitora mudanças, cache, gerações, dispositivos e QR code |
-| `gerar-relatorio-html.js` | Subprocesso que consulta o Firebird e monta o relatório (dados, interface e scripts) |
-| `iniciar-tray.ps1` | Ícone na bandeja, menu e watchdog |
+| `servidor-relatorio.js` | Servidor HTTP/SSE: detecta o banco, monitora mudanças, cache, gerações, dispositivos, preferências por aparelho, Tailscale e QR code |
+| `gerar-relatorio-html.js` | Subprocesso que consulta o Firebird e monta o relatório (dados, interface e scripts, inclusive a atualização sem recarregar) |
+| `iniciar-tray.ps1` | Ícone na bandeja, menu, watchdog e janela *Dispositivos conectados* |
 | `launcher.vbs` / `bootstrap.vbs` | Iniciam a bandeja de forma oculta (o bootstrap espera a pasta de rede no logon) |
 | `instalar-na-inicializacao.bat` · `_criar-tarefa.ps1` | Inicialização automática, firewall e nome do sistema |
 | `remover-inicializacao.bat` · `_remover-inicializacao.ps1` | Desfazem a inicialização automática |
 | `gerar_relatorio_do_dia.bat` · `_por_data.bat` · `_intervalo.bat` | Abrem o relatório (iniciam o servidor se preciso) |
 | `api.ps1` | Cliente de linha de comando da API |
 | `_instalar-node.ps1` · `node-firebird.bat` | Instalam o Node.js e o `node-firebird` |
-| `config.json` | Configurações |
+| `config.json` | Configurações (padrão de todos) |
+| `preferencias-aparelhos.json` | Preferências e apelido de cada aparelho (criado sozinho, não versionado) |
 | `package.json` · `test/` | Testes automáticos (`npm test`, `executar-testes.bat`, Firebird simulado) |
 | `CHANGELOG.md` | Histórico completo de versões de cada arquivo (o cabeçalho de cada arquivo traz só a versão atual) |
+| `CLAUDE.md` | Regras do projeto para o assistente de código (idioma, somente leitura, changelog, README sempre atualizado) |
 
 </details>
 
@@ -408,6 +468,9 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 26 testes cobrem 
 | "Banco de dados não encontrado" | Escolha o `SMALL.FDB` na página ou pela bandeja; confira se o Firebird está rodando (porta 3050) |
 | "Falha ao conectar" / senha incorreta | Ajuste `fbUser` e `fbPass` no `config.json` e reinicie pela bandeja |
 | Outro computador ou celular não abre | Mesmo Wi-Fi/rede? Porta 7734 no firewall (rode o instalador como administrador); confira o IP em *Ferramentas → Informações* |
+| Celular não abre fora da loja | App Tailscale ligado e na mesma conta? No computador, o Tailscale está conectado ("Run unattended")? Use o QR da aba *Fora da loja* |
+| Um aparelho mostra avisos/proibidos diferentes dos outros | Ele tem preferências próprias: *Minhas preferências → Voltar ao padrão do servidor*, ou bandeja → *Dispositivos conectados → Voltar ao padrão* |
+| Quero que a página não recarregue | *Configurações → Nesta tela → Atualização*: desligue "Recarregar relatório ao detectar mudanças" (as vendas continuam entrando) |
 | Relatório de período longo não termina | Aumente `spawnTimeoutMs` (até 600000) |
 | Servidor não inicia no logon | Rode `instalar-na-inicializacao.bat` de novo e veja as linhas `[INSTALL]` e `[TRAY]` no log |
 | Continua iniciando sozinho após remover | Rode `remover-inicializacao.bat` como administrador e veja as linhas `[REMOVER]` |

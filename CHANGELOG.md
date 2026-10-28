@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.22.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.26.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.26.2 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -249,6 +249,18 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.26.2 — 2026-10-29 10:00
+
+**Botões de importar proibidos lado a lado.**
+
+- "Importar do servidor" e "Juntar com os do servidor" ficam sempre lado a lado e dividem a largura. No celular, o texto quebra dentro do botão em vez de um botão cair para baixo do outro. Em telas de até 400 px, aparecem só "Importar" e "Juntar"; a dica de cada botão continua explicando o que ele faz.
+- Antes, uma regra do modal de Configurações (`flex: none` nos botões de linhas flexíveis) impedia os dois de dividir a largura.
+- README revisto por inteiro:
+  - badges de versão (servidor, gerador e a bandeja, que é novo), de testes e de tecnologias novas (Tailscale, WinForms);
+  - seções novas: "Acesso fora da loja (Tailscale)", "Preferências de cada aparelho" e "Tecnologias e bibliotecas";
+  - "Uso no dia a dia", rotas da API, segurança, testes e solução de problemas atualizados.
+- Novo `CLAUDE.md` com as regras do projeto. Entre elas: o README é atualizado em toda mudança.
 
 ### 3.26.1 — 2026-10-28 23:00
 
