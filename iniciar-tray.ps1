@@ -3,14 +3,12 @@
 # Instancia unica via mutex global.
 # Abrir Relatorio: se ja tem aba aberta (SSE), foca ela. Se nao, abre browser.
 #
-# @version 1.6.0
+# @version 1.6.1
 # @author Ruda Gabriel
 # @changelog
 #   (Historico completo das versoes: CHANGELOG.md no repositorio.)
-#   1.6.0 - 2026-10-24 01:30 - Preferencias por aparelho: em "Dispositivos conectados",
-#     coluna Preferencias e botoes "Configuracoes do aparelho..." (abre o relatorio nesta
-#     maquina com as preferencias daquele aparelho) e "Voltar ao padrao"; rodape refeito
-#     com layout automatico (os botoes apareciam cortados e sem texto com a tela em 125%).
+#   1.6.1 - 2026-10-28 21:00 - Dispositivos conectados: mostra o apelido do aparelho (dado em
+#     "Minhas preferencias") com o nome real entre parenteses.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -942,6 +940,8 @@ function Update-Dispositivos {
         foreach ($d in @($j.dispositivos)) {
             if ($null -eq $d) { continue }
             $nome = if ($d.nome) { [string]$d.nome } else { L "(sem nome)" }
+            # Apelido dado em "Minhas preferencias" (v1.6.1): aparece primeiro; o nome real fica entre parenteses.
+            if ($d.apelido) { $nome = [string]$d.apelido + $(if ($d.nome) { " (" + [string]$d.nome + ")" } else { "" }) }
             $it = New-Object System.Windows.Forms.ListViewItem($nome)
             $tipo = (([string]$d.tipo) + " " + ([string]$d.modelo)).Trim()
             $rotas = ""

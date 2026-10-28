@@ -571,6 +571,12 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
         let html = "";
         for (let i = 0; i < 60 && !html.includes("window.__APARELHO__="); i++) { html = await fetch(srv.base + "/", com(A)).then(r => r.text()); if (!html.includes("window.__APARELHO__=")) await esperar(250); }
         assert.match(html, /window\.__APARELHO__=\{"servidor":false,"prefs":\{"toastDuration":9000,"proibidos":\["RACAO"\]/);
+        // apelido do aparelho: só dele, limpo de caracteres perigosos, sem virar "preferência própria"
+        const rAp = await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ apelido: '  Celular do <b>Ruda</b>  ' }) })).then(json);
+        assert.strictEqual(rAp.ok, true); assert.deepStrictEqual(rAp.alterados, ["apelido"]);
+        assert.strictEqual((await fetch(srv.base + "/api/config", com(A)).then(json)).aparelho.apelido, "Celular do b Ruda /b");
+        assert.strictEqual((await fetch(srv.base + "/api/config", com(B)).then(json)).aparelho.apelido, "", "o outro aparelho não ganha o apelido");
+        assert.strictEqual((await fetch(srv.base + "/api/config", com(A, { method: "POST", body: JSON.stringify({ apelido: "Celular do Ruda" }) })).then(json)).ok, true);
         const pf = await fetch(srv.base + "/api/preferencias", com(B)).then(json);
         assert.deepStrictEqual(pf.prefs.proibidos, ["GRANEL"]); assert.strictEqual(pf.personalizado.toastDuration, false);
     } finally { srv.parar(); }
@@ -588,8 +594,12 @@ test("servidor: preferências por aparelho — uma não afeta a outra; só o com
         const vA = await fetch(srv.base + "/api/config?aparelho=" + idA).then(json);
         assert.strictEqual(vA.escopo, "aparelho-editado"); assert.strictEqual(vA.toastDuration, 7000); assert.strictEqual(vA.personalizado.proibidos, true);
         assert.strictEqual((await fetch(srv.base + "/api/config?aparelho=..%2Fx")).status, 400, "chave de aparelho inválida");
+        assert.strictEqual(vA.aparelho.apelido, "Celular do Ruda", "o computador do servidor vê o apelido");
         assert.strictEqual((await post("/api/config?aparelho=" + idA, { restaurar: true })).ok, true);
-        assert.strictEqual(prefsDisco()[idA], undefined, "restaurar apaga as preferências do aparelho");
+        assert.deepStrictEqual(prefsDisco()[idA].prefs, {}, "restaurar apaga as preferências do aparelho");
+        assert.strictEqual(prefsDisco()[idA].apelido, "Celular do Ruda", "restaurar mantém o apelido");
+        assert.strictEqual((await post("/api/config?aparelho=" + idA, { apelido: "" })).ok, true);
+        assert.strictEqual(prefsDisco()[idA], undefined, "sem apelido e sem preferências, o aparelho sai do arquivo");
         // padrão novo aplicado a todos: B perde a lista própria
         assert.strictEqual((await post("/api/config", { toastDuration: 6000, proibidos: ["PADRAO"], aplicarTodos: true })).ok, true);
         assert.strictEqual(cfgDisco().toastDuration, 6000); assert.deepStrictEqual(cfgDisco().proibidos, ["PADRAO"]);

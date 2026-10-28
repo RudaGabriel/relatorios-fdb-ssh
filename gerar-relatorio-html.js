@@ -1,20 +1,13 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.24.1
+ * @version 3.25.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.24.1 - 2026-10-28 20:00 - Celular: "Duração das mensagens de aviso" sem campo espremido.
- *   3.24.0 - 2026-10-28 19:00 - Menu Tema só com os temas; o resto em Configurações → "Nesta tela".
- *     - Visualização, desempenho, atualização e tamanho do texto: seção "Nesta tela" no topo
- *       de Configurações (vale na hora, só neste aparelho; não aparece ao editar outro aparelho).
- *     - Modal de Configurações alinhado: mais largo, "Fechar" à direita, seções grandes na largura
- *       toda e teclas de atalho em blocos (tecla | gravar | comando | × e a ação embaixo).
- *   3.23.0 - 2026-10-28 18:00 - "Recarregar relatório ao detectar mudanças" e QR fora da loja.
- *     - Atualização: caixa (por aparelho). Desligada, a página não recarrega
- *       sozinha (filtros, busca, rolagem e janelas ficam); aparece "Há vendas novas".
- *     - Janela "Abrir no celular": abas "Na loja (Wi-Fi)" e "Fora da loja" (Tailscale).
+ *   3.25.0 - 2026-10-28 21:00 - "Nome deste aparelho" em Minhas preferências (apelido).
+ *     - Também ao editar um aparelho pelo computador do servidor; a lista de aparelhos mostra
+ *       o apelido. O nome real do aparelho não muda.
  */
 
 (function() {
@@ -22,7 +15,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.24.1";
+    const SCRIPT_VERSION = "3.25.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -7195,6 +7188,13 @@ var __abrirModalConfig = function(opcoes) {
               '<button class="btn" id="cfgFechar" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</button>' +
             '</div>' +
             '<div class="mbody" style="gap:14px;padding-bottom:24px">' +
+              // Apelido do aparelho (v3.25.0): só para reconhecer na lista e no log.
+              (_soPrefs
+                ? '<div class="kv" style="flex-direction:column;gap:8px">' +
+                    '<div class="k">' + (_alvo ? 'Nome do aparelho' : 'Nome deste aparelho') + ' <span style="font-weight:400;text-transform:none;letter-spacing:0">(apelido para reconhecer na lista de aparelhos e no log' + (cfg.aparelho && cfg.aparelho.nome ? ' — o nome real "' + esc(cfg.aparelho.nome) + '" não muda' : ' — não muda o nome real do aparelho') + ')</span></div>' +
+                    '<input type="text" id="cfgApelido" class="input" maxlength="40" autocomplete="off" placeholder="ex.: Celular do Ruda" value="' + esc(String((cfg.aparelho && cfg.aparelho.apelido) || "")) + '">' +
+                  '</div>'
+                : '') +
               (_alvo ? '' :
               '<div class="kv" id="cfgTela" style="flex-direction:column;align-items:stretch;gap:0">' +
                 '<div class="k">Nesta tela <span style="font-weight:400;text-transform:none;letter-spacing:0">(só neste aparelho — vale na hora, sem salvar)</span></div>' +
@@ -7291,6 +7291,7 @@ var __abrirModalConfig = function(opcoes) {
         var _normTeclas = function(a) { return JSON.stringify((a || []).filter(function(t){ return t && t.tecla && (t.comando || t.acao); }).map(function(t){ return [String(t.tecla), String(t.comando || ""), String(t.acao || "")]; })); };
         var _teclasOrig = _normTeclas(_teclasArr);
         var _prOrig = JSON.stringify(_prArr.map(String));
+        var _apelidoOrig = String((cfg.aparelho && cfg.aparelho.apelido) || "").trim();
 
         var _teclaValida = function(k, ctrl, alt) {
             if (!k) return false;
@@ -7480,7 +7481,7 @@ var __abrirModalConfig = function(opcoes) {
                 lista.forEach(function(x) {
                     var o = document.createElement("option");
                     o.value = String(x.chavePreferencias);
-                    o.textContent = (x.nome ? x.nome + " — " : "") + x.ip + " — " + [x.tipo, x.modelo].filter(Boolean).join(" ") +
+                    o.textContent = (x.apelido ? "“" + x.apelido + "” — " : "") + (x.nome ? x.nome + " — " : "") + x.ip + " — " + [x.tipo, x.modelo].filter(Boolean).join(" ") +
                         (Array.isArray(x.preferenciasProprias) && x.preferenciasProprias.length ? " (próprias: " + x.preferenciasProprias.join(", ") + ")" : " (padrão)");
                     _apSel.appendChild(o);
                 });
@@ -7535,6 +7536,9 @@ var __abrirModalConfig = function(opcoes) {
             var _doSave = function() {
                 var _corpo = _soPrefs ? {} : {appName: an, pollInterval: pi, maxLogLines: ml, favicon: fv, toastDuration: td, janelaCorrecaoHoraMin: jh, proibidos: pr, teclasPersonalizadas: _teclasArr, aplicarTodos: aplTodos};
                 if (_soPrefs) {
+                    var _apEl = document.getElementById("cfgApelido");
+                    var _apVal = _apEl ? String(_apEl.value || "").replace(/\s+/g, " ").trim().slice(0, 40) : _apelidoOrig;
+                    if (_apVal !== _apelidoOrig) _corpo.apelido = _apVal;
                     if (td !== _td) _corpo.toastDuration = td;
                     if (JSON.stringify(pr.map(String)) !== _prOrig) _corpo.proibidos = pr;
                     if (_normTeclas(_teclasArr) !== _teclasOrig) _corpo.teclasPersonalizadas = _teclasArr;
@@ -7564,7 +7568,7 @@ var __abrirModalConfig = function(opcoes) {
                         if (_remoto) {
                             // Sem regerar o relatório (vale só aqui): aplica a lista na hora.
                             if (_corpo.proibidos) { try { setProibidosUser(pr); renderTabela(); } catch (_e) {} }
-                            toast("Preferências salvas", "Valem só para este aparelho.");
+                            toast("Preferências salvas", _corpo.apelido !== undefined && Object.keys(_corpo).length === 1 ? (_corpo.apelido ? "Este aparelho agora se chama “" + _corpo.apelido + "”." : "Apelido removido.") : "Valem só para este aparelho.");
                         } else if (_alvo) {
                             toast("Preferências do aparelho salvas", "Aplicadas na tela dele agora.");
                         } else {

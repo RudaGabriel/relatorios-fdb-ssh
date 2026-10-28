@@ -2,18 +2,16 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.20.0
+ * @version 2.21.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.20.0 - 2026-10-28 18:00 - Acesso de qualquer lugar (Tailscale) e recarga opcional.
- *     - Faixa do Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48) vale como rede local; /qr e
- *       /api/qr trazem o endereço "fora da loja"; o IP do Tailscale nunca vira o IP da loja.
- *     - Pedido por túnel/proxy nesta máquina (X-Forwarded-For etc.) nunca é tratado como o
- *       computador do servidor nem como rede local.
- *     - Recarga automática respeita a opção do aparelho: desligada, mostra "Há vendas novas".
+ *   2.21.0 - 2026-10-28 21:00 - Apelido do aparelho ("Celular do Ruda").
+ *     - Guardado em preferencias-aparelhos.json (campo "apelido", até 40 caracteres, limpo);
+ *       aparece no log, em /api/config e /api/dispositivos. O nome real não muda.
+ *     - "Voltar ao padrão" e "aplicar a todos" mantêm o apelido.
  */
 
 
@@ -21,7 +19,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.20.0";
+const SERVER_VERSION = "2.21.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -4620,7 +4618,15 @@ var _dispNome = function(ip, cb) {
     catch (_) { res.dns = ""; decidir(false); }
 };
 
-var _dispRotulo = function(d) { return (d.nome ? d.nome + " (" + d.ip + ")" : d.ip); };
+// Apelido dado ao aparelho em "Minhas preferências" (v2.21.0) — só um nome para
+// reconhecer; o nome real (Bonjour/NetBIOS/DNS) continua igual, entre parênteses.
+var _dispApelido = function(d) {
+    try { var a = d && d.ap && typeof _prefsAparelhos === "object" && _prefsAparelhos ? _prefsAparelhos[d.ap] : null; return (a && a.apelido) || ""; } catch (_) { return ""; }
+};
+var _dispRotulo = function(d) {
+    var ap = _dispApelido(d), base = (d.nome ? d.nome + " (" + d.ip + ")" : d.ip);
+    return ap ? "\"" + ap + "\" — " + base : base;
+};
 var _dispHora = function(ts) { var x = new Date(ts); return padDois(x.getHours()) + ":" + padDois(x.getMinutes()) + ":" + padDois(x.getSeconds()); };
 var _dispDuracao = function(ms) {
     var min = Math.round(ms / 60000);
@@ -4756,7 +4762,7 @@ var _dispListar = function() {
     var agora = Date.now();
     return Object.keys(_dispositivos).map(function(ip) {
         var d = _dispositivos[ip];
-        return { ip: ip, nome: d.nome || "", nomeFonte: d.nomeFonte || "", tipo: d.desc.tipo, modelo: d.desc.modelo,
+        return { ip: ip, nome: d.nome || "", apelido: _dispApelido(d), nomeFonte: d.nomeFonte || "", tipo: d.desc.tipo, modelo: d.desc.modelo,
                  sistema: d.desc.so, navegador: d.desc.navegador, telasAbertas: d.telas,
                  conectadoDesde: _dispHora(d.primeiro), ultimaAtividade: _dispHora(d.ultimo),
                  segundosSemAtividade: Math.round((agora - d.ultimo) / 1000), requisicoes: d.total, rotas: d.rotas };
@@ -4775,7 +4781,7 @@ var _dispListar = function() {
 // (fdb_ap, gerado aqui); quem não guarda cookie (ex.: api.ps1) pelo IP.
 var _PREFS_ARQ    = path.join(__dirname, "preferencias-aparelhos.json");
 var _PREFS_CHAVES = ["toastDuration", "proibidos", "teclasPersonalizadas"];
-var _PREFS_ROTULO = { toastDuration: "duração dos avisos", proibidos: "termos proibidos", teclasPersonalizadas: "teclas de atalho" };
+var _PREFS_ROTULO = { toastDuration: "duração dos avisos", proibidos: "termos proibidos", teclasPersonalizadas: "teclas de atalho", apelido: "nome do aparelho" };
 var _PREFS_MAX    = 300;                                   // aparelhos guardados (os mais antigos saem)
 var _COOKIE_AP    = "fdb_ap";
 var _COOKIE_AP_RE = /(?:^|;\s*)fdb_ap=([a-f0-9]{32})(?=;|$)/;
@@ -4792,6 +4798,11 @@ var _prefsSanitizar = function(p) {
     if (Array.isArray(p.teclasPersonalizadas)) s.teclasPersonalizadas = _sanitizarTeclas(p.teclasPersonalizadas);
     return s;
 };
+// Apelido do aparelho (v2.21.0): texto curto, sem caracteres de controle nem aspas/<>.
+var _PREFS_APELIDO_MAX = 40;
+var _prefsApelido = function(v) {
+    return String(v == null ? "" : v).replace(/[\x00-\x1F\x7F"<>]+/g, " ").replace(/\s+/g, " ").trim().slice(0, _PREFS_APELIDO_MAX);
+};
 var _prefsAparelhos = Object.create(null);
 (function _prefsCarregar() {
     var raw = "";
@@ -4805,7 +4816,7 @@ var _prefsAparelhos = Object.create(null);
             var a = ap[k];
             if (!_prefsChaveValida(k) || !a || typeof a !== "object") return;
             _prefsAparelhos[k] = { ip: _textoSeguroLog(a.ip, 64), nome: _textoSeguroLog(a.nome, 80), desc: _textoSeguroLog(a.desc, 80),
-                                   atualizado: Number(a.atualizado) || 0, prefs: _prefsSanitizar(a.prefs) };
+                                   apelido: _prefsApelido(a.apelido), atualizado: Number(a.atualizado) || 0, prefs: _prefsSanitizar(a.prefs) };
         });
     } catch (e) {
         logTs("AVISO: preferencias-aparelhos.json inválido (" + e.message + ") — os aparelhos usam o padrão do servidor até alguém salvar de novo.", "CONFIG");
@@ -4852,23 +4863,33 @@ var _prefsDescreverChave = function(chave) {
     var ip = d ? d.ip : (a ? a.ip : (/^ip:/.test(chave) ? chave.slice(3) : ""));
     var nome = d ? (d.nome || "") : (a ? a.nome : "");
     var desc = d ? d.desc.texto : (a ? a.desc : "");
-    return { ip: ip, nome: nome, desc: desc, texto: (nome ? nome + " " : "") + (ip ? "(" + ip + ")" : "") + (desc ? " — " + desc : "") };
+    var apelido = a ? (a.apelido || "") : "";
+    return { ip: ip, nome: nome, desc: desc, apelido: apelido,
+             texto: (apelido ? "\"" + apelido + "\" — " : "") + (nome ? nome + " " : "") + (ip ? "(" + ip + ")" : "") + (desc ? " — " + desc : "") };
 };
 // Grava as preferências de um aparelho. "restaurar" apaga as dele (volta ao padrão).
 // Retorna a lista de campos alterados.
-var _prefsSalvarAparelho = function(chave, novas, restaurar) {
+// apelido: undefined = não mexe; "" = tira o apelido. "Voltar ao padrão" mantém o apelido
+// (ele não é preferência do relatório, é só o nome para reconhecer o aparelho).
+var _prefsSalvarAparelho = function(chave, novas, restaurar, apelido) {
     var info = _prefsDescreverChave(chave), alterados = [];
-    var atual = _prefsAparelhos[chave] ? _prefsAparelhos[chave].prefs : {};
+    var ant = _prefsAparelhos[chave];
+    var atual = ant ? ant.prefs : {};
+    var apAtual = ant ? (ant.apelido || "") : "";
+    var apNovo = apelido === undefined ? apAtual : _prefsApelido(apelido);
+    if (apNovo !== apAtual) alterados.push("apelido");
     if (restaurar) {
-        alterados = Object.keys(atual);
-        delete _prefsAparelhos[chave];
+        alterados = alterados.concat(Object.keys(atual));
+        if (apNovo) _prefsAparelhos[chave] = { ip: info.ip, nome: info.nome, desc: info.desc, apelido: apNovo, atualizado: Date.now(), prefs: {} };
+        else delete _prefsAparelhos[chave];
     } else {
         var san = _prefsSanitizar(novas), soma = Object.assign({}, atual);
         Object.keys(san).forEach(function(k) {
             if (JSON.stringify(atual[k]) !== JSON.stringify(san[k])) alterados.push(k);
             soma[k] = san[k];
         });
-        _prefsAparelhos[chave] = { ip: info.ip, nome: info.nome, desc: info.desc, atualizado: Date.now(), prefs: soma };
+        if (!apNovo && !Object.keys(soma).length) delete _prefsAparelhos[chave];
+        else _prefsAparelhos[chave] = { ip: info.ip, nome: info.nome, desc: info.desc, apelido: apNovo, atualizado: Date.now(), prefs: soma };
     }
     if (!_prefsGravar()) return null;
     return alterados;
@@ -5387,7 +5408,7 @@ var server=http.createServer(function(req,res){
             _PREFS_CHAVES.forEach(function(k) { _cOut[k] = _cEf.prefs[k]; });
             _cOut.personalizado = _cEf.personalizado;
             var _cInfo = _prefsDescreverChave(_cChave);
-            _cOut.aparelho = { nome: _cInfo.nome, ip: _cInfo.ip, desc: _cInfo.desc, texto: _cInfo.texto };
+            _cOut.aparelho = { nome: _cInfo.nome, ip: _cInfo.ip, desc: _cInfo.desc, apelido: _cInfo.apelido, texto: _cInfo.texto };
             if (_cSrv) _cOut.aparelho.chave = _cAlvo;
         }
         sendJson(_cOut);
@@ -5421,13 +5442,14 @@ var server=http.createServer(function(req,res){
                     var _novasP = {};
                     _PREFS_CHAVES.forEach(function(k){ if (p[k] !== undefined) _novasP[k] = p[k]; });
                     var _infoP = _prefsDescreverChave(_chP);
-                    var _altP = _prefsSalvarAparelho(_chP, _novasP, p.restaurar === true);
+                    var _altP = _prefsSalvarAparelho(_chP, _novasP, p.restaurar === true, p.apelido === undefined ? undefined : String(p.apelido == null ? "" : p.apelido));
                     if (_altP === null) { sendJson({ok:false, erro:"Falha ao gravar preferencias-aparelhos.json em disco."}, 500); return; }
                     logTs((_cSrvP ? "Computador do servidor alterou as preferências do aparelho " : "Preferências do aparelho ") + _infoP.texto +
                           (p.restaurar === true ? " voltaram ao padrão do servidor" : ": " + (_altP.length ? _altP.map(function(k){ return _PREFS_ROTULO[k]; }).join(", ") : "nenhuma mudança")) +
                           " — vale só para ele." + (_ignP.length ? " Ignorado (só no computador do servidor): " + _ignP.join(", ") + "." : ""), "CONFIG");
                     _prefsAvisarTelas(_chP);
-                    sendJson({ok:true, escopo:"aparelho", alterados:_altP, ignorados:_ignP, aparelho:{ nome:_infoP.nome, ip:_infoP.ip, texto:_infoP.texto }});
+                    var _infoD = _prefsDescreverChave(_chP);
+                    sendJson({ok:true, escopo:"aparelho", alterados:_altP, ignorados:_ignP, aparelho:{ nome:_infoD.nome, ip:_infoD.ip, apelido:_infoD.apelido, texto:_infoD.texto }});
                     return;
                 }
                 var rawCfg="";
@@ -5557,7 +5579,7 @@ var server=http.createServer(function(req,res){
                         var pr = _prefsAparelhos[k].prefs, mudou = false;
                         _PREFS_CHAVES.forEach(function(c) { if (p[c] !== undefined && pr[c] !== undefined) { delete pr[c]; mudou = true; } });
                         if (mudou) _apTodosN++;
-                        if (!Object.keys(pr).length) delete _prefsAparelhos[k];
+                        if (!Object.keys(pr).length && !_prefsAparelhos[k].apelido) delete _prefsAparelhos[k];
                     });
                     if (_apTodosN) _prefsGravar();
                     logTs("Padrão aplicado a todos os aparelhos pelo computador do servidor (" + _apTodosN + " aparelho(s) tinham preferências próprias).", "CONFIG");
