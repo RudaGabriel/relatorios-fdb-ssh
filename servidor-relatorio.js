@@ -2,19 +2,18 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.19.1
+ * @version 2.20.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.19.1 - 2026-10-24 02:30 - /api/proibidos-servidor: lista padrão do servidor (importar).
- *   2.19.0 - 2026-10-24 01:30 - Preferências por aparelho.
- *     - Cada aparelho (cookie fdb_ap) tem as suas: duração dos avisos, proibidos e teclas, em
- *       preferencias-aparelhos.json (nunca no banco). Mudar num não afeta os outros.
- *     - Só o computador do servidor muda o padrão de todos, as configurações do sistema, o
- *       banco e o ícone — e edita/restaura as preferências de cada aparelho (?aparelho=).
- *     - "Editar configurações" da bandeja abre só nas telas do computador do servidor.
+ *   2.20.0 - 2026-10-28 18:00 - Acesso de qualquer lugar (Tailscale) e recarga opcional.
+ *     - Faixa do Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48) vale como rede local; /qr e
+ *       /api/qr trazem o endereço "fora da loja"; o IP do Tailscale nunca vira o IP da loja.
+ *     - Pedido por túnel/proxy nesta máquina (X-Forwarded-For etc.) nunca é tratado como o
+ *       computador do servidor nem como rede local.
+ *     - Recarga automática respeita a opção do aparelho: desligada, mostra "Há vendas novas".
  */
 
 
@@ -22,7 +21,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.19.1";
+const SERVER_VERSION = "2.20.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -725,13 +724,52 @@ var parseFdb=function(fdb){
     return{host:"127.0.0.1",dbPath:fdb};
 };
 
+// ── ACESSO DE QUALQUER LUGAR — TAILSCALE (v2.20.0) ─────────────────────────
+// Tailscale cria uma rede privada e criptografada entre a máquina da loja e o
+// celular (cada um com o app, na mesma conta), sem abrir porta no roteador e sem
+// expor nada à internet. Cada aparelho ganha um IP fixo na faixa 100.64.0.0/10
+// (IPv6 fd7a:115c:a1e0::/48). Esses endereços valem como "rede local" — só
+// aparelhos autorizados na conta entram nessa rede.
+var _ehIPTailscale = function(ip) {
+    var s = String(ip || "").replace(/^::ffff:/, "");
+    return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(s) || /^fd7a:115c:a1e0:/i.test(s);
+};
+// IPv4 do Tailscale nesta máquina (null se não estiver instalado/conectado).
+var _ipTailscale = function() {
+    try {
+        var ifs = os.networkInterfaces(), achado = null;
+        Object.keys(ifs).some(function(k) {
+            return (ifs[k] || []).some(function(a) {
+                var v4 = a && (a.family === "IPv4" || a.family === 4);
+                if (v4 && !a.internal && _ehIPTailscale(a.address)) { achado = a.address; return true; }
+                return false;
+            });
+        });
+        return achado;
+    } catch (e) { return null; }
+};
+// Cache de 30 s (consultado a cada pedido vindo da faixa do Tailscale).
+var _tsCache = { ip: null, ts: 0 };
+var _ipTailscaleCache = function() {
+    var agora = Date.now();
+    if (agora - _tsCache.ts > 30000) { _tsCache = { ip: _ipTailscale(), ts: agora }; }
+    return _tsCache.ip;
+};
+// Pedido que chegou por um túnel/proxy rodando NESTA máquina (cloudflared, ngrok,
+// proxy reverso): o IP de origem é 127.0.0.1, mas quem pediu está na internet.
+// Nunca é tratado como o computador do servidor nem como rede local.
+var _viaProxy = function(req) {
+    var h = (req && req.headers) || {};
+    return !!(h["x-forwarded-for"] || h["forwarded"] || h["cf-connecting-ip"] || h["x-real-ip"] || h["true-client-ip"] || h["x-forwarded-host"]);
+};
+
 // detectLocalIP melhorada: ignora adapters virtuais/VPN, usa score por sub-rede
 // e aceita fbHostHint para priorizar o IP na mesma /24 do banco.
 var detectLocalIP = function(fbHostHint) {
     var ifaces = os.networkInterfaces();
     var SKIP_NAMES = ["vmware","virtualbox","vbox","hyper-v","loopback","pseudo","isatap",
                       "teredo","tunnel","vpn","tap","tun","wsl","docker","radio","bluetooth",
-                      "6to4","vethernet"];
+                      "6to4","vethernet","tailscale","zerotier"];
     function isSkip(name) {
         var nl = String(name||"").toLowerCase();
         return SKIP_NAMES.some(function(s){ return nl.indexOf(s) >= 0; });
@@ -749,6 +787,7 @@ var detectLocalIP = function(fbHostHint) {
             var a = list[i];
             var isV4 = (a.family === "IPv4" || a.family === 4);
             if (!isV4 || a.internal || a.address === "127.0.0.1") continue;
+            if (_ehIPTailscale(a.address)) continue;   // rede do Tailscale nunca é o "IP da loja"
             var score = 0;
             if (subnetPrefix && a.address.indexOf(subnetPrefix) === 0) score += 100;
             if (/^192\.168\./.test(a.address))                          score += 10;
@@ -1465,7 +1504,7 @@ var detectSubnet=function(){
         for(var i=0;i<list.length;i++){
             var a=list[i];
             var isV4=(a.family==="IPv4"||a.family===4);
-            if(isV4&&!a.internal){
+            if(isV4&&!a.internal&&!_ehIPTailscale(a.address)&&!/tailscale|zerotier/i.test(n)){
                 var p=a.address.split(".");
                 if(p[0]!=="127")return p[0]+"."+p[1]+"."+p[2];
             }
@@ -2138,7 +2177,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "background:rgba(0,200,80,.18);border:1px solid rgba(0,200,80,.35);border-radius:6px;" +
             "padding:3px 8px;font-size:10px;color:rgba(0,220,80,.9);font-family:monospace;" +
             "pointer-events:none;transition:opacity .5s;opacity:1';" +
-            "_badge.textContent='\\u21bb auto';" +
+            "_badge.textContent=(typeof window.__recargaAutoDesligada==='function'&&window.__recargaAutoDesligada())?'\\u23f8 manual':'\\u21bb auto';" +
             "document.body.appendChild(_badge);" +
             "setTimeout(function(){_badge.style.opacity='0.18';},3000);" +
             "}catch(_){}" +
@@ -2170,8 +2209,33 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             // Recarregamento automático (v2.17.0): antes, a página guarda rolagem e
             // filtros (window.__antesRecarga, do gerador 3.19.0+) — a nova volta ao mesmo
             // ponto, sem animações de entrada (não "pisca"). Sem a função, recarrega igual.
-            "var _recarregar=function(){try{if(typeof window.__antesRecarga==='function')window.__antesRecarga();}catch(_){}" +
+            // Recarregar ao detectar mudanças (v2.20.0): com a opção DESLIGADA no aparelho
+            // (menu Tema → Atualização; gerador 3.23.0+), a página não recarrega sozinha —
+            // filtros, rolagem e janelas abertas ficam como estão; aparece o aviso "Há
+            // vendas novas" com o botão Atualizar. forcar=true ignora a opção.
+            "var _recPend=false;" +
+            "var _recDesl=function(){try{return typeof window.__recargaAutoDesligada==='function'&&window.__recargaAutoDesligada();}catch(_){return false;}};" +
+            "var _recAviso=function(){_recPend=true;try{" +
+            "var a=document.getElementById('__srv_novas');if(a){a.style.display='flex';return;}" +
+            "a=document.createElement('div');a.id='__srv_novas';a.setAttribute('role','status');" +
+            "a.style.cssText='position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:2147483646;display:flex;align-items:center;gap:10px;" +
+            "max-width:calc(100vw - 24px);padding:8px 8px 8px 14px;border-radius:999px;background:#0f172a;color:#f1f5f9;border:1px solid rgba(34,197,94,.55);" +
+            "box-shadow:0 8px 30px rgba(0,0,0,.55);font:600 13px Inter,Arial,sans-serif';" +
+            "var t=document.createElement('span');t.textContent='\\u25cf H\\u00e1 vendas novas';t.style.cssText='color:#4ade80;white-space:nowrap';a.appendChild(t);" +
+            "var b=document.createElement('button');b.type='button';b.textContent='Atualizar';" +
+            "b.style.cssText='border:0;border-radius:999px;padding:6px 14px;background:#22c55e;color:#04210f;font:700 13px Inter,Arial,sans-serif;cursor:pointer';" +
+            "b.onclick=function(){_recarregar(true);};a.appendChild(b);" +
+            "var x=document.createElement('button');x.type='button';x.textContent='\\u00d7';x.setAttribute('aria-label','Ocultar aviso');" +
+            "x.style.cssText='border:0;background:none;color:#94a3b8;font-size:18px;line-height:1;padding:2px 6px;cursor:pointer';" +
+            "x.onclick=function(){a.style.display='none';};a.appendChild(x);" +
+            "document.body.appendChild(a);}catch(_){}};" +
+            "var _recarregar=function(forcar){" +
+            "if(!forcar&&_recDesl()){_recAviso();return;}" +
+            "try{if(typeof window.__antesRecarga==='function')window.__antesRecarga();}catch(_){}" +
             "window.location.replace(window.location.href);};" +
+            // Chamada pelo menu ao trocar a opção: ligou com venda pendente → atualiza já.
+            "window.__srvRecargaMudou=function(lig){try{var bd=document.getElementById('__srv_badge');if(bd)bd.textContent=lig?'\\u21bb auto':'\\u23f8 manual';}catch(_){}" +
+            "if(lig&&_recPend)_recarregar(true);};" +
             // SSE (primário)
             "var _es=null,_connTry=0;" +
             "var _conn=function(){" +
@@ -2240,7 +2304,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "_pollErros=0;_srvErroDesde=0;" +
             // Servidor voltou depois de ter caído/encerrado: recarrega para
             // mostrar os dados atuais (e tirar o aviso).
-            "if(_srvFora){_recarregar();return;}" +
+            "if(_srvFora){_recarregar(true);return;}" +
             "if(d.correcoes&&d.correcoes.length){" +
             "var _deveReload=false;" +
             "d.correcoes.forEach(function(c){" +
@@ -2266,7 +2330,7 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "}catch(_){}" +
             "if(c.reload)_deveReload=true;" +
             "});" +
-            "if(_deveReload){setTimeout(_recarregar,800);}}" +
+            "if(_deveReload){setTimeout(function(){_recarregar();},800);}}" +
             "if(d.qt>=0&&(" +
             // Mecanismo 1 (primário): changeTs > _loadTs — detecta mudanças ocorridas
             // APÓS esta página ter sido carregada, mesmo que _q===d.qt (HTML já atualizado).
@@ -4160,9 +4224,10 @@ var _ipDaRequisicao = function(req) {
 // Rede local (ou a própria máquina). Endereços de fora da rede local não
 // podem reiniciar nem encerrar o servidor.
 var _requisicaoDaRedeLocal = function(req) {
+    if (_viaProxy(req)) return false;   // v2.20.0: túnel/proxy = internet
     var bruto = (req.socket && req.socket.remoteAddress) || "";
     var ip = bruto.replace(/^::ffff:/, "");
-    var local = /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || bruto === "::1";
+    var local = /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || bruto === "::1" || _ehIPTailscale(ip);
     return local || !_maquinaIP || BIND_ADDR !== "0.0.0.0";
 };
 
@@ -4391,7 +4456,7 @@ var _DISP_INCLUIR_LOCAL = process.env.RELATORIO_DISP_LOCAL === "1";
 
 var _dispEhEstaMaquina = function(ip) {
     if (_DISP_INCLUIR_LOCAL) return false;
-    return /^127\./.test(ip) || ip === "::1" || ip === "local" || !!(_maquinaIP && ip === _maquinaIP);
+    return /^127\./.test(ip) || ip === "::1" || ip === "local" || !!(_maquinaIP && ip === _maquinaIP) || (_ehIPTailscale(ip) && ip === _ipTailscaleCache());
 };
 
 // User-Agent → tipo, modelo, sistema e navegador (só para exibição).
@@ -4763,7 +4828,7 @@ var _cookieAparelho = function(req) {
     return m ? m[1] : "";
 };
 // A requisição veio do computador do servidor? (localhost ou o IP desta máquina)
-var _ehComputadorServidor = function(req) { return _dispEhEstaMaquina(_ipDaRequisicao(req)); };
+var _ehComputadorServidor = function(req) { return !_viaProxy(req) && _dispEhEstaMaquina(_ipDaRequisicao(req)); };
 // Chave das preferências de quem pediu: cookie; sem cookie, o IP.
 var _prefsChaveDe = function(req) { return req._apCookie || ("ip:" + _ipDaRequisicao(req)); };
 // Padrão do servidor (config.json) — vale para todo aparelho sem preferência própria.
@@ -5951,7 +6016,15 @@ var server=http.createServer(function(req,res){
     // máquina na rede — o celular precisa estar no mesmo Wi-Fi.
     if((rota==="/qr.svg" || rota==="/qr" || rota==="/api/qr") && req.method==="GET"){
         var _qrUrl = _qrEndereco(req);
-        if (rota === "/api/qr") { sendJson({ok:true, url:_qrUrl}); return; }
+        var _qrTs = _ipTailscale();
+        var _qrExt = _qrTs ? "http://" + _qrTs + ":" + PORT + "/" : "";
+        if (rota === "/api/qr") { sendJson({ok:true, url:_qrUrl, externo:_qrExt || null}); return; }
+        if (rota === "/qr.svg" && parsed.searchParams.get("externo") === "1") {
+            var _qrImgExt = _qrExt ? _qrSvg(_qrExt, 0) : "";
+            if (!_qrImgExt) { sendJson({ok:false, erro:"Tailscale não está conectado nesta máquina."}, 404); return; }
+            res.writeHead(200, {"Content-Type":"image/svg+xml; charset=utf-8", "Cache-Control":"no-store"});
+            res.end(_qrImgExt); return;
+        }
         var _qrImg = _qrSvg(_qrUrl, rota === "/qr" ? 300 : 0);
         if (!_qrImg) { sendJson({ok:false, erro:"Endereço longo demais para o QR code."}, 500); return; }
         if (rota === "/qr.svg") {
@@ -5975,6 +6048,18 @@ var server=http.createServer(function(req,res){
             '<div class="u" id="u">' + escH(_qrUrl) + '</div>' +
             '<p>O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina.</p>' +
             '<button type="button" onclick="try{navigator.clipboard.writeText(document.getElementById(\'u\').textContent);this.textContent=\'Copiado!\'}catch(e){}">Copiar endereço</button>' +
+            // Fora da loja (v2.20.0): QR do endereço do Tailscale, ou como ativar.
+            '<hr style="border:0;border-top:1px solid #1e2b47;margin:22px 0 14px">' +
+            '<h1 style="font-size:17px">Fora da loja (qualquer lugar)</h1>' +
+            (_qrExt
+                ? '<p>Com o app <b>Tailscale</b> ligado no celular (mesma conta desta máquina):</p>' +
+                  '<div class="q">' + _qrSvg(_qrExt, 300) + '</div>' +
+                  '<div class="u" id="u2">' + escH(_qrExt) + '</div>' +
+                  '<button type="button" onclick="try{navigator.clipboard.writeText(document.getElementById(\'u2\').textContent);this.textContent=\'Copiado!\'}catch(e){}">Copiar endereço</button>'
+                : '<p style="text-align:left">1. Instale o <b>Tailscale</b> nesta máquina (tailscale.com/download) e entre com uma conta.<br>' +
+                  '2. Instale o app <b>Tailscale</b> no celular e entre com a <b>mesma conta</b>.<br>' +
+                  '3. Recarregue esta página: aparece aqui o QR code para usar em qualquer lugar (4G, outro Wi-Fi).</p>' +
+                  '<p>Grátis, criptografado e sem abrir porta no roteador — só os seus aparelhos entram.</p>') +
             '</div></body></html>');
         return;
     }

@@ -1,18 +1,14 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.22.1
+ * @version 3.23.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.22.1 - 2026-10-24 02:30 - Proibidos: "Importar do servidor" e "Juntar com os do servidor".
- *   3.22.0 - 2026-10-24 01:30 - Preferências por aparelho.
- *     - Num aparelho da rede, "Configurações" vira "Minhas preferências": duração dos avisos,
- *       proibidos e teclas de atalho valem só para ele (só o que foi mexido; o resto segue o
- *       padrão do servidor). Nome, intervalo, log, janela e ícone só no computador do servidor.
- *     - No computador do servidor: "Aplicar a todos os aparelhos" e editar as preferências de
- *       um aparelho conectado (também por /?cfgAparelho=, aberto pela bandeja).
- *     - As preferências do aparelho já vêm na página (sem piscar) e mudam ao vivo pelo SSE.
+ *   3.23.0 - 2026-10-28 18:00 - "Recarregar relatório ao detectar mudanças" e QR fora da loja.
+ *     - Menu Tema → Atualização: caixa (por aparelho). Desligada, a página não recarrega
+ *       sozinha (filtros, busca, rolagem e janelas ficam); aparece "Há vendas novas".
+ *     - Janela "Abrir no celular": abas "Na loja (Wi-Fi)" e "Fora da loja" (Tailscale).
  */
 
 (function() {
@@ -20,7 +16,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.22.1";
+    const SCRIPT_VERSION = "3.23.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2307,6 +2303,9 @@
       try { var _z = parseFloat(localStorage.getItem("fdb_zoom_mob")); if (_z >= 0.8 && _z <= 1.4) { document.documentElement.style.setProperty("--zoom-mob", String(_z)); document.documentElement.style.setProperty("--zoom-bar", String(Math.min(_z, 1.2))); } } catch (e) {}
       // No computador (v3.21.0): "fdb_zoom_pc", separado do celular — cada tela pede um tamanho.
       try { var _zp = parseFloat(localStorage.getItem("fdb_zoom_pc")); if (_zp >= 0.8 && _zp <= 1.4) document.documentElement.style.setProperty("--zoom-pc", String(_zp)); } catch (e) {}
+      // RECARREGAR AO DETECTAR MUDANÇAS (v3.23.0): "fdb_recarga_auto" = "0" desliga neste
+      // aparelho (padrão: ligado). Lido pelo script do servidor antes de recarregar.
+      window.__recargaAutoDesligada = function() { try { return localStorage.getItem("fdb_recarga_auto") === "0"; } catch (e) { return false; } };
     </script>
 <style>
 :root {
@@ -3303,6 +3302,9 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 .qrUrl { font: 600 15px 'JetBrains Mono', Consolas, monospace; color: var(--text-main); background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; text-align: center; word-break: break-all; }
 .qrDica { font-size: 12.5px; color: var(--text-muted); text-align: center; line-height: 1.5; }
 .tmZoomOps .tmPerfOp { flex: 1 1 0; }
+.tmRecLbl { display: flex; align-items: flex-start; gap: 10px; padding: 8px 2px 2px; font-size: 13px; font-weight: 600; line-height: 1.35; cursor: pointer; color: var(--text-main); }
+.tmRecLbl input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+.qrAbas { display: flex; gap: 6px; } .qrAbas .qrAba { flex: 1 1 0; }
 .tmZoomOps .tmZoomOp[disabled] { opacity: 0.4; cursor: default; }
 .tmPerfDica { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 /* Menu auto-ajustável (v3.14.0): se não couber na altura da janela, o JS (_tmAjustar) aplica
@@ -3852,6 +3854,10 @@ const _tmConstruir = () => {
         +   '</div>'
         +   '<div class="tmPerfDica">Leve: sem animações, desfoque nem sombras pesadas — para computadores, notebooks e celulares mais fracos. O automático detecta sozinho.</div>'
         + '</div>'
+        + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Atualização</span><span class="tmAtual tmRecEstado"></span></div>'
+        +   '<label class="tmRecLbl"><input type="checkbox" id="tmRecAuto"><span>Recarregar relatório ao detectar mudanças</span></label>'
+        +   '<div class="tmPerfDica">Desligado: a página não recarrega sozinha — filtros, busca, rolagem e janelas abertas ficam como estão. Quando entrar venda, aparece "Há vendas novas" com o botão Atualizar. Vale só para este aparelho.</div>'
+        + '</div>'
         + '<div class="tmPerf tmZoom"><div class="tmHead tmPerfHead"><span class="tmTitulo">Tamanho do texto</span><span class="tmAtual tmZoomEstado"></span></div>'
         +   '<div class="tmPerfOps tmZoomOps" role="group" aria-label="Tamanho do texto">'
         +     '<button type="button" class="tmPerfOp tmZoomOp" data-zoom="-1" aria-label="Diminuir o texto">A−</button>'
@@ -3878,6 +3884,9 @@ const _tmConstruir = () => {
     _perfMarcarMenu();
     _visMarcarMenu();
     _zoomMarcarMenu();
+    _recMarcarMenu();
+    const _recCb = m.querySelector("#tmRecAuto");
+    if (_recCb) _recCb.addEventListener("change", () => _recEscolher(_recCb.checked));
     return m;
 };
 // Posição: abaixo do botão, borda direita alinhada com a dele e sempre dentro da janela; se abaixo
@@ -3953,6 +3962,7 @@ const _tmAbrir = () => {
     _perfMarcarMenu();
     _visMarcarMenu();
     _zoomMarcarMenu();
+    _recMarcarMenu();
     _tmAberto = true;
     _tmAtualizarBotao();
     _tmPosicionar();
@@ -6217,6 +6227,22 @@ const _zoomMarcarMenu = () => {
         if (d === 0) b.setAttribute("aria-pressed", z === 1 ? "true" : "false");
     });
 };
+// ── Recarregar ao detectar mudanças (v3.23.0) ──────────────────────────────
+// Por aparelho (localStorage). Desligado: o script do servidor mostra "Há vendas
+// novas" + Atualizar em vez de recarregar (ver window.__recargaAutoDesligada no <head>).
+const _recLigada = () => !(typeof window.__recargaAutoDesligada === "function" && window.__recargaAutoDesligada());
+const _recMarcarMenu = () => {
+    const m = document.getElementById("tmMenu"); if (!m) return;
+    const lig = _recLigada();
+    const cb = m.querySelector("#tmRecAuto"); if (cb) cb.checked = lig;
+    const est = m.querySelector(".tmRecEstado"); if (est) est.textContent = lig ? "Automática" : "Manual";
+};
+const _recEscolher = (ligar) => {
+    try { localStorage.setItem("fdb_recarga_auto", ligar ? "1" : "0"); } catch (e) {}
+    _recMarcarMenu();
+    toast("Atualização", ligar ? "A página recarrega sozinha quando entrar venda." : "A página não recarrega mais sozinha — use Atualizar quando aparecer “Há vendas novas”.");
+    try { if (typeof window.__srvRecargaMudou === "function") window.__srvRecargaMudou(!!ligar); } catch (e) {}
+};
 const _visMarcarMenu = () => {
     const m = document.getElementById("tmMenu"); if (!m) return;
     const v = _visPref();
@@ -6994,10 +7020,15 @@ var __abrirModalQr = function() {
           '<div class="msub">Aponte a câmera do celular para o código.</div></div>' +
           '<button class="btn" id="qrFechar" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</button></div>' +
           '<div class="mbody" style="gap:12px;padding:16px 18px 20px">' +
+            // v3.23.0: "Fora da loja" = endereço do Tailscale (rede privada; funciona no 4G/outro Wi-Fi).
+            '<div class="tmPerfOps qrAbas" role="tablist" aria-label="Onde o celular está">' +
+              '<button type="button" class="tmPerfOp qrAba" role="tab" data-aba="loja" aria-checked="true">Na loja (Wi-Fi)</button>' +
+              '<button type="button" class="tmPerfOp qrAba" role="tab" data-aba="fora" aria-checked="false">Fora da loja</button>' +
+            '</div>' +
             '<div class="qrCaixa"><img id="qrImg" alt="QR code do endereço do relatório" src="/qr.svg?t=' + Date.now() + '"></div>' +
             '<div class="qrUrl" id="qrUrl">…</div>' +
             '<button class="btn" id="qrCopiar" type="button" style="width:100%;justify-content:center;min-height:42px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar endereço</button>' +
-            '<div class="qrDica">O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.</div>' +
+            '<div class="qrDica" id="qrDica">O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.</div>' +
           '</div>' +
         '</div>';
     document.body.appendChild(_bg);
@@ -7012,11 +7043,30 @@ var __abrirModalQr = function() {
     _img.addEventListener("error", function() {
         var cx = _img.parentNode; if (cx) cx.innerHTML = '<div class="qrDica" style="padding:90px 10px">Não foi possível gerar o QR code — o servidor está ligado?</div>';
     });
+    var _qrDados = { url: location.origin + "/", externo: null };
+    var _DICA_LOJA = 'O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.';
+    var _DICA_FORA = 'Funciona em qualquer lugar (4G, outro Wi-Fi) com o app <b>Tailscale</b> ligado no celular, na <b>mesma conta</b> desta máquina. Rede privada e criptografada — só os seus aparelhos entram.';
+    var _DICA_SEM_TS = '<b>Para acessar fora da loja:</b><br>1. Instale o <b>Tailscale</b> nesta máquina (tailscale.com/download) e entre com uma conta.<br>2. Instale o app <b>Tailscale</b> no celular e entre com a <b>mesma conta</b>.<br>3. Abra esta janela de novo: aparece o QR code para usar em qualquer lugar.<br>Grátis, criptografado e sem abrir porta no roteador.';
+    var _abaQr = "loja";
+    var _mostrarAba = function(aba) {
+        _abaQr = aba;
+        _bg.querySelectorAll(".qrAba").forEach(function(b) { b.setAttribute("aria-checked", b.getAttribute("data-aba") === aba ? "true" : "false"); });
+        var u = document.getElementById("qrUrl"), d = document.getElementById("qrDica"), cx = _img.parentNode, cp = document.getElementById("qrCopiar");
+        var fora = aba === "fora", end = fora ? _qrDados.externo : _qrDados.url;
+        if (cx) cx.style.display = end ? "" : "none";
+        if (u) { u.style.display = end ? "" : "none"; u.textContent = end || ""; }
+        if (cp) cp.style.display = end ? "" : "none";
+        if (end) _img.src = "/qr.svg?" + (fora ? "externo=1&" : "") + "t=" + Date.now();
+        if (d) d.innerHTML = fora ? (end ? _DICA_FORA : _DICA_SEM_TS) : _DICA_LOJA;
+    };
+    _bg.querySelectorAll(".qrAba").forEach(function(b) { b.addEventListener("click", function() { _mostrarAba(b.getAttribute("data-aba")); }); });
     _fetchJSON("/api/qr", {cache: "no-store"}).then(function(r) {
-        var u = document.getElementById("qrUrl"); if (u) u.textContent = (r && r.url) ? r.url : location.origin + "/";
+        if (r && r.url) _qrDados.url = r.url;
+        _qrDados.externo = (r && r.externo) ? String(r.externo) : null;
+        var u = document.getElementById("qrUrl"); if (u && _abaQr === "loja") u.textContent = _qrDados.url;
     }).catch(function() { var u = document.getElementById("qrUrl"); if (u) u.textContent = location.origin + "/"; });
     document.getElementById("qrCopiar").addEventListener("click", function() {
-        var u = document.getElementById("qrUrl"); if (!u) return;
+        var u = document.getElementById("qrUrl"); if (!u || !u.textContent) return;
         copiarTexto(u.textContent); toast("Copiado", "Endereço do relatório: " + u.textContent);
     });
 };

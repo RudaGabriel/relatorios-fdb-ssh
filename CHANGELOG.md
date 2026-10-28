@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.19.1 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.22.1 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.20.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.23.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -28,6 +28,20 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.20.0 — 2026-10-28 18:00
+
+**Acesso de qualquer lugar (Tailscale) e recarga automática opcional.**
+
+- **Fora da loja com o Tailscale.** O Tailscale cria uma rede privada e criptografada entre a máquina da loja e o celular (cada um com o app, na mesma conta), sem abrir porta no roteador e sem expor nada à internet.
+  - Os endereços dele (`100.64.0.0/10` e `fd7a:115c:a1e0::/48`) passam a valer como rede local.
+  - O IP do Tailscale desta máquina conta como o próprio computador do servidor.
+  - O IP do Tailscale nunca vira o "IP da loja" (`maquinaIP`) nem entra na busca do banco pela rede.
+- `/qr` ganhou a seção **"Fora da loja"**: mostra o QR code do endereço do Tailscale, ou o passo a passo para ativar. `/api/qr` traz o campo `externo`, e `/qr.svg?externo=1` gera a imagem.
+- **Segurança com túnel ou proxy** (cloudflared, ngrok, proxy reverso nesta máquina): um pedido com `X-Forwarded-For`, `Forwarded`, `CF-Connecting-IP`, `X-Real-IP` ou `True-Client-IP` chega de `127.0.0.1`, mas vem da internet. Ele nunca é tratado como o computador do servidor nem como rede local. Antes, ganharia acesso total.
+- **Recarga automática respeita o aparelho.** Com a opção desligada (gerador 3.23.0+), a página não recarrega sozinha. Aparece o aviso fixo "● Há vendas novas" com o botão **Atualizar** (e × para ocultar). O selo vira "⏸ manual".
+  - Religar a opção com venda pendente atualiza na hora.
+  - A volta do servidor depois de uma queda continua recarregando sempre.
 
 ### 2.19.1 — 2026-10-24 02:30
 
@@ -218,6 +232,15 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.23.0 — 2026-10-28 18:00
+
+**"Recarregar relatório ao detectar mudanças" e QR code fora da loja.**
+
+- Menu **Tema → Atualização** ganhou a caixa **"Recarregar relatório ao detectar mudanças"**. É ligada por padrão e vale só para este aparelho (`fdb_recarga_auto`).
+  - Desligada, a página não recarrega sozinha: filtros, busca, rolagem, painel e janelas abertas ficam como estão.
+  - Quando entra venda, aparece "Há vendas novas" com o botão Atualizar. Ao atualizar, busca e filtros são restaurados como na recarga automática.
+- Janela **"Abrir no celular"** ganhou duas abas: **Na loja (Wi-Fi)** e **Fora da loja**. A segunda mostra o QR code do endereço do Tailscale, ou o passo a passo para ativar.
 
 ### 3.22.1 — 2026-10-24 02:30
 
