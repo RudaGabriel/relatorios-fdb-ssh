@@ -7,10 +7,10 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.20.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.24.1 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.21.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.25.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
-| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.0 |
+| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.1.0 |
@@ -28,6 +28,15 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.21.0 — 2026-10-28 21:00
+
+**Apelido do aparelho.**
+
+- Cada aparelho pode ganhar um apelido (ex.: "Celular do Ruda"). Ele é guardado em `preferencias-aparelhos.json`, no campo `apelido`, com até 40 caracteres e sem caracteres de controle, aspas ou `< >`. O nome real descoberto na rede (Bonjour/NetBIOS/DNS) não muda.
+- O apelido aparece no log (`"Celular do Ruda" — iphone-xr (100.103.59.92)`), em `/api/config` (`aparelho.apelido`) e em `/api/dispositivos` (`apelido`).
+- O próprio aparelho define o apelido em "Minhas preferências", e o computador do servidor pode definir ao editar o aparelho (`apelido` no POST de `/api/config`; vazio tira o apelido).
+- "Voltar ao padrão do servidor" e "Aplicar a todos os aparelhos" mantêm o apelido, porque ele não é preferência do relatório.
 
 ### 2.20.0 — 2026-10-28 18:00
 
@@ -233,6 +242,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.25.0 — 2026-10-28 21:00
+
+**"Nome deste aparelho" em Minhas preferências.**
+
+- Novo campo no topo de "Minhas preferências" para dar um apelido ao aparelho (ex.: "Celular do Ruda"). O texto explica que o nome real (ex.: "iphone-xr") não muda. Salvar só o apelido também funciona.
+- O campo aparece também quando o computador do servidor edita um aparelho. A lista de aparelhos conectados no modal mostra o apelido.
 
 ### 3.24.1 — 2026-10-28 20:00
 
@@ -617,6 +633,10 @@ Cliente de linha de comando.
 ## `iniciar-tray.ps1`
 
 Ícone da bandeja.
+
+### 1.6.1 — 2026-10-28 21:00
+
+- Dispositivos conectados: a coluna "Nome do aparelho" mostra o apelido, com o nome real entre parênteses (ex.: `Celular do Ruda (iphone-xr)`).
 
 ### 1.6.0 — 2026-10-24 01:30
 
