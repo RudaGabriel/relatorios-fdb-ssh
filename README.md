@@ -4,8 +4,8 @@
 
 ### Painel de vendas em tempo real para lojas que usam o Small Commerce (Firebird)
 
-<img alt="servidor: v2.22.0" src="https://img.shields.io/badge/servidor-v2.22.0-2563EB?style=flat">
-<img alt="gerador: v3.26.2" src="https://img.shields.io/badge/gerador-v3.26.2-2563EB?style=flat">
+<img alt="servidor: v2.23.0" src="https://img.shields.io/badge/servidor-v2.23.0-2563EB?style=flat">
+<img alt="gerador: v3.27.0" src="https://img.shields.io/badge/gerador-v3.27.0-2563EB?style=flat">
 <img alt="bandeja: v1.6.1" src="https://img.shields.io/badge/bandeja-v1.6.1-2563EB?style=flat">
 <img alt="plataforma: Windows 10 | 11" src="https://img.shields.io/badge/plataforma-Windows%2010%20%7C%2011-0078D4?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nd2hpdGUnPjxyZWN0IHg9JzMnIHk9JzMnIHdpZHRoPSc4JyBoZWlnaHQ9JzgnLz48cmVjdCB4PScxMycgeT0nMycgd2lkdGg9JzgnIGhlaWdodD0nOCcvPjxyZWN0IHg9JzMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPHJlY3QgeD0nMTMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPC9zdmc%2B&logoColor=white">
 <img alt="idioma: pt-BR" src="https://img.shields.io/badge/idioma-pt--BR-16A34A?style=flat">
@@ -202,7 +202,9 @@ Para abrir o relatório no 4G ou em outro Wi-Fi, use o **Tailscale** (gratuito).
 
 1. **No computador do servidor:** instale o Tailscale (<https://tailscale.com/download>) e entre com uma conta (Google, Microsoft ou Apple). No ícone dele, ative **Preferences → Run unattended**. No painel <https://login.tailscale.com/admin/machines>, em **⋯ → Disable key expiry** no computador da loja, para ele não se desconectar sozinho depois de 180 dias.
 2. **No celular:** instale o app **Tailscale**, entre com a **mesma conta**, permita a configuração de VPN e deixe-o ligado (no iPhone dá para ativar "VPN On Demand").
-3. **No relatório:** **Celular → aba "Fora da loja"** (ou bandeja → *Abrir no celular*) e escaneie o QR code. O endereço é `http://100.x.y.z:7734/`.
+3. **No relatório:** **Celular → aba "Fora da loja"** (ou bandeja → *Abrir no celular*) e escaneie o QR code. O endereço usa o **nome** da máquina no Tailscale, ex.: `http://pc-loja.tailxxxx.ts.net:7734/` (o IP `http://100.x.y.z:7734/` também funciona).
+
+> **O endereço muda?** Não. O nome (MagicDNS) é **fixo**: é o nome da máquina + o nome da sua rede no Tailscale, e só muda se alguém renomear um dos dois no painel, ou se a máquina for removida e adicionada de novo. O IP `100.x` também é fixo nessas mesmas condições. Pode salvar nos favoritos ou na tela de início do celular. Se o nome não aparecer, ative o **MagicDNS** em <https://login.tailscale.com/admin/dns> (vem ligado por padrão nas contas novas).
 
 Não precisa reiniciar o servidor nem mexer no roteador: o sistema detecta o Tailscale sozinho, e a regra de firewall do instalador já vale para essa rede. Para outras pessoas, convide-as em <https://login.tailscale.com/admin/users>.
 
@@ -341,7 +343,7 @@ Tudo responde na porta configurada (padrão `7734`). O **`api.ps1`** (PowerShell
 | `/periodo?i=AAAA-MM-DD&f=AAAA-MM-DD` | GET | Relatório de um período (sem parâmetros: formulário) |
 | `/atualizar` | GET | Descarta o cache de hoje e regenera |
 | `/config` · `/selecionar-fdb` | GET | Páginas de configurações e de seleção do banco |
-| `/qr` · `/qr.svg` · `/api/qr` | GET | QR code do endereço desta máquina na rede (página, imagem, texto); `/qr.svg?externo=1` e o campo `externo` de `/api/qr` = endereço do Tailscale |
+| `/qr` · `/qr.svg` · `/api/qr` | GET | QR code do endereço desta máquina na rede (página, imagem, texto); `/qr.svg?externo=1` e os campos `externo`/`externoNome`/`externoIP` de `/api/qr` = endereço do Tailscale (com o nome MagicDNS, fixo) |
 | `/pronto?k=CHAVE` | GET | Estado de uma geração em andamento |
 | `/api/status` | GET | Quantidade e total do dia, por tipo, e avisos de correção |
 | `/api/db-status` | GET | Estado da conexão com o banco |
@@ -387,7 +389,7 @@ Tudo vai para **`relatorio.log`**, na pasta do sistema, no formato `[DD-MM-AAAA]
 | `[DEBUG]` · `[SISTEMA]` | Detalhes (com `"logDebug": true`) · demais mensagens |
 
 ```
-[07-10-2026] [08:00:01] [SERVIDOR] === Servidor iniciado 07/10/2026 === Servidor v2.22.0 | Gerador v3.26.2
+[07-10-2026] [08:00:01] [SERVIDOR] === Servidor iniciado 07/10/2026 === Servidor v2.23.0 | Gerador v3.27.0
 [07-10-2026] [08:00:06] [BANCO] Índices: NFCE.DATA, PAGAMENT.DATA — ok (consultas rápidas).
 [07-10-2026] [12:43:31] [VENDAS] FastPoll: Gerencial: vendas 30 → 31 (↑ +1) ... → regerando.
 ```
@@ -468,7 +470,7 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 28 testes cobrem 
 | "Banco de dados não encontrado" | Escolha o `SMALL.FDB` na página ou pela bandeja; confira se o Firebird está rodando (porta 3050) |
 | "Falha ao conectar" / senha incorreta | Ajuste `fbUser` e `fbPass` no `config.json` e reinicie pela bandeja |
 | Outro computador ou celular não abre | Mesmo Wi-Fi/rede? Porta 7734 no firewall (rode o instalador como administrador); confira o IP em *Ferramentas → Informações* |
-| Celular não abre fora da loja | App Tailscale ligado e na mesma conta? No computador, o Tailscale está conectado ("Run unattended")? Use o QR da aba *Fora da loja* |
+| Celular não abre fora da loja | App Tailscale ligado e na mesma conta? No computador, o Tailscale está conectado ("Run unattended")? Use o QR da aba *Fora da loja*. O nome não abre? Tente o IP mostrado logo abaixo e confira se o MagicDNS está ligado no painel |
 | Um aparelho mostra avisos/proibidos diferentes dos outros | Ele tem preferências próprias: *Minhas preferências → Voltar ao padrão do servidor*, ou bandeja → *Dispositivos conectados → Voltar ao padrão* |
 | Quero que a página não recarregue | *Configurações → Nesta tela → Atualização*: desligue "Recarregar relatório ao detectar mudanças" (as vendas continuam entrando) |
 | Relatório de período longo não termina | Aumente `spawnTimeoutMs` (até 600000) |

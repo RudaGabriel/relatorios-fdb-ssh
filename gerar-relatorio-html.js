@@ -1,11 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.26.2
+ * @version 3.27.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.26.2 - 2026-10-29 10:00 - Botões "Importar" e "Juntar" (proibidos) sempre lado a lado.
+ *   3.27.0 - 2026-10-29 12:00 - "Fora da loja" mostra o nome fixo do Tailscale (e o IP como alternativa).
  */
 
 (function() {
@@ -13,7 +13,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.26.2";
+    const SCRIPT_VERSION = "3.27.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -7172,7 +7172,7 @@ var __abrirModalQr = function() {
     _img.addEventListener("error", function() {
         var cx = _img.parentNode; if (cx) cx.innerHTML = '<div class="qrDica" style="padding:90px 10px">Não foi possível gerar o QR code — o servidor está ligado?</div>';
     });
-    var _qrDados = { url: location.origin + "/", externo: null };
+    var _qrDados = { url: location.origin + "/", externo: null, externoNome: null, externoIP: null };
     var _DICA_LOJA = 'O celular precisa estar no <b>mesmo Wi-Fi</b> desta máquina. Também dá para digitar o endereço no navegador do celular.';
     var _DICA_FORA = 'Funciona em qualquer lugar (4G, outro Wi-Fi) com o app <b>Tailscale</b> ligado no celular, na <b>mesma conta</b> desta máquina. Rede privada e criptografada — só os seus aparelhos entram.';
     var _DICA_SEM_TS = '<b>Para acessar fora da loja:</b><br>1. Instale o <b>Tailscale</b> nesta máquina (tailscale.com/download) e entre com uma conta.<br>2. Instale o app <b>Tailscale</b> no celular e entre com a <b>mesma conta</b>.<br>3. Abra esta janela de novo: aparece o QR code para usar em qualquer lugar.<br>Grátis, criptografado e sem abrir porta no roteador.';
@@ -7186,12 +7186,18 @@ var __abrirModalQr = function() {
         if (u) { u.style.display = end ? "" : "none"; u.textContent = end || ""; }
         if (cp) cp.style.display = end ? "" : "none";
         if (end) _img.src = "/qr.svg?" + (fora ? "externo=1&" : "") + "t=" + Date.now();
-        if (d) d.innerHTML = fora ? (end ? _DICA_FORA : _DICA_SEM_TS) : _DICA_LOJA;
+        if (d) d.innerHTML = fora
+            ? (end ? _DICA_FORA + (_qrDados.externoNome
+                ? '<br><br>Endereço <b>fixo</b> (nome do Tailscale — não muda sozinho). Também funciona pelo IP: <b>' + esc(String(_qrDados.externoIP || "")) + '</b>'
+                : '<br><br>Dica: ative o <b>MagicDNS</b> no painel do Tailscale para usar um nome fixo no lugar do IP.') : _DICA_SEM_TS)
+            : _DICA_LOJA;
     };
     _bg.querySelectorAll(".qrAba").forEach(function(b) { b.addEventListener("click", function() { _mostrarAba(b.getAttribute("data-aba")); }); });
     _fetchJSON("/api/qr", {cache: "no-store"}).then(function(r) {
         if (r && r.url) _qrDados.url = r.url;
         _qrDados.externo = (r && r.externo) ? String(r.externo) : null;
+        _qrDados.externoNome = (r && r.externoNome) ? String(r.externoNome) : null;
+        _qrDados.externoIP = (r && r.externoIP) ? String(r.externoIP) : null;
         var u = document.getElementById("qrUrl"); if (u && _abaQr === "loja") u.textContent = _qrDados.url;
     }).catch(function() { var u = document.getElementById("qrUrl"); if (u) u.textContent = location.origin + "/"; });
     document.getElementById("qrCopiar").addEventListener("click", function() {
