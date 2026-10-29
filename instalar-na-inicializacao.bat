@@ -142,19 +142,17 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.14.0
+:: instalar-na-inicializacao.bat                       v1.14.1
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
 :: (Historico completo das versoes: CHANGELOG.md no repositorio.)
-:: CHANGELOG 1.14.0 - 2026-10-29 - Microsoft Defender e o bootstrap.
-::   - launcher.path gravado em UTF-16 (por variavel de ambiente, sem escape):
-::     o bootstrap.vbs v1.2.0 le direto, sem ADODB.Stream (o Defender acusava
-::     a versao anterior como "Trojan:Script/ObfusScript.A!ml").
-::   - Confere o bootstrap de novo 2 s depois da copia (o antivirus apaga em
-::     seguida) e, se sumiu, explica a causa e o que fazer.
-::   - Alternativa sem tarefa: atalho .lnk na pasta Inicializar (em vez de um
-::     .vbs gerado, outro padrao que antivirus costuma bloquear).
+:: CHANGELOG 1.14.1 - 2026-10-29 - Primeira instalacao do Node.js.
+::   - Num computador sem Node, a 1a execucao parava em "Node.js nao foi
+::     instalado corretamente" e so' a 2a funcionava: o PATH desta janela era
+::     relido so' do sistema, sem expandir variaveis. Agora procura nas pastas
+::     conhecidas do Node, rele Machine + User expandidos e espera ate 30 s.
+::   - Cria %%APPDATA%%\npm antes do "npm install" (npm novo falhava com ENOENT).
 ::
 :: =========================================================
 
@@ -182,13 +180,32 @@ echo.
 powershell -NoProfile -ExecutionPolicy Bypass -NonInteractive ^
     -File "%~dp0_instalar-node.ps1"
 
-:: Atualiza PATH da sessao atual
-for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','Machine')"`) do (
-    set "PATH=%%P;%PATH%"
-)
-
+:: Atualiza o PATH desta janela (v1.14.1). Na primeira instalacao o Node
+:: acabou de entrar no PATH do sistema, mas esta janela ainda tem o antigo:
+:: antes so' o PATH "Machine" era relido, sem expandir %%SystemRoot%% e sem o
+:: PATH do usuario (winget pode instalar so' para o usuario) - e o instalador
+:: parava em "Node.js nao foi instalado corretamente" ate ser aberto de novo.
+:: Agora: pastas conhecidas do Node primeiro, depois Machine + User
+:: expandidos, e ate 30 s de espera (o instalador do Node termina de gravar
+:: os arquivos alguns segundos depois de devolver o controle).
+set "_NODE_TENT=0"
+set "_PATH_BASE=!PATH!"
+:node_path
+:: Recomeca do PATH original a cada volta (sem acumular repeticoes).
+set "PATH=!_PATH_BASE!"
+if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;!PATH!"
+if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "PATH=%ProgramFiles(x86)%\nodejs;!PATH!"
+if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "PATH=%LOCALAPPDATA%\Programs\nodejs;!PATH!"
+for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -Command "[Environment]::ExpandEnvironmentVariables([Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'))"`) do set "PATH=!PATH!;%%P"
 node --version >nul 2>&1
 if %errorlevel% equ 0 goto :node_ok
+set /a _NODE_TENT+=1
+if !_NODE_TENT! geq 6 goto :node_falhou
+echo Aguardando o Node.js terminar de instalar... ^(!_NODE_TENT!/5^)
+timeout /t 5 /nobreak >nul
+goto :node_path
+
+:node_falhou
 
 echo.
 echo ERRO: Node.js nao foi instalado corretamente.
@@ -210,6 +227,9 @@ if %errorlevel% equ 0 goto :modulos_ok
 
 echo Modulo node-firebird nao encontrado. Instalando...
 pushd "%~dp0"
+:: v1.14.1: num Node recem-instalado a pasta do npm do usuario ainda nao
+:: existe, e o npm falha com "ENOENT ... AppData\Roaming\npm".
+if not exist "%APPDATA%\npm" md "%APPDATA%\npm" >nul 2>&1
 
 call npm install node-firebird --prefer-offline >nul 2>&1
 if %errorlevel% neq 0 (

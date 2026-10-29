@@ -490,6 +490,7 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 28 testes cobrem 
 | Um aparelho mostra avisos/proibidos diferentes dos outros | Ele tem preferências próprias: *Minhas preferências → Voltar ao padrão do servidor*, ou bandeja → *Dispositivos conectados → Voltar ao padrão* |
 | Quero que a página não recarregue | *Configurações → Nesta tela → Atualização*: desligue "Recarregar relatório ao detectar mudanças" (as vendas continuam entrando) |
 | Relatório de período longo não termina | Aumente `spawnTimeoutMs` (até 600000) |
+| Instalação nova: "Node.js não foi instalado corretamente" na 1ª vez | Corrigido no instalador 1.14.1 (espera o Node terminar e relê o PATH). Se ainda acontecer, rode o instalador de novo |
 | Servidor não inicia no logon | Rode `instalar-na-inicializacao.bat` de novo e veja as linhas `[INSTALL]` e `[TRAY]` no log |
 | Continua iniciando sozinho após remover | Rode `remover-inicializacao.bat` como administrador e veja as linhas `[REMOVER]` |
 | Instalador: "falha ao criar o bootstrap" / antivírus acusa o `bootstrap.vbs` | Falso positivo. Em *Segurança do Windows → Proteção contra vírus e ameaças → Histórico de proteção*, escolha *Permitir no dispositivo* e rode o instalador de novo |
