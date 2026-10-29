@@ -2,15 +2,17 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.22.0
+ * @version 2.23.0
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.22.0 - 2026-10-28 22:00 - Recarga desligada: a venda nova entra sem recarregar a página.
- *     - Chama window.__atualizarSemRecarregar (gerador 3.26.0+); o aviso "Há vendas novas"
- *       fica só para quando a troca falhar. Selo do canto: "ao vivo".
+ *   2.23.0 - 2026-10-29 12:00 - Fora da loja pelo NOME do Tailscale (MagicDNS), fixo.
+ *     - "tailscale status --json" (ou DNS reverso em 100.100.100.100) → ex.: pc-loja.tailxxxx.ts.net;
+ *       sem nome, continua o IP 100.x. /api/qr traz externoNome e externoIP; log [REDE].
+ *     - Aparelho do Tailscale sem cookie recebe o mesmo identificador (IP fixo): trocar do IP
+ *       para o nome não perde apelido nem preferências.
  */
 
 
@@ -18,7 +20,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.22.0";
+const SERVER_VERSION = "2.23.0";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -752,6 +754,70 @@ var _ipTailscaleCache = function() {
     if (agora - _tsCache.ts > 30000) { _tsCache = { ip: _ipTailscale(), ts: agora }; }
     return _tsCache.ip;
 };
+// Nome MagicDNS desta máquina no Tailscale (v2.23.0) — ex.: "pc-loja.tailabc12.ts.net".
+// É FIXO: só muda se alguém renomear a máquina ou a rede (tailnet) no painel do
+// Tailscale, ou se a máquina for removida e adicionada de novo. Descoberto 1) pelo
+// próprio Tailscale ("tailscale status --json" → Self.DNSName) ou 2) por DNS reverso
+// no resolvedor do Tailscale (100.100.100.100). Sem nome (MagicDNS desligado, sem
+// Tailscale), o endereço "fora da loja" continua sendo o IP 100.x (também fixo).
+// Só leitura: nenhum comando muda nada no Tailscale. Cache de 10 min (falha: 1 min).
+var _tsDns = { nome: null, ip: null, ts: 0, ok: false, fila: null };
+var _tsNomeValido = function(n) {
+    n = String(n || "").trim().replace(/\.$/, "").toLowerCase();
+    return (n.length > 3 && n.length < 200 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(n)) ? n : "";
+};
+var _tsDescobrirNome = function(ip, cb) {
+    var feito = false;
+    var fim = function(n) { if (feito) return; feito = true; cb(_tsNomeValido(n) || null); };
+    var porDns = function() {
+        try {
+            var r = new (require("dns").Resolver)({ timeout: 1500, tries: 1 });
+            r.setServers(["100.100.100.100"]);
+            r.reverse(ip, function(err, nomes) { fim(!err && nomes && nomes[0] ? nomes[0] : ""); });
+        } catch (e) { fim(""); }
+    };
+    var bins = ["tailscale"];
+    if (process.platform === "win32") {
+        bins.unshift(path.join(process.env["ProgramFiles"] || "C:\\Program Files", "Tailscale", "tailscale.exe"));
+        if (process.env["ProgramFiles(x86)"]) bins.push(path.join(process.env["ProgramFiles(x86)"], "Tailscale", "tailscale.exe"));
+    } else {
+        bins.push("/usr/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale");
+    }
+    var tentar = function(i) {
+        if (i >= bins.length) { porDns(); return; }
+        try {
+            require("child_process").execFile(bins[i], ["status", "--json"], { timeout: 2500, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, function(err, saida) {
+                if (err || !saida) { tentar(i + 1); return; }
+                var nome = "";
+                try { var j = JSON.parse(String(saida)); nome = j && j.Self && j.Self.DNSName ? j.Self.DNSName : ""; } catch (_) {}
+                if (_tsNomeValido(nome)) fim(nome); else porDns();
+            });
+        } catch (e) { tentar(i + 1); }
+    };
+    tentar(0);
+    setTimeout(function() { fim(""); }, 6000);   // nunca segura um pedido por mais de 6 s
+};
+// Endereço do Tailscale (nome e IP), com cache. cb({ nome, ip }) — ambos podem ser null.
+var _tailscaleEndereco = function(cb) {
+    var ip = _ipTailscale(), agora = Date.now();
+    if (!ip) { cb({ nome: null, ip: null }); return; }
+    if (_tsDns.ip === ip && agora - _tsDns.ts < (_tsDns.ok ? 600000 : 60000)) { cb({ nome: _tsDns.nome, ip: ip }); return; }
+    if (_tsDns.fila) { _tsDns.fila.push(cb); return; }
+    _tsDns.fila = [cb];
+    _tsDescobrirNome(ip, function(nome) {
+        var mudou = nome !== _tsDns.nome || ip !== _tsDns.ip;
+        _tsDns.nome = nome; _tsDns.ip = ip; _tsDns.ts = Date.now(); _tsDns.ok = !!nome;
+        if (mudou) {
+            try { logTs("Tailscale: " + (nome ? "endereço fora da loja http://" + nome + ":" + PORT + "/ (nome fixo; IP " + ip + ")" : "IP " + ip + " — nome MagicDNS indisponível, usando o IP (ative o MagicDNS no painel do Tailscale para usar o nome)") + ".", "REDE"); } catch (_) {}
+        }
+        var f = _tsDns.fila; _tsDns.fila = null;
+        f.forEach(function(c) { try { c({ nome: nome, ip: ip }); } catch (_) {} });
+    });
+};
+
+// Na partida, já descobre (e registra no log) o endereço fora da loja.
+setTimeout(function() { try { _tailscaleEndereco(function() {}); } catch (_) {} }, 4000);
+
 // Pedido que chegou por um túnel/proxy rodando NESTA máquina (cloudflared, ngrok,
 // proxy reverso): o IP de origem é 127.0.0.1, mas quem pediu está na internet.
 // Nunca é tratado como o computador do servidor nem como rede local.
@@ -5043,7 +5109,19 @@ var server=http.createServer(function(req,res){
     // servidor não precisa (ele usa e muda o padrão de todos).
     req._apCookie = _cookieAparelho(req);
     if (!req._apCookie && !_ehComputadorServidor(req)) {
-        try { res.setHeader("Set-Cookie", _COOKIE_AP + "=" + require("crypto").randomBytes(16).toString("hex") + "; Path=/; Max-Age=315360000; SameSite=Lax"); } catch (_ck) {}
+        // v2.23.0: pelo Tailscale o IP é fixo e único por aparelho — quem chega sem cookie
+        // (ex.: trocou o endereço do IP para o nome MagicDNS, que para o navegador é outro
+        // site) recebe de volta o MESMO identificador e continua com apelido e preferências.
+        var _apNovo = "", _ipAp = _ipDaRequisicao(req);
+        if (_ehIPTailscale(_ipAp)) {
+            Object.keys(_prefsAparelhos).some(function(k) {
+                if (/^[a-f0-9]{32}$/.test(k) && _prefsAparelhos[k].ip === _ipAp) { _apNovo = k; return true; }
+                return false;
+            });
+            if (_apNovo) req._apCookie = _apNovo;
+        }
+        if (!_apNovo) _apNovo = require("crypto").randomBytes(16).toString("hex");
+        try { res.setHeader("Set-Cookie", _COOKIE_AP + "=" + _apNovo + "; Path=/; Max-Age=315360000; SameSite=Lax"); } catch (_ck) {}
     }
     _dispRegistrar(req, res, rota, parsed);
     if (req._apCookie) { var _dAp = _dispositivos[_ipDaRequisicao(req)]; if (_dAp) _dAp.ap = req._apCookie; }
@@ -6047,9 +6125,12 @@ var server=http.createServer(function(req,res){
     // máquina na rede — o celular precisa estar no mesmo Wi-Fi.
     if((rota==="/qr.svg" || rota==="/qr" || rota==="/api/qr") && req.method==="GET"){
         var _qrUrl = _qrEndereco(req);
-        var _qrTs = _ipTailscale();
-        var _qrExt = _qrTs ? "http://" + _qrTs + ":" + PORT + "/" : "";
-        if (rota === "/api/qr") { sendJson({ok:true, url:_qrUrl, externo:_qrExt || null}); return; }
+        // v2.23.0: fora da loja, o NOME MagicDNS do Tailscale (fixo) no lugar do IP.
+        _tailscaleEndereco(function(_ts) {
+        if (res.headersSent || res.writableEnded) return;
+        var _qrExtIP = _ts.ip ? "http://" + _ts.ip + ":" + PORT + "/" : "";
+        var _qrExt = _ts.nome ? "http://" + _ts.nome + ":" + PORT + "/" : _qrExtIP;
+        if (rota === "/api/qr") { sendJson({ok:true, url:_qrUrl, externo:_qrExt || null, externoNome:_ts.nome || null, externoIP:_qrExtIP || null}); return; }
         if (rota === "/qr.svg" && parsed.searchParams.get("externo") === "1") {
             var _qrImgExt = _qrExt ? _qrSvg(_qrExt, 0) : "";
             if (!_qrImgExt) { sendJson({ok:false, erro:"Tailscale não está conectado nesta máquina."}, 404); return; }
@@ -6086,12 +6167,14 @@ var server=http.createServer(function(req,res){
                 ? '<p>Com o app <b>Tailscale</b> ligado no celular (mesma conta desta máquina):</p>' +
                   '<div class="q">' + _qrSvg(_qrExt, 300) + '</div>' +
                   '<div class="u" id="u2">' + escH(_qrExt) + '</div>' +
-                  '<button type="button" onclick="try{navigator.clipboard.writeText(document.getElementById(\'u2\').textContent);this.textContent=\'Copiado!\'}catch(e){}">Copiar endereço</button>'
+                  '<button type="button" onclick="try{navigator.clipboard.writeText(document.getElementById(\'u2\').textContent);this.textContent=\'Copiado!\'}catch(e){}">Copiar endereço</button>' +
+                  (_ts.nome ? '<p>Endereço fixo (nome do Tailscale). Também funciona pelo IP: <b>' + escH(_qrExtIP) + '</b></p>' : '<p>Dica: ative o <b>MagicDNS</b> no painel do Tailscale para usar um nome fixo no lugar do IP.</p>')
                 : '<p style="text-align:left">1. Instale o <b>Tailscale</b> nesta máquina (tailscale.com/download) e entre com uma conta.<br>' +
                   '2. Instale o app <b>Tailscale</b> no celular e entre com a <b>mesma conta</b>.<br>' +
                   '3. Recarregue esta página: aparece aqui o QR code para usar em qualquer lugar (4G, outro Wi-Fi).</p>' +
                   '<p>Grátis, criptografado e sem abrir porta no roteador — só os seus aparelhos entram.</p>') +
             '</div></body></html>');
+        });
         return;
     }
     // /api/dispositivos — aparelhos da rede com o relatório aberto agora (v2.17.0). Só rede local.

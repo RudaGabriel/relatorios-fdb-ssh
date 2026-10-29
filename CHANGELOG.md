@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.22.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.26.2 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.23.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.27.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
@@ -28,6 +28,23 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.23.0 — 2026-10-29 12:00
+
+**Fora da loja pelo nome do Tailscale (MagicDNS).**
+
+- O endereço "fora da loja" (QR code, `/qr`, `/api/qr`) passa a usar o **nome** desta máquina no Tailscale, ex.: `http://pc-loja.tailxxxx.ts.net:7734/`, no lugar do IP `100.x.y.z`.
+  - **O nome é fixo.** Ele é formado pelo nome da máquina mais o nome da rede (tailnet) e só muda se alguém renomear um dos dois no painel do Tailscale, ou se a máquina for removida e adicionada de novo.
+  - O IP continua aceito e aparece como alternativa.
+- **Como o nome é descoberto:**
+  - `tailscale status --json` (campo `Self.DNSName`), procurando o programa no PATH e na pasta padrão de instalação;
+  - se falhar, DNS reverso no resolvedor do Tailscale (`100.100.100.100`);
+  - sem MagicDNS ou sem Tailscale, continua o IP.
+  - Só leitura: nada é alterado no Tailscale.
+  - Fica em cache por 10 min (1 min em caso de falha) e nunca segura um pedido por mais de 6 s.
+  - Na partida, o log registra o endereço (`[REDE] Tailscale: endereço fora da loja ...`).
+- `/api/qr` ganhou os campos `externoNome` e `externoIP`; `externo` agora é o endereço com o nome, quando houver.
+- **Preferências mantidas ao trocar do IP para o nome:** para o navegador, nome e IP são sites diferentes, então o cookie do aparelho não vai junto. Um aparelho do Tailscale (IP fixo e único) que chega sem cookie recebe de volta o mesmo identificador e continua com apelido e preferências.
 
 ### 2.22.0 — 2026-10-28 22:00
 
@@ -249,6 +266,12 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.27.0 — 2026-10-29 12:00
+
+- Janela "Abrir no celular" → **Fora da loja**:
+  - mostra o QR code e o endereço com o **nome fixo** do Tailscale, e o IP como alternativa;
+  - sem MagicDNS, sugere ativá-lo no painel.
 
 ### 3.26.2 — 2026-10-29 10:00
 
