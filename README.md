@@ -31,7 +31,7 @@
 
 **As vendas do dia na tela, atualizadas a cada venda · No computador e no celular · Na loja ou de qualquer lugar · Nunca escreve no banco · Funciona sem internet**
 
-[Instalar](#instalacao) · [Usar](#uso) · [Recursos](#recursos) · [Celular](#celular) · [Fora da loja](#fora) · [Aparelhos](#aparelhos) · [Configurar](#configuracao) · [API](#api) · [Problemas](#problemas)
+[Instalar](#instalacao) · [Usar](#uso) · [Recursos](#recursos) · [Celular](#celular) · [Fora da loja](#fora) · [Liberar para outra pessoa](#compartilhar) · [Aparelhos](#aparelhos) · [Configurar](#configuracao) · [API](#api) · [Problemas](#problemas)
 
 </div>
 
@@ -102,6 +102,7 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 | Ver as vendas de hoje | Duplo clique no ícone da bandeja · `gerar_relatorio_do_dia.bat` · `http://IP:7734/` |
 | Abrir no celular | Botão **Celular** no topo (mostra um QR code) · bandeja → *Abrir no celular (QR code)* |
 | Abrir fora da loja (4G, outro Wi-Fi) | **Celular → Fora da loja** (com o Tailscale — veja [Fora da loja](#fora)) |
+| Liberar o acesso para outra pessoa | Painel do Tailscale → computador da loja → **⋯ → Share…** (veja [Liberar para outra pessoa](#compartilhar)) |
 | Ver uma data | `gerar_relatorio_por_data.bat` (aceita `D/M`, `DD/MM` ou `DD/MM/AA[AA]`) |
 | Ver um período | Botão **Por período** · `gerar_relatorio_intervalo.bat` · `http://IP:7734/periodo` |
 | Forçar atualização | Botão **Atualizar** · bandeja → *Atualizar dados de hoje* |
@@ -198,7 +199,7 @@ O navegador não envia o nome de "Ajustes → Geral → Sobre"; o servidor pergu
 <a id="fora"></a>
 ## 🌍 Acesso fora da loja (Tailscale)
 
-Para abrir o relatório no 4G ou em outro Wi-Fi, use o **Tailscale** (gratuito). Ele cria uma rede **privada e criptografada** só entre os seus aparelhos: não abre porta no roteador e o relatório não fica exposto na internet. Só quem entra na sua conta (ou quem você convida) acessa.
+Para abrir o relatório no 4G ou em outro Wi-Fi, use o **Tailscale** (gratuito). Ele cria uma rede **privada e criptografada** só entre os seus aparelhos: não abre porta no roteador e o relatório não fica exposto na internet. Só os seus aparelhos e quem você liberar acessam.
 
 1. **No computador do servidor:** instale o Tailscale (<https://tailscale.com/download>) e entre com uma conta (Google, Microsoft ou Apple). No ícone dele, ative **Preferences → Run unattended**. No painel <https://login.tailscale.com/admin/machines>, em **⋯ → Disable key expiry** no computador da loja, para ele não se desconectar sozinho depois de 180 dias.
 2. **No celular:** instale o app **Tailscale**, entre com a **mesma conta**, permita a configuração de VPN e deixe-o ligado (no iPhone dá para ativar "VPN On Demand").
@@ -206,7 +207,22 @@ Para abrir o relatório no 4G ou em outro Wi-Fi, use o **Tailscale** (gratuito).
 
 > **O endereço muda?** Não. O nome (MagicDNS) é **fixo**: é o nome da máquina + o nome da sua rede no Tailscale, e só muda se alguém renomear um dos dois no painel, ou se a máquina for removida e adicionada de novo. O IP `100.x` também é fixo nessas mesmas condições. Pode salvar nos favoritos ou na tela de início do celular. Se o nome não aparecer, ative o **MagicDNS** em <https://login.tailscale.com/admin/dns> (vem ligado por padrão nas contas novas).
 
-Não precisa reiniciar o servidor nem mexer no roteador: o sistema detecta o Tailscale sozinho, e a regra de firewall do instalador já vale para essa rede. Para outras pessoas, convide-as em <https://login.tailscale.com/admin/users>.
+Não precisa reiniciar o servidor nem mexer no roteador: o sistema detecta o Tailscale sozinho, e a regra de firewall do instalador já vale para essa rede.
+
+<a id="compartilhar"></a>
+### 🤝 Liberar o acesso para outra pessoa (sem passar o seu e-mail)
+
+Use o **compartilhamento de máquina** do Tailscale: a pessoa entra com a conta **dela** e você libera **só o computador da loja**. Ela não entra na sua conta, não vê seus outros aparelhos e você pode tirar o acesso quando quiser.
+
+1. **A outra pessoa, no celular dela:** instala o app **Tailscale** e entra com a conta **dela** (Google, Microsoft, Apple ou e-mail).
+2. **Você, no painel** <https://login.tailscale.com/admin/machines> (com a sua conta): no **computador da loja**, clique em **⋯ → Share…** e escolha **Copy share link** (ou convide pelo e-mail dela). Mande o link para ela.
+3. **Ela abre o link** no celular, já logada na conta dela, e toca em **Accept** — o computador da loja aparece no app dela.
+4. **Ela acessa** pelo mesmo endereço: `http://pc-loja.tailxxxx.ts.net:7734` (ou pelo IP `http://100.x.y.z:7734`, se o nome não abrir no aparelho dela).
+
+- **Tirar o acesso:** no mesmo **⋯ → Share…**, remova o compartilhamento — para na hora.
+- No relatório, ela é um aparelho como os outros: tem as próprias preferências e apelido, aparece em *Dispositivos conectados* e **não** muda configurações do sistema, banco nem ícone.
+- O compartilhamento libera o computador inteiro para o aparelho dela (não só o relatório). O instalador do relatório só abre a porta 7734 no firewall do Windows; se você usa compartilhamento de pastas ou acesso remoto nesse computador, confira se eles não ficam liberados para a rede do Tailscale.
+- **Não use** "Invite users" (<https://login.tailscale.com/admin/users>) para isso: o convidado entra na **sua** rede e pode ver todos os seus aparelhos.
 
 > ⚠️ Túneis públicos (cloudflared, ngrok) deixam o endereço aberto na internet e não são recomendados. Se usar um, quem chega por ele é tratado como aparelho externo: não muda configurações do sistema, não troca o banco nem o ícone, não reinicia o servidor.
 
