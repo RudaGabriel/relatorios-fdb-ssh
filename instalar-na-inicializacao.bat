@@ -142,21 +142,19 @@ timeout /t 5 >nul
 :ja_elevado
 
 :: =========================================================
-:: instalar-na-inicializacao.bat                       v1.13.1
+:: instalar-na-inicializacao.bat                       v1.14.0
 ::  Autor: Ruda Gabriel
 :: Configura o servidor para iniciar automaticamente no logon.
 ::
 :: (Historico completo das versoes: CHANGELOG.md no repositorio.)
-:: CHANGELOG 1.13.1 - 2026-10-07 22:30 - Acentos (nome e caminhos).
-::   - O nome do sistema ia para o config.json por um .ps1 temporario gravado
-::     em UTF-8 (chcp 65001) que o PowerShell 5.1 le como ANSI: "Farmacia"
-::     com acento virava lixo. Agora nome e caminho vao por variavel de
-::     ambiente (Unicode, sem escape).
-::   - O atalho da pasta Inicializar (alternativa a tarefa) gravava o caminho
-::     do bootstrap em UTF-8 dentro de um .vbs, que o wscript le como ANSI:
-::     perfil com acento nunca iniciava. Agora o .vbs monta o caminho na hora
-::     com %%LOCALAPPDATA%%. O bootstrap.vbs v1.1.0 le o launcher.path em UTF-8.
-::   - Removido o rotulo :bootstrap_ok duplicado ("Bootstrap criado" saia 2x).
+:: CHANGELOG 1.14.0 - 2026-10-29 - Microsoft Defender e o bootstrap.
+::   - launcher.path gravado em UTF-16 (por variavel de ambiente, sem escape):
+::     o bootstrap.vbs v1.2.0 le direto, sem ADODB.Stream (o Defender acusava
+::     a versao anterior como "Trojan:Script/ObfusScript.A!ml").
+::   - Confere o bootstrap de novo 2 s depois da copia (o antivirus apaga em
+::     seguida) e, se sumiu, explica a causa e o que fazer.
+::   - Alternativa sem tarefa: atalho .lnk na pasta Inicializar (em vez de um
+::     .vbs gerado, outro padrao que antivirus costuma bloquear).
 ::
 :: =========================================================
 
@@ -406,11 +404,18 @@ if not exist "%~dp0bootstrap.vbs" (
 )
 
 copy /y "%~dp0bootstrap.vbs" "!BOOTSTRAP_FILE!" >nul 2>&1
+:: v1.14.0: o antivirus pode apagar a copia alguns instantes depois - confere de novo.
+timeout /t 2 /nobreak >nul
 if not exist "!BOOTSTRAP_FILE!" goto :bootstrap_falhou
 
-:: Grava o caminho do launcher (unica informacao dinamica do bootstrap).
->"!BOOTSTRAP_DIR!\launcher.path" echo !LAUNCHER_PATH!
-if not exist "!BOOTSTRAP_DIR!\launcher.path" goto :bootstrap_falhou
+:: Grava o caminho do launcher (unica informacao dinamica do bootstrap) em
+:: UTF-16, que o bootstrap.vbs le direto. O caminho vai por variavel de
+:: ambiente (Unicode, sem escape). Sem PowerShell: echo simples (ANSI), que o
+:: bootstrap tambem le.
+set "_LP_ARQ=!BOOTSTRAP_DIR!\launcher.path"
+powershell -NoProfile -Command "[System.IO.File]::WriteAllText($env:_LP_ARQ, $env:LAUNCHER_PATH, [System.Text.Encoding]::Unicode)" >nul 2>&1
+if not exist "!_LP_ARQ!" >"!_LP_ARQ!" echo !LAUNCHER_PATH!
+if not exist "!_LP_ARQ!" goto :bootstrap_falhou
 
 set "_LT=%TIME: =0%"
 set "_LT=!_LT:~0,8!"
@@ -422,7 +427,12 @@ goto :bootstrap_ok
 echo.
 echo ERRO: falha ao criar o bootstrap em:
 echo   !BOOTSTRAP_DIR!
-echo Verifique permissoes de escrita nessa pasta.
+echo.
+echo Causa mais comum: o antivirus ^(Microsoft Defender^) apagou a copia do
+echo bootstrap.vbs. Abra Seguranca do Windows - Protecao contra virus e
+echo ameacas - Historico de protecao, restaure o arquivo ^(Permitir no
+echo dispositivo^) e rode este instalador de novo.
+echo Outra causa possivel: sem permissao de escrita nessa pasta.
 echo.
 set "_LT=%TIME: =0%"
 set "_LT=!_LT:~0,8!"
@@ -497,23 +507,21 @@ echo.
 goto :iniciar_agora
 
 :tarefa_falhou
-:: Fallback: atalho na pasta Startup
+:: Fallback: atalho .lnk na pasta Inicializar (v1.14.0: antes era um .vbs
+:: gerado, outro padrao que antivirus costuma bloquear). O atalho abre o
+:: bootstrap pelo wscript. Caminhos por variavel de ambiente: Unicode e sem
+:: escape.
 echo  schtasks falhou. Usando pasta de Inicializacao como fallback...
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-set "SHORTCUT=!STARTUP!\!APP_NAME! Relatorios.vbs"
+set "SHORTCUT=!STARTUP!\!APP_NAME! Relatorios.lnk"
 
-rem LIMPEZA (v1.10.0): remove o atalho anterior antes de recriar, pelo mesmo
-rem motivo do bootstrap - um atalho velho apontando para um caminho antigo
-rem sobreviveria a uma gravacao que falhasse, e a checagem "if exist" logo
-rem abaixo confirmaria sucesso olhando para o arquivo ERRADO.
+rem LIMPEZA: remove atalhos anteriores (.lnk e o .vbs antigo) antes de recriar,
+rem para a checagem "if exist" abaixo nunca confirmar olhando o arquivo errado.
 if exist "!SHORTCUT!" del /f /q "!SHORTCUT!" >nul 2>&1
-if defined APP_NAME_LEGADO if exist "!STARTUP!\!APP_NAME_LEGADO! Relatorios.vbs" if not "!APP_NAME_LEGADO!"=="!APP_NAME!" del /f /q "!STARTUP!\!APP_NAME_LEGADO! Relatorios.vbs" >nul 2>&1
+if exist "!STARTUP!\!APP_NAME! Relatorios.vbs" del /f /q "!STARTUP!\!APP_NAME! Relatorios.vbs" >nul 2>&1
+if defined APP_NAME_LEGADO if not "!APP_NAME_LEGADO!"=="!APP_NAME!" del /f /q "!STARTUP!\!APP_NAME_LEGADO! Relatorios.vbs" "!STARTUP!\!APP_NAME_LEGADO! Relatorios.lnk" >nul 2>&1
 
-(
-    echo Dim sh
-    echo Set sh = CreateObject^("WScript.Shell"^)
-    echo sh.Run "wscript.exe " ^& Chr^(34^) ^& sh.ExpandEnvironmentStrings^("%%LOCALAPPDATA%%"^) ^& "\RelatoriosBootstrap\bootstrap.vbs" ^& Chr^(34^), 0, False
-) > "!SHORTCUT!"
+powershell -NoProfile -Command "try{$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:SHORTCUT);$s.TargetPath=(Join-Path $env:SystemRoot 'System32\wscript.exe');$s.Arguments=[char]34+$env:BOOTSTRAP_FILE+[char]34;$s.WorkingDirectory=$env:BOOTSTRAP_DIR;$s.Save();exit 0}catch{exit 1}" >nul 2>&1
 
 if exist "!SHORTCUT!" (
     echo   Atalho criado em:

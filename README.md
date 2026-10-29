@@ -492,6 +492,7 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 28 testes cobrem 
 | Relatório de período longo não termina | Aumente `spawnTimeoutMs` (até 600000) |
 | Servidor não inicia no logon | Rode `instalar-na-inicializacao.bat` de novo e veja as linhas `[INSTALL]` e `[TRAY]` no log |
 | Continua iniciando sozinho após remover | Rode `remover-inicializacao.bat` como administrador e veja as linhas `[REMOVER]` |
+| Instalador: "falha ao criar o bootstrap" / antivírus acusa o `bootstrap.vbs` | Falso positivo. Em *Segurança do Windows → Proteção contra vírus e ameaças → Histórico de proteção*, escolha *Permitir no dispositivo* e rode o instalador de novo |
 | Qualquer outro problema | O `relatorio.log` registra erros, avisos e a versão em uso |
 
 ---
