@@ -1,11 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.27.0
+ * @version 3.28.0
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.27.0 - 2026-10-29 12:00 - "Fora da loja" mostra o nome fixo do Tailscale (e o IP como alternativa).
+ *   3.28.0 - 2026-10-29 16:00 - Botões do mesmo tamanho (o maior como referência): cabeçalho da janela da venda.
  */
 
 (function() {
@@ -13,7 +13,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.27.0";
+    const SCRIPT_VERSION = "3.28.0";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -2977,6 +2977,7 @@ html, body { height: 100%; margin: 0; background: var(--bg-app); color: var(--te
 .tableTitle { font-size: 20px; font-weight: 700; color: var(--text-main); letter-spacing: -0.02em; }
 .count { font-size: 13px; color: var(--text-muted); font-weight: 500; margin: 7px 4px; }
 .btns { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; padding-top: 6px; }
+.mBtns > .btn { justify-content: center; box-sizing: border-box; max-width: 100%; }
 .itensMiniHead { display: flex; flex-direction: row; justify-content: space-between; align-items: center; gap: 10px; margin: 0 0 10px 0; padding-bottom: 8px; border-bottom: 1px dashed var(--border-focus); font-size: 11px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
 .itensMiniHead .sub { font-size: 10px; color: var(--text-main); background: var(--bg-panel); padding: 3px 8px; border-radius: 99px; border: 1px solid var(--border-focus); font-weight: 600; letter-spacing: 1px; text-transform: none; }
 .itensChips { display: flex; flex-wrap: wrap; gap: 6px; flex-direction: column; }
@@ -3453,7 +3454,7 @@ tbody tr:hover .tdItemDesc { color: var(--danger, #e55); border-color: var(--dan
 <div class="mtitle" id="mTitulo"></div>
 <div class="msub" id="mSub"></div>
 </div>
-<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;font-size: 12px;">
+<div class="mBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;font-size: 12px;">
 <div class="btn" id="copiarModalGer" style="display:none"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Só gerencial</div><div class="btn" id="copiarModalSemItens" style="display:none"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Sem itens</div><div class="btn" id="copiarModal" style="display:none"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><line x1="13" y1="14" x2="17" y2="14"/><line x1="13" y1="17" x2="17" y2="17"/></svg>Com itens</div>
 <div class="btn" id="fechar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fechar</div>
 </div>
@@ -6566,6 +6567,49 @@ const _BTN_IMPORTAR_PR = (id1, id2) =>
     + '<button class="btn" type="button" id="' + id1 + '" data-tip="Troca a lista deste aparelho pela lista padrão do servidor"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Importar<span class="prImpExtra"> do servidor</span></span></button>'
     + '<button class="btn" type="button" id="' + id2 + '" data-tip="Acrescenta à lista deste aparelho os termos do servidor que ainda não estão nela"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Juntar<span class="prImpExtra"> com os do servidor</span></span></button>'
     + '</div>';
+// ── Botões do mesmo tamanho (v3.28.0) ─────────────────────────────────────
+// No cabeçalho da janela da venda (Só gerencial / Sem itens / Com itens / Fechar)
+// todos os botões VISÍVEIS ficam com a largura do maior. Refeito quando um botão
+// aparece/some, quando a janela abre (clique/tecla), no redimensionar e quando as
+// fontes terminam de carregar. Nunca passa da largura do grupo.
+(function () {
+    var SEL = ".mBtns";
+    var obs = null, pend = false;
+    var ajustar = function () {
+        document.querySelectorAll(SEL).forEach(function (g) {
+            var bs = Array.prototype.filter.call(g.children, function (b) { return b.classList && b.classList.contains("btn"); });
+            bs.forEach(function (b) { b.style.minWidth = ""; });
+            var vis = bs.filter(function (b) { return b.offsetParent !== null && b.offsetWidth > 0; });
+            if (vis.length < 2) return;
+            var maior = 0;
+            vis.forEach(function (b) { maior = Math.max(maior, b.getBoundingClientRect().width); });
+            var limite = g.clientWidth || maior;
+            var w = Math.min(Math.ceil(maior), limite);
+            vis.forEach(function (b) { b.style.minWidth = w + "px"; });
+        });
+    };
+    var ligar = function () {
+        if (!obs) return;
+        document.querySelectorAll(SEL).forEach(function (g) { obs.observe(g, { attributes: true, attributeFilter: ["style", "class"], subtree: true, childList: true }); });
+    };
+    var agendar = function () {
+        if (pend) return; pend = true;
+        (window.requestAnimationFrame || setTimeout)(function () {
+            pend = false;
+            if (obs) obs.disconnect();      // as próprias mudanças de largura não disparam de novo
+            try { ajustar(); } catch (e) {}
+            ligar();
+        });
+    };
+    try { if (window.MutationObserver) obs = new MutationObserver(agendar); } catch (e) { obs = null; }
+    var iniciar = function () { ligar(); agendar(); };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", iniciar); else iniciar();
+    window.addEventListener("resize", agendar);
+    document.addEventListener("click", function () { setTimeout(agendar, 30); }, true);
+    document.addEventListener("keyup", function () { setTimeout(agendar, 30); }, true);
+    try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(agendar); } catch (e) {}
+    window.__igualarBotoes = agendar;
+})();
 const _importarProibidosServidor = (ta, formatar, modo, botoes) => {
     if (!ta) return;
     (botoes || []).forEach(b => { if (b) b.disabled = true; });

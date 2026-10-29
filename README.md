@@ -5,7 +5,7 @@
 ### Painel de vendas em tempo real para lojas que usam o Small Commerce (Firebird)
 
 <img alt="servidor: v2.23.0" src="https://img.shields.io/badge/servidor-v2.23.0-2563EB?style=flat">
-<img alt="gerador: v3.27.0" src="https://img.shields.io/badge/gerador-v3.27.0-2563EB?style=flat">
+<img alt="gerador: v3.28.0" src="https://img.shields.io/badge/gerador-v3.28.0-2563EB?style=flat">
 <img alt="bandeja: v1.6.1" src="https://img.shields.io/badge/bandeja-v1.6.1-2563EB?style=flat">
 <img alt="plataforma: Windows 10 | 11" src="https://img.shields.io/badge/plataforma-Windows%2010%20%7C%2011-0078D4?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nd2hpdGUnPjxyZWN0IHg9JzMnIHk9JzMnIHdpZHRoPSc4JyBoZWlnaHQ9JzgnLz48cmVjdCB4PScxMycgeT0nMycgd2lkdGg9JzgnIGhlaWdodD0nOCcvPjxyZWN0IHg9JzMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPHJlY3QgeD0nMTMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPC9zdmc%2B&logoColor=white">
 <img alt="idioma: pt-BR" src="https://img.shields.io/badge/idioma-pt--BR-16A34A?style=flat">
