@@ -8,7 +8,7 @@ Versões em uso hoje:
 | Arquivo | Versão |
 |---|---|
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.23.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.27.0 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.28.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.14.1 |
@@ -266,6 +266,12 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.28.0 — 2026-10-29 16:00
+
+**Botões do mesmo tamanho.**
+
+- Cabeçalho da janela da venda (*Só gerencial*, *Sem itens*, *Com itens*, *Fechar*): todos os botões visíveis ficam com a largura do maior, no computador e no celular. Se um botão some (venda sem gerencial, sem itens), os outros se ajustam ao maior dos que restaram. Nunca passa da largura da janela.
 
 ### 3.27.0 — 2026-10-29 12:00
 
