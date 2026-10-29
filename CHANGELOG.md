@@ -11,7 +11,7 @@ Versões em uso hoje:
 | [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.27.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
-| [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.14.0 |
+| [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.14.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.2.0 |
 | [`launcher.vbs`](#launchervbs) | 1.0.1 |
@@ -774,6 +774,13 @@ a linha de comando de qualquer processo e' visivel a todos os usuarios da maquin
 ## `instalar-na-inicializacao.bat`
 
 Instalador da inicialização automática.
+
+### 1.14.1 — 2026-10-29
+
+**Primeira instalação do Node.js.**
+
+- Num computador sem Node, a 1ª execução parava em "Node.js não foi instalado corretamente" e só a 2ª funcionava: o `PATH` da janela era relido só do sistema e sem expandir variáveis (`%SystemRoot%`), e o PATH do usuário ficava de fora. Agora procura nas pastas conhecidas do Node, relê o PATH do sistema e do usuário (expandidos) e espera até 30 s pelo instalador do Node terminar.
+- Cria `%APPDATA%\npm` antes do `npm install` (num Node recém-instalado o npm falhava com `ENOENT`).
 
 ### 1.14.0 — 2026-10-29
 
