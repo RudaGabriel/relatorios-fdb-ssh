@@ -11,9 +11,9 @@ Versões em uso hoje:
 | [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.27.0 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
-| [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.13.1 |
+| [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.14.0 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
-| [`bootstrap.vbs`](#bootstrapvbs) | 1.1.0 |
+| [`bootstrap.vbs`](#bootstrapvbs) | 1.2.0 |
 | [`launcher.vbs`](#launchervbs) | 1.0.1 |
 | [`remover-inicializacao.bat`](#remover-inicializacaobat) | 1.0.0 |
 | [`_remover-inicializacao.ps1`](#_remover-inicializacaops1) | 1.0.1 |
@@ -775,6 +775,14 @@ a linha de comando de qualquer processo e' visivel a todos os usuarios da maquin
 
 Instalador da inicialização automática.
 
+### 1.14.0 — 2026-10-29
+
+**Microsoft Defender e o bootstrap.**
+
+- `launcher.path` gravado em UTF-16 (por variável de ambiente, sem escape): o `bootstrap.vbs` 1.2.0 lê direto, sem `ADODB.Stream` (o Defender acusava a versão anterior como `Trojan:Script/ObfusScript.A!ml`).
+- Confere o bootstrap de novo 2 s depois da cópia (o antivírus apaga em seguida) e, se ele sumiu, explica a causa e como restaurar.
+- Alternativa sem tarefa agendada: atalho `.lnk` na pasta Inicializar (em vez de um `.vbs` gerado, outro padrão que antivírus costuma bloquear).
+
 ### 1.13.1 — 2026-10-07 22:30
 
 **Acentos (nome e caminhos).**
@@ -831,6 +839,12 @@ Auxiliar do instalador (tarefa agendada).
 ## `bootstrap.vbs`
 
 Bootstrap do logon.
+
+### 1.2.0 — 2026-10-29
+
+**Código simplificado e legível (Microsoft Defender).**
+
+O Defender classificava a versão anterior como `Trojan:Script/ObfusScript.A!ml` (falso positivo do modelo de aprendizado de máquina) e apagava o arquivo do `.zip` e da cópia do instalador. Reescrito sem `ADODB.Stream`, sem montar texto com `Chr`/`ChrW`, sem `On Error Resume Next` geral e sem abrir o launcher em janela oculta. Mesmo comportamento: espera até 30 min pela pasta do sistema e abre o `launcher.vbs`. O `launcher.path` agora é lido em UTF-16 (gravado pelo instalador 1.14.0) ou ANSI (versões antigas).
 
 ### 1.1.0 — 2026-10-07 22:30
 

@@ -1,98 +1,88 @@
 ' =============================================================================
-' bootstrap.vbs                                                        v1.1.0
+' bootstrap.vbs                                                        v1.2.0
 ' Autor: Ruda Gabriel
 ' -----------------------------------------------------------------------------
-' Aguarda ate 30 min (120 x 15s) pelo launcher.vbs e o executa.
+' Inicializacao automatica do Relatorios FDB.
 '
-' POR QUE ESTE ARQUIVO EXISTE COMO ARQUIVO (e nao e' mais gerado):
-' Ate a v1.10.2, instalar-na-inicializacao.bat GERAVA este script linha a linha
-' com "echo" dentro de um bloco redirecionado. Isso exige escapar ( ) & < > com
-' ^ e conviver com as regras de expansao do cmd -- e falhou de tres formas
-' diferentes em producao:
-'   1. um ")" sem escape fechava o bloco antes da hora e o arquivo saia pela
-'      metade (o resto virava comando executado na tela);
-'   2. gravado com [Text.Encoding]::UTF8, ganhava BOM e o wscript recusava
-'      com "Caractere invalido, Linha 1, Caract. 1" (800A0408);
-'   3. escapes vazando produziam "Erro de sintaxe" na linha 6 (800A03EA).
-' Copiar um arquivo pronto nao tem escape, nao tem expansao e nao tem encoding
-' a definir -- e' a operacao mais simples que resolve o problema, e elimina a
-' classe inteira de falhas de uma vez.
+' A tarefa agendada (criada por instalar-na-inicializacao.bat) roda este
+' arquivo no logon. Ele le em "launcher.path" (mesma pasta) o caminho do
+' launcher.vbs do sistema e o abre. Se a pasta do sistema estiver na rede e
+' ainda nao estiver disponivel, tenta de novo a cada 15 segundos por ate
+' 30 minutos.
 '
-' O caminho do launcher NAO fica embutido aqui (era ele que exigia geracao
-' dinamica). Vem de "launcher.path", um arquivo texto de UMA linha gravado ao
-' lado deste, que o instalador escreve com um unico "echo" sem escape nenhum.
+' Codigos de saida: 0 = launcher aberto, 2 = launcher.path nao existe,
+' 3 = launcher.path vazio, 5 = launcher nao apareceu em 30 minutos.
 '
 ' (Historico completo das versoes: CHANGELOG.md no repositorio.)
-' CHANGELOG 1.1.0 - 2026-10-07 22:30 - launcher.path lido em UTF-8.
-'   O instalador roda com "chcp 65001" e grava o arquivo em UTF-8; aqui ele era
-'   lido como ANSI, e um caminho com acento (C:\Relatorios com acento, perfil
-'   "Usuario" com acento) nunca era encontrado: o servidor nao subia no logon. Le em
-'   UTF-8 (ADODB.Stream) e, se o arquivo nao existir assim, tenta tambem a
-'   leitura antiga (ANSI) - cobre launcher.path gravado por versoes anteriores.
+' CHANGELOG 1.2.0 - 2026-10-29 - Codigo simplificado e legivel.
+'   O Microsoft Defender classificava a versao anterior como
+'   "Trojan:Script/ObfusScript.A!ml" (falso positivo do modelo de aprendizado
+'   de maquina). Sem ADODB.Stream, sem montar texto com Chr/ChrW e sem
+'   "On Error Resume Next" geral: launcher.path agora e' gravado pelo
+'   instalador em UTF-16, que o Scripting.FileSystemObject le direto.
 ' =============================================================================
 
 Option Explicit
 
-Dim fso, sh, pastaAtual, arqPath, vbsPath, maxT, n
+Const PARA_LEITURA = 1
+Const FORMATO_UNICODE = -1
+Const FORMATO_ANSI = 0
+Const TENTATIVAS = 120
+Const ESPERA_MS = 15000
 
-On Error Resume Next
-Set fso = CreateObject("Scripting.FileSystemObject")
-If Err.Number <> 0 Then WScript.Quit 1
-Set sh = CreateObject("WScript.Shell")
-If Err.Number <> 0 Then WScript.Quit 1
-On Error Goto 0
+Dim arquivos, shell, pastaDoBootstrap, arquivoDoCaminho, caminhoDoLauncher, tentativa
 
-' Le o caminho do launcher a partir de launcher.path (mesma pasta deste script).
-pastaAtual = fso.GetParentFolderName(WScript.ScriptFullName)
-arqPath = fso.BuildPath(pastaAtual, "launcher.path")
+Set arquivos = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
 
-If Not fso.FileExists(arqPath) Then WScript.Quit 2
+pastaDoBootstrap = arquivos.GetParentFolderName(WScript.ScriptFullName)
+arquivoDoCaminho = arquivos.BuildPath(pastaDoBootstrap, "launcher.path")
 
-Dim vbsPathAnsi, vbsPathUtf8, st, txt
-On Error Resume Next
-vbsPathAnsi = Trim(fso.OpenTextFile(arqPath, 1).ReadLine)
-If Err.Number <> 0 Then vbsPathAnsi = ""
-Err.Clear
-Set st = CreateObject("ADODB.Stream")
-If Err.Number = 0 Then
-    st.Type = 2
-    st.Charset = "utf-8"
-    st.Open
-    st.LoadFromFile arqPath
-    txt = st.ReadText
-    st.Close
-    If Err.Number = 0 Then
-        txt = Replace(txt, ChrW(&HFEFF), "")
-        If InStr(txt, vbCr) > 0 Then txt = Left(txt, InStr(txt, vbCr) - 1)
-        If InStr(txt, vbLf) > 0 Then txt = Left(txt, InStr(txt, vbLf) - 1)
-        vbsPathUtf8 = Trim(txt)
-    End If
+If Not arquivos.FileExists(arquivoDoCaminho) Then
+    WScript.Quit 2
 End If
-Err.Clear
-On Error Goto 0
 
-If Len(vbsPathUtf8) = 0 And Len(vbsPathAnsi) = 0 Then WScript.Quit 3
-If Len(vbsPathUtf8) = 0 Then vbsPathUtf8 = vbsPathAnsi
-If Len(vbsPathAnsi) = 0 Then vbsPathAnsi = vbsPathUtf8
+caminhoDoLauncher = LerCaminho(arquivoDoCaminho)
+If caminhoDoLauncher = "" Then
+    WScript.Quit 3
+End If
 
-' Aguarda o launcher aparecer. A pasta pode ser de rede e ainda nao estar
-' montada no momento do logon, por isso a espera longa.
-maxT = 120
-n = 0
-Do While n < maxT
-    vbsPath = ""
-    If fso.FileExists(vbsPathUtf8) Then
-        vbsPath = vbsPathUtf8
-    ElseIf fso.FileExists(vbsPathAnsi) Then
-        vbsPath = vbsPathAnsi
-    End If
-    If Len(vbsPath) > 0 Then
-        sh.Run "wscript.exe " & Chr(34) & vbsPath & Chr(34), 0, False
+For tentativa = 1 To TENTATIVAS
+    If arquivos.FileExists(caminhoDoLauncher) Then
+        shell.Run "wscript.exe """ & caminhoDoLauncher & """", 1, False
         WScript.Quit 0
     End If
-    n = n + 1
-    WScript.Sleep 15000
-Loop
+    WScript.Sleep ESPERA_MS
+Next
 
-' Esgotou o tempo sem encontrar o launcher.
 WScript.Quit 5
+
+
+' Le a primeira linha de launcher.path. O instalador grava em UTF-16 (marca
+' FF FE no inicio); arquivos gravados por versoes antigas estao em ANSI.
+Function LerCaminho(caminhoDoArquivo)
+    Dim formato, leitor, linha
+    formato = FORMATO_ANSI
+    If ComecaComMarcaUnicode(caminhoDoArquivo) Then formato = FORMATO_UNICODE
+
+    Set leitor = arquivos.OpenTextFile(caminhoDoArquivo, PARA_LEITURA, False, formato)
+    linha = ""
+    If Not leitor.AtEndOfStream Then linha = leitor.ReadLine
+    leitor.Close
+
+    LerCaminho = Trim(linha)
+End Function
+
+Function ComecaComMarcaUnicode(caminhoDoArquivo)
+    Dim leitor, inicio
+    ComecaComMarcaUnicode = False
+    If arquivos.GetFile(caminhoDoArquivo).Size < 2 Then Exit Function
+
+    Set leitor = arquivos.OpenTextFile(caminhoDoArquivo, PARA_LEITURA, False, FORMATO_ANSI)
+    inicio = leitor.Read(2)
+    leitor.Close
+
+    If Len(inicio) = 2 Then
+        ComecaComMarcaUnicode = (Asc(Left(inicio, 1)) = 255 And Asc(Right(inicio, 1)) = 254)
+    End If
+End Function
