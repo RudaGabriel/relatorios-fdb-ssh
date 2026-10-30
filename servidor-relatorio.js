@@ -2,17 +2,14 @@
 
 /**
  * servidor-relatorio.js
- * @version 2.23.0
+ * @version 2.23.1
  * @author Ruda Gabriel
  * @description Servidor HTTP + Firebird de relatórios com SSE, fast-poll e
  *              geração em subprocesso. SOMENTE LEITURA no banco.
  * @changelog
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   2.23.0 - 2026-10-29 12:00 - Fora da loja pelo NOME do Tailscale (MagicDNS), fixo.
- *     - "tailscale status --json" (ou DNS reverso em 100.100.100.100) → ex.: pc-loja.tailxxxx.ts.net;
- *       sem nome, continua o IP 100.x. /api/qr traz externoNome e externoIP; log [REDE].
- *     - Aparelho do Tailscale sem cookie recebe o mesmo identificador (IP fixo): trocar do IP
- *       para o nome não perde apelido nem preferências.
+ *   2.23.1 - 2026-10-30 01:00 - "Recarregar ao detectar mudanças" LIGADO recarrega como F5 (limpa
+ *     busca, filtros, rolagem e janelas); só a recarga forçada mantém o estado.
  */
 
 
@@ -20,7 +17,7 @@
 // Registrada na linha de início do log para que se saiba, ao investigar
 // qualquer ocorrência, qual versão do servidor estava no ar naquele momento
 // (o gerar-relatorio-html.js já faz o mesmo via SCRIPT_VERSION).
-const SERVER_VERSION = "2.23.0";
+const SERVER_VERSION = "2.23.1";
 
 // ===== Logger Global seguro — flush debounced 300ms =====
 const _fs = require('fs');
@@ -2302,7 +2299,10 @@ var gerarEmBackground=function(inicio,fim,chave,_pollTriggered){
             "if(ok){_recPend=false;var na=document.getElementById('__srv_novas');if(na)na.style.display='none';}else{_recAviso();}" +
             "}).catch(function(){_recAviso();});return;}" +
             "_recAviso();return;}" +
-            "try{if(typeof window.__antesRecarga==='function')window.__antesRecarga();}catch(_){}" +
+            // v2.23.1: recarga automática (opção LIGADA) = como F5, sem devolver filtros, busca,
+            // rolagem nem janelas ({limpar:true}); forçada (servidor voltou, botão Atualizar
+            // do aviso) mantém o estado.
+            "try{if(typeof window.__antesRecarga==='function')window.__antesRecarga(forcar?{}:{limpar:true});}catch(_){}" +
             "window.location.replace(window.location.href);};" +
             // Chamada pelo menu ao trocar a opção: ligou com venda pendente → atualiza já.
             "window.__srvRecargaMudou=function(lig){try{var bd=document.getElementById('__srv_badge');if(bd)bd.textContent=lig?'\\u21bb auto':'\\u21bb ao vivo';}catch(_){}" +

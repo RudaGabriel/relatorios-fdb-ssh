@@ -7,8 +7,8 @@ Versões em uso hoje:
 
 | Arquivo | Versão |
 |---|---|
-| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.23.0 |
-| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.28.0 |
+| [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.23.1 |
+| [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.28.1 |
 | [`api.ps1`](#apips1) | 1.8.0 |
 | [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.14.1 |
@@ -28,6 +28,14 @@ Versões em uso hoje:
 ## `servidor-relatorio.js`
 
 Servidor.
+
+### 2.23.1 — 2026-10-30 01:00
+
+**"Recarregar relatório ao detectar mudanças" ligado agora recarrega de verdade.**
+
+- Com a opção **ligada**, a recarga automática a cada venda é como um F5: busca, filtro de tipo e de vendedor, rolagem e janelas abertas são limpos (`__antesRecarga({limpar:true})`). Antes, a busca, os filtros e a rolagem voltavam como estavam, e a opção parecia não fazer efeito.
+- A recarga **forçada** continua mantendo o estado: quando o servidor volta depois de uma queda e no botão "Atualizar" do aviso.
+- Com a opção **desligada**, nada muda: a venda entra sem recarregar e tudo fica como está.
 
 ### 2.23.0 — 2026-10-29 12:00
 
@@ -266,6 +274,13 @@ Antes o servidor gravava o número cru do banco ("061449") e o gerador "61449" �
 ## `gerar-relatorio-html.js`
 
 Gerador do relatório.
+
+### 3.28.1 — 2026-10-30 01:00
+
+- `window.__antesRecarga({limpar:true})` guarda só o necessário para a tela nova não piscar (sem busca, filtros, vendedor ou rolagem). A página volta limpa e com a busca vazia, mesmo se o navegador tentar devolver o texto.
+- O texto da opção explica os dois modos:
+  - **Ligado:** recarrega como F5 e limpa tudo.
+  - **Desligado:** as vendas entram sem recarregar e tudo fica como está.
 
 ### 3.28.0 — 2026-10-29 16:00
 
