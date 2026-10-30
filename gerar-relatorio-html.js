@@ -1,11 +1,11 @@
 /**
  * gerar-relatorio-html.js
- * @version 3.28.0
+ * @version 3.28.1
  * @author Ruda Gabriel
  * @description Gerador de relatório HTML (subprocesso spawnado pelo servidor). SOMENTE LEITURA.
  * @changelog (único, exclusivo desta versão — sem acumular histórico de versões anteriores)
  *   (Histórico completo das versões: CHANGELOG.md no repositório.)
- *   3.28.0 - 2026-10-29 16:00 - Botões do mesmo tamanho (o maior como referência): cabeçalho da janela da venda.
+ *   3.28.1 - 2026-10-30 01:00 - Recarga automática (opção ligada) volta limpa, como F5.
  */
 
 (function() {
@@ -13,7 +13,7 @@
     // Embutida no HTML gerado (comentário + atributo data-*) para rastreabilidade:
     // suporte técnico consegue identificar qual versão do script gerou um relatório
     // específico sem precisar abrir o gerar-relatorio-html.js.
-    const SCRIPT_VERSION = "3.28.0";
+    const SCRIPT_VERSION = "3.28.1";
     // Lista-mestra dos temas. id = valor de data-theme no HTML e de "fdb_theme" salvo no navegador;
     // ordem = ordem no menu e no "próximo tema". O CSS de cada id é o bloco [data-theme="id"] do <style>
     // (variáveis) mais, nos temas de estilo, as regras html[data-theme="id"] (forma: cantos, bordas,
@@ -3857,7 +3857,7 @@ const _htmlPrefsTela = () => '<div class="tmPerf"><div class="tmHead tmPerfHead"
         + '</div>'
         + '<div class="tmPerf"><div class="tmHead tmPerfHead"><span class="tmTitulo">Atualização</span><span class="tmAtual tmRecEstado"></span></div>'
         +   '<label class="tmRecLbl"><input type="checkbox" id="tmRecAuto"><span>Recarregar relatório ao detectar mudanças</span></label>'
-        +   '<div class="tmPerfDica">Desligado: as vendas novas continuam entrando sozinhas, mas a página não recarrega — filtros, busca, rolagem e janelas abertas ficam como estão. Vale só para este aparelho.</div>'
+        +   '<div class="tmPerfDica">Ligado: a cada venda a página recarrega como um F5 — limpa busca, filtros e janelas abertas e volta ao topo. Desligado: as vendas novas entram sozinhas sem recarregar — filtros, busca, rolagem e janelas abertas ficam como estão. Vale só para este aparelho.</div>'
         + '</div>'
         + '<div class="tmPerf tmZoom"><div class="tmHead tmPerfHead"><span class="tmTitulo">Tamanho do texto</span><span class="tmAtual tmZoomEstado"></span></div>'
         +   '<div class="tmPerfOps tmZoomOps" role="group" aria-label="Tamanho do texto">'
@@ -6312,7 +6312,7 @@ const _recMarcarMenu = () => {
 const _recEscolher = (ligar) => {
     try { localStorage.setItem("fdb_recarga_auto", ligar ? "1" : "0"); } catch (e) {}
     _recMarcarMenu();
-    toast("Atualização", ligar ? "A página recarrega sozinha quando entrar venda." : "As vendas novas continuam entrando, sem recarregar a página.");
+    toast("Atualização", ligar ? "A cada venda a página recarrega e limpa filtros e janelas (como F5)." : "As vendas novas continuam entrando, sem recarregar a página.");
     try { if (typeof window.__srvRecargaMudou === "function") window.__srvRecargaMudou(!!ligar); } catch (e) {}
 };
 const _visMarcarMenu = () => {
@@ -7873,8 +7873,15 @@ const fixHead=()=>{
 // Antes de recarregar sozinha (venda nova), a página guarda rolagem e filtros; a nova
 // os aplica antes do 1º desenho (filtros) e logo depois (rolagem, quando a lista já
 // tem altura). Chamado pelo script do servidor (window.__antesRecarga).
-window.__antesRecarga = () => {
+// v3.27.1: { limpar: true } (recarga automática com "Recarregar relatório ao detectar
+// mudanças" LIGADO) guarda só o necessário para não piscar — a página volta limpa, como
+// um F5: sem busca, filtro de tipo/vendedor, rolagem nem janelas abertas.
+window.__antesRecarga = (opcoes) => {
     try {
+        if (opcoes && opcoes.limpar) {
+            sessionStorage.setItem("__recarga_auto__", JSON.stringify({ ts: Date.now(), url: location.pathname + location.search, limpo: true }));
+            return;
+        }
         const tb = document.querySelector("table");
         sessionStorage.setItem("__recarga_auto__", JSON.stringify({
             ts: Date.now(), url: location.pathname + location.search,
@@ -7887,7 +7894,10 @@ window.__antesRecarga = () => {
     } catch (e) {}
 };
 const _recInfo = window.__recargaInfo || null;
-if (_recInfo) {
+if (_recInfo && _recInfo.limpo) {
+    // Recarga "limpa": garante a busca vazia mesmo se o navegador tentar devolver o texto.
+    try { if (qs("#q")) qs("#q").value = ""; } catch (e) {}
+} else if (_recInfo) {
     try {
         const rq = String(_recInfo.q || "").slice(0, 500);
         if (rq && qs("#q")) { qs("#q").value = rq; qAtual = rq.trim(); qInc = parseBusca(qAtual).inc; }
