@@ -6,7 +6,7 @@
 
 <img alt="servidor: v2.23.1" src="https://img.shields.io/badge/servidor-v2.23.1-2563EB?style=flat">
 <img alt="gerador: v3.28.1" src="https://img.shields.io/badge/gerador-v3.28.1-2563EB?style=flat">
-<img alt="bandeja: v1.6.1" src="https://img.shields.io/badge/bandeja-v1.6.1-2563EB?style=flat">
+<img alt="bandeja: v1.7.0" src="https://img.shields.io/badge/bandeja-v1.7.0-2563EB?style=flat">
 <img alt="plataforma: Windows 10 | 11" src="https://img.shields.io/badge/plataforma-Windows%2010%20%7C%2011-0078D4?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nd2hpdGUnPjxyZWN0IHg9JzMnIHk9JzMnIHdpZHRoPSc4JyBoZWlnaHQ9JzgnLz48cmVjdCB4PScxMycgeT0nMycgd2lkdGg9JzgnIGhlaWdodD0nOCcvPjxyZWN0IHg9JzMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPHJlY3QgeD0nMTMnIHk9JzEzJyB3aWR0aD0nOCcgaGVpZ2h0PSc4Jy8%2BPC9zdmc%2B&logoColor=white">
 <img alt="idioma: pt-BR" src="https://img.shields.io/badge/idioma-pt--BR-16A34A?style=flat">
 <img alt="banco: somente leitura" src="https://img.shields.io/badge/banco-somente%20leitura-DC2626?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nbm9uZScgc3Ryb2tlPSd3aGl0ZScgc3Ryb2tlLXdpZHRoPScyLjInIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCc%2BPHBhdGggZD0nTTEyIDIyczgtNCA4LTEwVjVsLTgtMy04IDN2N2MwIDYgOCAxMCA4IDEweicvPjxwYXRoIGQ9J205IDEyIDIgMiA0LTQnLz48L3N2Zz4%3D&logoColor=white">
@@ -152,7 +152,7 @@ Só são tocados processos `node`, `powershell`, `wscript` e `cscript` que citam
 
 ### 🛠️ Operação
 - **Bandeja do Windows** com menu completo e ícones: status ao vivo, abrir, atualizar, período, telas abertas (trazer para frente, recarregar, enviar aviso, tema), dispositivos conectados, configurações, ferramentas (informações, copiar endereço, pasta, log, log ao vivo, `api.ps1`, programas), reiniciar e sair.
-- **Watchdog:** reinicia o servidor se cair ou travar.
+- **Watchdog:** reinicia o servidor se cair ou se ficar ~60 s sem responder. Tolerante a máquina lenta (não reinicia à toa), registra no log o motivo de cada falha e o código de saída, e espera 1 min se o servidor cair várias vezes logo ao iniciar.
 - **Detecção do banco:** caminhos conhecidos → `config.json` → varredura da rede na porta 3050 → página para escolher o `SMALL.FDB`. Reconecta sozinho quando o banco volta.
 - **Instalação automática de dependências** (Node.js com verificação de integridade e `node-firebird`).
 
@@ -492,6 +492,7 @@ No Windows: duplo clique em **`test\executar-testes.bat`**. Os 28 testes cobrem 
 | Quero que a tela volte limpa a cada venda (sem filtros) | *Configurações → Nesta tela → Atualização*: ligue "Recarregar relatório ao detectar mudanças" (funciona como F5) |
 | Relatório de período longo não termina | Aumente `spawnTimeoutMs` (até 600000) |
 | Instalação nova: "Node.js não foi instalado corretamente" na 1ª vez | Corrigido no instalador 1.14.1 (espera o Node terminar e relê o PATH). Se ainda acontecer, rode o instalador de novo |
+| Servidor "reiniciando sozinho" toda hora | Atualize o `iniciar-tray.ps1` (1.7.0+). Depois, veja no `relatorio.log` as linhas `[TRAY]`: "demorou a responder" (máquina sobrecarregada — o servidor só é reiniciado após ~60 s sem resposta) ou "o processo do servidor terminou (código de saída …)" (o servidor caiu — as linhas `[SERVIDOR]`/`[UNCAUGHT EXCEPTION]` logo antes mostram o porquê) |
 | Servidor não inicia no logon | Rode `instalar-na-inicializacao.bat` de novo e veja as linhas `[INSTALL]` e `[TRAY]` no log |
 | Continua iniciando sozinho após remover | Rode `remover-inicializacao.bat` como administrador e veja as linhas `[REMOVER]` |
 | Instalador: "falha ao criar o bootstrap" / antivírus acusa o `bootstrap.vbs` | Falso positivo. Em *Segurança do Windows → Proteção contra vírus e ameaças → Histórico de proteção*, escolha *Permitir no dispositivo* e rode o instalador de novo |
