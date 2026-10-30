@@ -10,7 +10,7 @@ Versões em uso hoje:
 | [`servidor-relatorio.js`](#servidor-relatoriojs) | 2.23.1 |
 | [`gerar-relatorio-html.js`](#gerar-relatorio-htmljs) | 3.28.1 |
 | [`api.ps1`](#apips1) | 1.8.0 |
-| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.6.1 |
+| [`iniciar-tray.ps1`](#iniciar-trayps1) | 1.7.0 |
 | [`instalar-na-inicializacao.bat`](#instalar-na-inicializacaobat) | 1.14.1 |
 | [`_criar-tarefa.ps1`](#_criar-tarefaps1) | 1.0.0 |
 | [`bootstrap.vbs`](#bootstrapvbs) | 1.2.0 |
@@ -720,6 +720,22 @@ Cliente de linha de comando.
 ## `iniciar-tray.ps1`
 
 Ícone da bandeja.
+
+### 1.7.0 — 2026-10-30 10:00
+
+**Fim dos reinícios falsos do servidor em máquina lenta.**
+
+O vigia (watchdog) da bandeja reiniciava o servidor sem necessidade, a cada minuto ou a cada poucos segundos, quando a máquina estava carregada. Havia três causas:
+
+- **Porta "sem resposta" contada como livre.** Com a máquina lenta, o teste de porta (0,5 s) não recebia resposta, e o vigia achava que o servidor não existia e abria **outro**. Esse outro se encerrava na hora ("porta já em uso") e o aviso "Servidor reiniciado automaticamente" se repetia **a cada 10 s**.
+  - Correção: agora o teste tem três estados (livre, ocupada, incerto) e espera 2 s. "Incerto" nunca abre outro servidor.
+- **Checagem de vida apertada demais.** Eram 0,5 s para conectar e 3 s para o HTTP, via `Invoke-WebRequest`, que consulta o proxy do Windows a cada chamada. Com 3 falhas (~30 s), o servidor era morto mesmo estando só lento.
+  - Correção: agora são 2 s para conectar e 6 s para responder (`HttpWebRequest` sem proxy), e o reinício só acontece depois de **6 checagens seguidas (~60 s)** sem resposta.
+- **Sem diagnóstico.** Agora o log registra:
+  - o motivo de cada falha da checagem ("porta sem resposta", "sem resposta HTTP em N ms");
+  - quando o servidor volta a responder;
+  - quando o Node termina, o **código de saída** e quanto tempo ficou no ar.
+- **Freio contra quedas em sequência:** se o servidor cair 3 vezes logo depois de iniciar (menos de 30 s no ar), a bandeja espera 1 minuto antes de tentar de novo e avisa uma vez, em vez de reiniciar sem parar.
 
 ### 1.6.1 — 2026-10-28 21:00
 
